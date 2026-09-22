@@ -1,0 +1,6 @@
+uagents==0.25.5
+httpx==0.28.1
+eth-account==0.14.0
+cryptography==50.0.1
+jsonschema==4.26.0
+referencing==0.37.0

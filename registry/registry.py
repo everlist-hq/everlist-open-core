@@ -1,0 +1,466 @@
+#!/usr/bin/env python3
+"""D2: agent-hub registry service v0 (open + verified tiers).
+
+Authoritative hub-of-hubs index per the master plan. app.py's built-in
+/registry endpoint is DEMO-ONLY; this service is the real one.
+
+Endpoints:
+  GET  /hubs            -> {open: [...], verified: [...]}
+  GET  /registry.json   -> C6 SIGNED bootstrap document {format, payload,
+                           signature}: ed25519 over the canonical payload
+                           bytes (sort_keys + tight separators); payload
+                           carries hubs + per-hub protocol/api_contract
+  GET  /registry.pub    -> signing public key (out-of-band pinning)
+  GET  /hubs/{hub_id}   -> record + (if hub exposes ledger) self-reported totals
+  POST /register        -> {url}; ownership proof: hub must echo a fresh nonce
+                           at /challenge?nonce=... (challenge_response field),
+                           then manifest at /.well-known/agent-hub.json is
+                           schema-validated. Self-registration can NEVER claim
+                           tier=verified.
+  POST /admin/promote   -> {hub_id|url} + X-Admin-Token: open -> verified
+                           (the ONLY path into the signed partner index)
+  POST /admin/revoke    -> {hub_id|url} + X-Admin-Token: verified -> open
+
+R3 (2026-09-22): the SIGNED /registry.json lists verified partners ONLY -
+the curated EverList network per the licensing model. Open-tier self-listings
+live in GET /hubs (unsigned, no trust rails) and can be added manually
+per-user by agents/users who want them. Admin token via REG_ADMIN_TOKEN;
+endpoints fail closed (404) when unset.
+
+Persistence: registry.json (atomic tmp + os.replace), survives restarts.
+Signing key: registry-signing.key (0600, gitignored, persistent; override
+via REGISTRY_SIGNING_KEY). Verify with: check_hub.py --registry <url>
+
+SSRF-safe fetch policy (plan D2):
+  - https-only outside dev mode (REGISTRY_DEV=1 relaxes to http for localhost)
+  - no credentials in URLs (incl. redirects)
+  - destination IP checked at resolve time: private/loopback/link-local blocked
+    (dev mode allows loopback only)
+  - redirects revalidated (max 3)
+  - bounded DNS/connect/read time and bounded response bytes
+  - manifest schema-validated before storage
+
+Port: HUB_REGISTRY_PORT (default 8810).
+"""
+import ipaddress
+import http.client
+import json
+import os
+import secrets
+import socket
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+STATE_FILE = os.environ.get("REGISTRY_STATE", os.path.join(HERE, "registry.json"))
+PORT = int(os.environ.get("HUB_REGISTRY_PORT", "8810"))
+DEV = os.environ.get("REGISTRY_DEV", "0") == "1"
+MAX_BYTES = 64 * 1024
+TIMEOUT = 5.0
+MAX_REDIRECTS = 3
+
+_LOCK = threading.Lock()
+REGISTRY = {"open": [], "verified": []}
+# R-cap: /register hardening (2026-09-18) - env-tunable so tests and small
+# deployments can loosen them; defaults sized for a public open tier.
+OPEN_CAP = int(os.environ.get("REG_OPEN_CAP", "1000"))
+REG_PER_SOURCE = int(os.environ.get("REG_REGISTER_PER_SOURCE", "20"))
+REG_WINDOW_S = int(os.environ.get("REG_REGISTER_WINDOW_S", "600"))
+_REG_HITS = {}  # source -> [window_start, count] (fixed window, /register only)
+
+# R3 (2026-09-22): operator admin gate. promote/revoke are the ONLY path into
+# the signed partner index; without a token the endpoints are disabled and
+# the signed document stays partner-only by construction (licensing-model
+# section 4: signed registry = partners, never self-claimable).
+ADMIN_TOKEN = os.environ.get("REG_ADMIN_TOKEN", "")
+
+# C6: signed registry document - Ed25519 keypair (persistent, 0600, gitignored
+# via *.key). /registry.json serves {format, payload, signature}; the signature
+# covers the EXACT canonical JSON bytes of payload (sort_keys + tight
+# separators) so verifiers need no canonicalization logic beyond json.dumps.
+KEY_FILE = os.environ.get("REGISTRY_SIGNING_KEY",
+                          os.path.join(HERE, "registry-signing.key"))
+_SIGN_SK = None
+_SIGN_PUB_HEX = None
+
+
+def _load_or_create_signing_key():
+    global _SIGN_SK, _SIGN_PUB_HEX
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    if os.path.exists(KEY_FILE):
+        with open(KEY_FILE) as f:
+            _SIGN_SK = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(f.read().strip()))
+        print(f"C6: signing key loaded from {KEY_FILE}")
+    else:
+        _SIGN_SK = Ed25519PrivateKey.generate()
+        raw = _SIGN_SK.private_bytes(serialization.Encoding.Raw,
+                                     serialization.PrivateFormat.Raw,
+                                     serialization.NoEncryption())
+        fd = os.open(KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(raw.hex())
+        print(f"C6: new signing key generated at {KEY_FILE}")
+    _SIGN_PUB_HEX = _SIGN_SK.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
+
+
+def canonical_payload_bytes(payload) -> bytes:
+    """THE canonical form: sort_keys + tight separators. Signer and every
+    verifier use exactly this - no drift possible."""
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def registry_document() -> dict:
+    """C6: the signed, agent-readable bootstrap document (hubs + versions)."""
+    from cryptography.hazmat.primitives import serialization
+    hubs = []
+    with _LOCK:
+        # R3 (2026-09-22): the SIGNED document is the PARTNER index - verified
+        # tier only. Open-tier self-listings are served by GET /hubs but are
+        # deliberately absent from the signed bootstrap doc (licensing-model
+        # section 4: signed registry = partners, never self-claimable).
+        for r in REGISTRY["verified"]:
+                man = r.get("manifest", {}) or {}
+                hubs.append({"hub_id": r["hub_id"], "url": r["url"], "tier": r["tier"],
+                             "registered": r.get("registered"),
+                             "verified_unix": r.get("verified_unix"),
+                             "protocol": man.get("protocol"),
+                             "api_contract": man.get("api_contract"),
+                             "content_policy": man.get("content_policy")})
+    payload = {"format": "everlist-registry/1",
+               "generated_unix": int(time.time()),
+               "hub_count": len(hubs),
+               "hubs": hubs,
+               "doc": "signature: ed25519 over canonical payload bytes; verify with check_hub.py --registry"}
+    sig = _SIGN_SK.sign(canonical_payload_bytes(payload)).hex()
+    return {"format": "everlist-registry/1-signed",
+            "payload": payload,
+            "signature": {"algo": "ed25519", "public_key": _SIGN_PUB_HEX, "sig": sig}}
+
+
+def _load():
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE) as f:
+                REGISTRY.update(json.load(f))
+            print(f"D2: restored {len(REGISTRY['open'])} open + "
+                  f"{len(REGISTRY['verified'])} verified hubs")
+        except Exception as ex:
+            print(f"D2 WARNING: corrupt registry state ({ex}); starting fresh")
+
+
+def _persist():
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(REGISTRY, f)
+    os.replace(tmp, STATE_FILE)
+
+
+class FetchError(Exception):
+    pass
+
+
+def _check_ip(host: str):
+    """Resolve and check destination at resolve time (SSRF policy)."""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror as ex:
+        raise FetchError(f"dns failure: {ex}")
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved) \
+                and not (DEV and ip.is_loopback):
+            raise FetchError(f"blocked destination: {ip} (private/loopback/link-local)")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """SSRF fix: urllib's default opener AUTO-FOLLOWS redirects (up to 10)
+    BEFORE our HTTPError branch can run — per-hop revalidation and
+    MAX_REDIRECTS were effectively dead code. Returning None forces every
+    3xx to raise HTTPError; fetch_json then recurses with full
+    scheme/credential/_check_ip checks per hop."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def fetch_json(url: str, redirects: int = 0) -> dict:
+    """SSRF-safe bounded JSON fetch with redirect revalidation."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme == "https":
+        pass
+    elif parsed.scheme == "http":
+        if not (DEV and parsed.hostname in ("localhost", "127.0.0.1")):
+            raise FetchError("http only allowed in dev mode for localhost")
+    else:
+        raise FetchError(f"unsupported scheme: {parsed.scheme}")
+    if parsed.username or parsed.password:
+        raise FetchError("credentials in URL not allowed")
+    _check_ip(parsed.hostname)
+
+    req = urllib.request.Request(url, headers={"User-Agent": "agent-hub-registry/0.1"})
+    try:
+        with _OPENER.open(req, timeout=TIMEOUT) as resp:
+            raw = resp.read(MAX_BYTES + 1)
+            if len(raw) > MAX_BYTES:
+                raise FetchError("response exceeds byte budget")
+            if resp.status != 200:
+                raise FetchError(f"http {resp.status}")
+            final = resp.geturl()
+    except urllib.error.HTTPError as ex:
+        if ex.code in (301, 302, 303, 307, 308):
+            if redirects >= MAX_REDIRECTS:
+                raise FetchError("too many redirects")
+            loc = ex.headers.get("Location", "")
+            return fetch_json(urllib.parse.urljoin(url, loc), redirects + 1)
+        raise FetchError(f"http {ex.code}")
+    except (urllib.error.URLError, http.client.HTTPException, OSError) as ex:
+        # HTTPException covers RemoteDisconnected etc. raised RAW by http.client
+        raise FetchError(f"fetch failed: {ex}")
+    if final != url:
+        p2 = urllib.parse.urlparse(final)
+        if p2.scheme not in ("https", "http"):
+            raise FetchError("redirect to unsupported scheme")
+        if p2.username or p2.password:
+            raise FetchError("credentials in redirect URL")
+        if not (DEV and p2.hostname in ("localhost", "127.0.0.1")):
+            _check_ip(p2.hostname)  # revalidate redirect destination
+    try:
+        return json.loads(raw.decode())
+    except Exception as ex:
+        raise FetchError(f"invalid json: {ex}")
+
+
+def validate_manifest(man) -> tuple:
+    """Schema-validate a hub manifest before storage (D2; matches the REAL
+    agent-hub manifest shape: hub/protocol/payments/capabilities)."""
+    if not isinstance(man, dict):
+        return False, "manifest not an object"
+    for key in ("hub", "protocol", "payments", "capabilities"):
+        if key not in man:
+            return False, f"missing required key: {key}"
+    if not isinstance(man.get("hub"), str) or not man["hub"].strip():
+        return False, "hub must be a non-empty string"
+    if not isinstance(man.get("protocol"), str):
+        return False, "protocol must be a string"
+    if "fairness" in man and not isinstance(man["fairness"], dict):
+        return False, "fairness must be an object (F5)"
+    for _k in ("api_contract", "content_policy"):
+        if _k in man and not isinstance(man[_k], (dict, str)):
+            return False, f"{_k} must be an object or string (F5)"
+    if not isinstance(man.get("payments"), dict):
+        return False, "payments must be an object"
+    if not isinstance(man.get("capabilities"), dict):
+        return False, "capabilities must be an object"
+    return True, ""
+
+
+def ledger_url(rec: dict) -> str | None:
+    """Resolve the hub's public ledger endpoint from its manifest.
+    fairness.ledger is a hub-relative path (e.g. '/ledger')."""
+    path = (rec.get("manifest") or {}).get("fairness")
+    if isinstance(path, dict):
+        path = path.get("ledger")
+    else:
+        path = None  # fairness null/string/list: no ledger resolvable (F5 fix)
+    if isinstance(path, str) and path.startswith("/"):
+        return rec["url"].rstrip("/") + path
+    if isinstance(path, str) and path.startswith("http"):
+        return path
+    return None
+
+
+def prove_ownership(url: str) -> tuple:
+    """Hub must echo a fresh nonce at /challenge?nonce=... (proves URL control)."""
+    nonce = os.urandom(8).hex()
+    try:
+        resp = fetch_json(f"{url.rstrip('/')}/challenge?nonce={nonce}")
+    except FetchError as ex:
+        return False, f"challenge fetch failed: {ex}"
+    if isinstance(resp, dict) and resp.get("challenge_response") == nonce:
+        return True, ""
+    return False, "challenge_response mismatch (ownership not proven)"
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def _json(self, code, obj):
+        data = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        u = urllib.parse.urlparse(self.path)
+        if u.path == "/registry.json":
+            # C6: the signed, agent-readable bootstrap document
+            return self._json(200, registry_document())
+        if u.path == "/registry.pub":
+            # C6: signing public key (hex) for out-of-band pinning
+            return self._json(200, {"algo": "ed25519", "public_key": _SIGN_PUB_HEX,
+                "note": "pin this out-of-band for production; /registry.json also embeds it"})
+        if u.path == "/hubs":
+            with _LOCK:
+                return self._json(200, {"open": list(REGISTRY["open"]),
+                                         "verified": list(REGISTRY["verified"]),
+                                         "note": "verified requires operator review - "
+                                                 "self-registration can never claim it"})
+        if u.path.startswith("/hubs/"):
+            hid = u.path[len("/hubs/"):]
+            with _LOCK:
+                rec = next((r for r in REGISTRY["open"] + REGISTRY["verified"]
+                            if r["hub_id"] == hid), None)
+            if rec is None:
+                return self._json(404, {"error": "unknown hub"})
+            out = {**rec}
+            led_ep = ledger_url(rec)
+            if led_ep:
+                try:
+                    led = fetch_json(led_ep)
+                    out["ledger_totals"] = led.get("totals")
+                    out["ledger_check"] = "retrieved (self-reported; D3 does independent verification)"
+                except FetchError as ex:
+                    out["ledger_check"] = f"unavailable: {ex}"
+            return self._json(200, out)
+        return self._json(404, {"error": "not found"})
+
+    def _admin(self, path):
+        # R3 (2026-09-22): the ONLY path into the signed partner index is an
+        # operator holding the admin token (curated network, never
+        # self-service). Fail-closed: no token configured -> endpoints off.
+        if not ADMIN_TOKEN:
+            return self._json(404, {"error": "admin endpoints disabled (REG_ADMIN_TOKEN unset)"})
+        tok = self.headers.get("X-Admin-Token", "")
+        if not secrets.compare_digest(ADMIN_TOKEN, tok):
+            return self._json(403, {"error": "bad admin token"})
+        try:
+            ln = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(min(ln, 16384)) or b"{}")
+        except Exception:
+            return self._json(400, {"error": "invalid json"})
+        key = (body.get("hub_id") or "").strip() or (body.get("url") or "").rstrip("/")
+        if not key:
+            return self._json(400, {"error": "hub_id or url required"})
+        with _LOCK:
+            if path == "/admin/promote":
+                rec = next((r for r in REGISTRY["open"]
+                            if r["hub_id"] == key or r["url"] == key), None)
+                if rec is None:
+                    if any(r["hub_id"] == key or r["url"] == key
+                           for r in REGISTRY["verified"]):
+                        return self._json(200, {"ok": True, "note": "already verified"})
+                    return self._json(404, {"error": "hub not found in open tier"})
+                REGISTRY["open"].remove(rec)
+                rec["tier"] = "verified"
+                rec["verified_unix"] = time.time()
+                REGISTRY["verified"].append(rec)
+                _persist()
+                return self._json(200, {"ok": True, "hub_id": rec["hub_id"],
+                                         "tier": "verified"})
+            # /admin/revoke
+            rec = next((r for r in REGISTRY["verified"]
+                        if r["hub_id"] == key or r["url"] == key), None)
+            if rec is None:
+                return self._json(404, {"error": "hub not found in verified tier"})
+            REGISTRY["verified"].remove(rec)
+            rec["tier"] = "open"
+            rec.pop("verified_unix", None)
+            REGISTRY["open"].append(rec)
+            _persist()
+            return self._json(200, {"ok": True, "hub_id": rec["hub_id"], "tier": "open"})
+
+    def do_POST(self):
+        _path = urllib.parse.urlparse(self.path).path
+        if _path in ("/admin/promote", "/admin/revoke"):
+            return self._admin(_path)
+        if _path != "/register":
+            return self._json(404, {"error": "not found"})
+        try:
+            ln = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(min(ln, 16384)) or b"{}")
+        except Exception:
+            return self._json(400, {"error": "invalid json"})
+        url = (body.get("url") or "").rstrip("/")
+        if not url.startswith(("http://", "https://")):
+            return self._json(400, {"error": "url required (http/https)"})
+        if any(c in url for c in ("@", " ")):
+            return self._json(400, {"error": "url contains disallowed characters"})
+
+        ok, why = prove_ownership(url)
+        if not ok:
+            return self._json(400, {"error": f"ownership proof failed: {why}"})
+        try:
+            man = fetch_json(f"{url}/.well-known/agent-hub.json")
+        except FetchError as ex:
+            return self._json(400, {"error": f"manifest fetch failed: {ex}"})
+        valid, why = validate_manifest(man)
+        if not valid:
+            return self._json(400, {"error": f"invalid manifest: {why}"})
+
+        # R-cap: per-source fixed-window limit on the expensive registration
+        # path (each request forces a challenge fetch + manifest fetch); the
+        # limiter sits AFTER format validation so garbage never grows state.
+        src = self.client_address[0]
+        with _LOCK:
+            hit = _REG_HITS.get(src)
+            now = time.time()
+            if hit is None or now - hit[0] >= REG_WINDOW_S:
+                _REG_HITS[src] = [now, 1]
+            else:
+                hit[1] += 1
+                if hit[1] > REG_PER_SOURCE:
+                    return self._json(429, {"error": "registration rate limit reached for your source, retry later"})
+        # RTF3 (red-team 2026-09-19): ownership is proven per SERVER, not per
+        # path — A6 proved /evil, /EVIL, /evil/x and /%2e%2e/evil all register
+        # as separate hubs from one origin (and churn-evicted honest hubs).
+        # Dedup granularity is therefore the ORIGIN (scheme://host:port).
+        _sp = urllib.parse.urlsplit(url)
+        origin = _sp.scheme.lower() + "://" + _sp.netloc.lower()
+        hid = "hub-" + os.urandom(6).hex()
+        req_tier = str(body.get("tier") or "").strip().lower()
+        rec = {"hub_id": hid, "url": url, "origin": origin, "tier": "open",
+               "requested_tier": req_tier or None,  # FED11 (run #5): silent coercion became visible feedback
+               "registered": time.time(), "manifest": man}
+        with _LOCK:
+            # R-cap: dedup - one record per origin; re-registration is refused
+            # honestly instead of growing unbounded duplicate records.
+            def _origin_of(r):
+                o = r.get("origin")
+                if o:
+                    return o
+                _s = urllib.parse.urlsplit(r["url"])
+                return _s.scheme.lower() + "://" + _s.netloc.lower()
+            dup_hit = next((r for r in REGISTRY["open"] if _origin_of(r) == origin), None)
+            if dup_hit is not None or any(r["url"] == url for r in REGISTRY["open"]):
+                dup = (dup_hit or next(r for r in REGISTRY["open"] if r["url"] == url))["hub_id"]
+                return self._json(409, {"error": "hub already registered",
+                                        "hub_id": dup,
+                                        "hint": "one record per origin; contact the registry operator to update a manifest"})
+            # R-cap: open-tier capacity with oldest-eviction (bounded memory).
+            if len(REGISTRY["open"]) >= OPEN_CAP:
+                oldest = min(REGISTRY["open"], key=lambda r: r.get("registered", 0))
+                REGISTRY["open"].remove(oldest)
+            REGISTRY["open"].append(rec)
+            _persist()
+        return self._json(201, {"hub_id": hid, "tier": "open",
+                                 "note": "tier=verified requires operator review; never self-claimable"})
+
+
+if __name__ == "__main__":
+    _load_or_create_signing_key()  # C6: before serving - key exists by first request
+    _load()
+    srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    print(f"D2 registry v0 on http://127.0.0.1:{PORT} (dev={DEV})")
+    srv.serve_forever()
