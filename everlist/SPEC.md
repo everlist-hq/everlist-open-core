@@ -128,7 +128,7 @@ Server-owned booking fields (clients CANNOT set): `id` (24-hex random), `escrow`
 | `TESTNET` | real chain verification/settlement on testnet (C3a target: base-sepolia USDC, EIP-3009) |
 | `PRODUCTION` | real settlement, mainnet assets |
 
-- Rail 1 (default, transparent): **x402** — wire format per `payments_x402.md` (402 `accepts[]` → `X-PAYMENT` base64 payload → `X-PAYMENT-RESPONSE`). Verified core: EVM/USDC `exact`. ETH on x402: hypothesis until C3. ADA/FET: custom adapters, NOT x402 core (manifest says so).
+- Rail 1 (default, transparent): **x402** — wire format per `payments_x402.md` (402 `accepts[]` → `X-PAYMENT` base64 payload → `X-PAYMENT-RESPONSE`). Verified core: EVM/USDC `exact`. ETH on x402: hypothesis until C3. **Cardano (C3c, EXPERIMENTAL-preprod): x402 `exact` via the official Cardano facilitator merged into the x402 SDK (~2026-09-09) — stablecoin-first (default tUSDM preprod / USDM mainnet, 6 decimals; ADA=lovelace per-listing opt-in only, seconds of exposure). Facilitator is self-hosted (no hosted CDP-style endpoint exists); TS SDK only → hub talks HTTP directly (module `cardano_x402.py`). Payload = x402 v2 Cardano shape `{transaction, nonce}` inside the v1 X-PAYMENT envelope (documented transport deviation).** FET: custom adapter, NOT x402 core (manifest says so).
 - Rail 2 (privacy, designed): **Midnight shielded** (Zswap; hides payer/amount/asset) — GATED Phase A.
 - Settlement rule: payTo is merchant-side; facilitator fees are merchant-side; hub takes only its declared hub fee on bookings, never custodies payment assets.
 - **Settlement outside global LOCK (CHAOS 2026-09-20)**: C3b settlement under `HUB_SETTLE_MODE=auto` originally held the hub's global LOCK across the 15s facilitator HTTP round-trip. Chaos measurement showed one paid request stalling all concurrent `/search` calls for **~7s** (8s facilitator delay → 7067ms `/search` latency vs baseline 0.9ms). **Fix**: nonce + pending marker persisted under LOCK, facilitator HTTP runs unlocked, ledger append + final persist re-acquire LOCK. **Liveness**: `/search` latency unchanged during settlement (measured 3ms vs 7s). **Safety**: upstream x402 nonce registry serializes first-settle per fingerprint (replay blocked before this point); `SETTLEMENTS.settle()` is fingerprint-idempotent (concurrent/duplicate submissions return recorded result, never re-call). **Durability (D4 fix)**: a crash mid-call now has a `pending` marker on disk (evidence + prevents silent loss of state).
@@ -273,7 +273,7 @@ Binding product policy agreed with the owner. Implementation items: C11, C12, M1
 | Rail | Default? | Use |
 | --- | --- | --- |
 | **Midnight escrow** | **Default whenever real money attaches** | events, marketplace, jobs, services — anything where wrong-delivery/no-show matters |
-| x402 instant | merchant opt-in per listing | small amounts, trusted repeat customers, digital fulfillment; no refund window (that is the trade-off) |
+| x402 instant | merchant opt-in per listing | small amounts, trusted repeat customers, digital fulfillment; no refund window (that is the trade-off). C3c adds a Cardano stablecoin leg (default tUSDM preprod; ADA opt-in, seconds of exposure) — EXPERIMENTAL-preprod |
 
 ### 19c. Refund windows (defaults, merchant may override per listing)
 

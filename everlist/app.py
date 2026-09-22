@@ -373,7 +373,9 @@ def _persist_locked():
             "idempotency": IDEMPOTENCY, "accounts": ACCOUNTS, "id_counters": ID_COUNTERS,
             "nonces": {n: e for n, e in getattr(hublib, "_NONCES", {}).items()},
             "x402_nonces": (x402verify.snapshot_used_nonces() if PAY_MODE == "testnet" else {}),
-            "settlements": (SETTLEMENTS.snapshot() if PAY_MODE == "testnet" else {})}
+            "settlements": (SETTLEMENTS.snapshot() if PAY_MODE == "testnet" else {}),
+            "cardano_settlements": CARDANO_SETTLEMENTS.snapshot(),   # C3c
+            "cardano_nonces": cardano_x402.snapshot_used_nonces()}   # C3c nonce wall
     write_snapshot(snap)
 
 
@@ -406,6 +408,8 @@ def _load_state():
         if PAY_MODE == "testnet":
             x402verify.load_used_nonces(snap.get("x402_nonces", {}))
             SETTLEMENTS.load(snap.get("settlements", {}))
+        CARDANO_SETTLEMENTS.load(snap.get("cardano_settlements", {}))  # C3c
+        cardano_x402.load_used_nonces(snap.get("cardano_nonces", []))  # C3c nonce wall
         print(f"G1: restored {len(BOOKINGS)} bookings, {len(LEDGER)} ledger entries, "
               f"{len(LISTINGS)} listings from {STATE_FILE}")
     except Exception as ex:
@@ -442,6 +446,11 @@ FEE_PCT = float(os.environ.get("HUB_FEE_PCT", "1.0"))
 if not (0 <= FEE_PCT <= 50):
     sys.stderr.write(f"FATAL: HUB_FEE_PCT must be in [0, 50], got {FEE_PCT}\n")
     sys.exit(78)
+# demo-kit: operator-brandable display metadata (protocol fields untouched)
+HUB_NAME = os.environ.get("HUB_NAME", "agent-hub-v2")
+HUB_DESCRIPTION = os.environ.get(
+    "HUB_DESCRIPTION",
+    "Agent commerce hub - universal booking core, per-vertical schemas. Open core; EverList network membership is curated.")
 DATA_DIR = os.environ.get("HUB_DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
 # FED1 (run #5): HUB_STATE_DIR was silently ignored (only HUB_STATE_FILE existed),
 # so operator drills booted against the repo's default state.json — one flock
@@ -634,6 +643,30 @@ if PAY_MODE == "testnet":
         os.environ.get("HUB_FACILITATOR_URL", x402facilitate.DEFAULT_FACILITATOR),
         os.environ.get("HUB_FACILITATOR_KEY"), timeout=15)
     SETTLEMENTS = x402facilitate.SettlementRegistry()
+# C3c: Cardano x402 instant rail — STABLECOIN-FIRST (tUSDM preprod default;
+# ADA=lovelace is per-listing opt-in only). Flag off (no facilitator URL) =
+# scheme NOT advertised at all (clean degradation). EXPERIMENTAL-preprod.
+import cardano_x402
+CARDANO_NET = "cardano:" + os.environ.get("HUB_CARDANO_NETWORK", "preprod").strip()
+CARDANO_FACIL_URL = os.environ.get("HUB_CARDANO_FACILITATOR_URL", "").strip()
+CARDANO_ON = bool(CARDANO_FACIL_URL)
+CARDANO_SETTLEMENTS = cardano_x402.CardanoSettlementRegistry()  # always present (persistable)
+if CARDANO_ON:
+    CARDANO_FACIL = cardano_x402.CardanoFacilitatorClient(
+        CARDANO_FACIL_URL, os.environ.get("HUB_CARDANO_FACILITATOR_KEY"), timeout=30)
+    _da = cardano_x402.DEFAULT_ASSETS.get(CARDANO_NET) or []
+    CARDANO_ASSET = os.environ.get("HUB_CARDANO_ASSET", "").strip() or (
+        _da[0]["asset"] if _da else "")  # default = network stablecoin (tUSDM/USDM)
+    CARDANO_PRICE = int(os.environ.get("HUB_CARDANO_PRICE", "0"))  # minor units
+    CARDANO_PAYTO = os.environ.get("HUB_CARDANO_PAYTO", "").strip()  # merchant addr
+    if not CARDANO_ASSET or not CARDANO_PAYTO or CARDANO_PRICE <= 0:
+        sys.stderr.write("FATAL: Cardano rail on but HUB_CARDANO_ASSET/PAYTO/PRICE incomplete\n")
+        sys.exit(1)
+    CARDANO_LABEL = ("EXPERIMENTAL-preprod" if CARDANO_NET.endswith("preprod")
+                     or CARDANO_NET.endswith("preview") else "EXPERIMENTAL")
+    if CARDANO_ASSET == "lovelace":
+        sys.stderr.write("WARN: Cardano rail asset=lovelace (ADA opt-in); exposure is"
+                         " seconds only — never for value held across time\n")
 # LEVEL-1 chain gating (owner-approved 2026-09-20): the hub never claims a
 # money state the chain doesn't back. Opt-in: HUB_INDEXER_URL enables it;
 # HUB_INDEXER_URL_2 adds a second, independent read for terminal flips
@@ -1309,6 +1342,127 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+    def _cardano_premium(self, pay_hdr: str, dec: dict):
+        """C3c: Cardano x402 instant rail (stablecoin-first, EXPERIMENTAL-preprod).
+
+        Payload = x402 v2 Cardano shape {transaction, nonce} inside our v1
+        X-PAYMENT envelope (documented transport deviation). Verify delegates
+        to the facilitator's read-only /verify (no local CBOR crypto); settle
+        follows the CHAOS pattern (pending under LOCK -> HTTP unlocked ->
+        ledger+persist re-LOCK). A retry of the SAME payload while settlement
+        is pending RESUMES observation (upstream protocol); terminal records
+        and the nonce wall block replays.
+        """
+        def _402(detail):
+            return self._json(402, {"x402Version": 1, "error": "invalid payment",
+                                    "detail": detail, "mode": CARDANO_LABEL,
+                                    "network": CARDANO_NET})
+        if not CARDANO_ON:
+            return _402("cardano rail not enabled on this hub")
+        if dec.get("scheme") != "exact" or dec.get("network") != CARDANO_NET:
+            return _402(f"scheme/network mismatch: {dec.get('scheme')}/{dec.get('network')}"
+                        f" (advertised: exact/{CARDANO_NET})")
+        inner = dec.get("payload") or {}
+        if not isinstance(inner, dict) or not inner.get("transaction") or not inner.get("nonce"):
+            return _402("malformed cardano payload: need payload.transaction + payload.nonce (txHash#index)")
+        nonce = str(inner["nonce"])
+        if "#" not in nonce:
+            return _402("nonce must be a UTXO reference txHash#index")
+        reqs = {"scheme": "exact", "network": CARDANO_NET, "asset": CARDANO_ASSET,
+                "amount": str(CARDANO_PRICE), "maxAmountRequired": str(CARDANO_PRICE),
+                "payTo": CARDANO_PAYTO, "maxTimeoutSeconds": 600,
+                "extra": {"assetTransferMethod": "default",
+                          "confirmationPolicy": {"l1Confirmations": 1}}}
+        # pending-resume: same payload retry while settlement is non-terminal
+        if cardano_x402.nonce_used(nonce):
+            rec = next((r for r in CARDANO_SETTLEMENTS.snapshot().values()
+                        if r.get("nonce") == nonce), None)
+            if rec is not None and rec.get("status") == "pending":
+                srec = CARDANO_SETTLEMENTS.settle(rec["fingerprint"], dec, reqs, CARDANO_FACIL)
+                with LOCK:
+                    if srec.get("status") == "settled":
+                        LEDGER.append({"kind": "x402_settlement", "ts": time.time(),
+                                        "detail": {"fingerprint": rec["fingerprint"],
+                                                    "tx": srec.get("tx", ""),
+                                                    "value": CARDANO_PRICE,
+                                                    "payer": rec.get("payer", ""),
+                                                    "network": CARDANO_NET,
+                                                    "asset": CARDANO_ASSET}})
+                    _persist_locked()
+                return self._cardano_feed(dec, srec, rec.get("fingerprint", ""),
+                                          rec.get("payer", ""))
+            return _402("replayed payment (nonce already used)")
+        # 1) facilitator verify (read-only) - runs UNLOCKED (no shared state)
+        st, vresp = CARDANO_FACIL._call("verify", {"paymentPayload": dec,
+                                                    "paymentRequirements": reqs})
+        if st != 200 or not vresp.get("isValid"):
+            reason = vresp.get("invalidReason") or vresp.get("error") or f"verify http {st}"
+            return _402(f"facilitator verify rejected: {str(reason)[:120]}")
+        payer = str(vresp.get("payer", ""))
+        fp = cardano_x402.payment_fingerprint_c(
+            {"payment_id": nonce, "payer_address": payer,
+             "payto_address": CARDANO_PAYTO, "amount": CARDANO_PRICE,
+             "asset": CARDANO_ASSET})
+        # 2) under LOCK: burn nonce + durable pending marker BEFORE the HTTP hop
+        with LOCK:
+            cardano_x402.mark_nonce_used(nonce)
+            srec = None
+            if SETTLE_MODE == "auto":
+                CARDANO_SETTLEMENTS.mark_pending(fp, nonce=nonce, payer=payer)
+            _persist_locked()
+        # 3) settle UNLOCKED (CHAOS 2026-09-20: never hold LOCK across HTTP)
+        if SETTLE_MODE == "auto":
+            srec = CARDANO_SETTLEMENTS.settle(fp, dec, reqs, CARDANO_FACIL)
+            with LOCK:
+                if srec.get("status") == "settled":
+                    LEDGER.append({"kind": "x402_settlement", "ts": time.time(),
+                                    "detail": {"fingerprint": fp, "tx": srec.get("tx", ""),
+                                                "value": CARDANO_PRICE, "payer": payer,
+                                                "network": srec.get("network", CARDANO_NET),
+                                                "asset": CARDANO_ASSET}})
+                _persist_locked()  # settlement record + ledger event persisted together
+        return self._cardano_feed(dec, srec, fp, payer)
+
+    def _cardano_feed(self, dec: dict, srec: dict | None, fp: str, payer: str):
+        """Shared 200 responder for the Cardano rail (feed + honest settlement state)."""
+        with LOCK:
+            res = [l for l in LISTINGS if l["vertical"] == "events" and l.get("visibility") != "private"]
+            rich = [{**_pub_listing(l), "premium_meta": {"owner_public": l.get("owner", ""),
+                     "fill_ratio": round(l.get("registered", 0) / max(1, l.get("capacity", 1)), 3),
+                     "payment": {"mode": CARDANO_LABEL, "verified": True,
+                                  "settlement": (srec["status"] if srec else "pending (HUB_SETTLE_MODE=off)"),
+                                  "fingerprint": fp, "payer": payer, "value": CARDANO_PRICE}}} for l in res]
+        if srec is not None and srec.get("status") == "settled":
+            settle_info = {"status": "SETTLED", "tx": srec.get("tx", ""),
+                            "network": srec.get("network", CARDANO_NET),
+                            "asset": CARDANO_ASSET}
+        elif srec is not None and srec.get("status") == "pending":
+            settle_info = {"status": "PENDING", "tx": srec.get("tx", ""),
+                            "note": "settlement_pending - retry the SAME payment to resume observation; never rebuild the transaction"}
+        elif srec is not None and srec.get("status") == "unknown":
+            settle_info = {"status": "UNKNOWN",
+                            "note": "facilitator timeout/error - outcome unproven; check facilitator before retry"}
+        elif srec is not None:
+            settle_info = {"status": "FAILED", "error": srec.get("error", "facilitator rejected")}
+        else:
+            settle_info = {"status": "NOT_ATTEMPTED",
+                            "note": "HUB_SETTLE_MODE=off - verified only; set auto to settle via facilitator"}
+        pay_resp = {"success": bool(srec and srec.get("status") == "settled"),
+                    "network": CARDANO_NET,
+                    "transaction": (srec or {}).get("tx", ""),
+                    "errorReason": (None if not srec or srec.get("status") == "settled"
+                                    else ("settlement_pending" if srec.get("status") == "pending"
+                                          else srec.get("error", "settlement_failed"))),
+                    "extra": {"status": (srec or {}).get("status", "not_attempted"),
+                              "label": CARDANO_LABEL}}
+        hdr = {"X-PAYMENT-RESPONSE": base64.b64encode(json.dumps(pay_resp).encode()).decode()}
+        return self._json(200, {"mode": CARDANO_LABEL,
+            "payment": {"scheme": "exact", "network": CARDANO_NET,
+                         "asset": CARDANO_ASSET, "value": CARDANO_PRICE,
+                         "verified": True, "settlement": settle_info,
+                         "fingerprint": fp},
+            "count": len(rich), "events": rich}, extra_headers=hdr)
+
     def do_GET(self):
         self._t0 = time.time()  # H12: latency start
         u = urlparse(self.path)
@@ -1368,8 +1522,8 @@ class Handler(BaseHTTPRequestHandler):
                 "protocol": "agent-hub/0.2", "open_source": "MIT",
                 "license_model": "open-core: hub/SDK/registry open; EverList network membership curated (see /network)",
                 "api_contract": "/openapi.json",
-                "hub": "agent-hub-v2",
-                "description": "Agent commerce hub - universal booking core, per-vertical schemas. Open core; EverList network membership is curated.",
+                "hub": HUB_NAME,
+                "description": HUB_DESCRIPTION,
                 "auth": {
             "kind": "crypto-accounts",
             "contract": "SPEC 12a: Ed25519 keypair accounts, challenge-response login, PoW-gated signup",
@@ -1396,7 +1550,7 @@ class Handler(BaseHTTPRequestHandler):
                     "accepted_assets": [
                         {"asset": "USDC (EVM)", "role": "native x402 'exact' scheme - verified per C1 research", "rail": "x402"},
                         {"asset": "ETH", "role": "x402 EVM chains - HYPOTHESIS until C3 verification", "rail": "x402"},
-                        {"asset": "ADA", "role": "custom adapter required - x402 core does not cover Cardano (C1 finding)", "rail": "custom"},
+                        {"asset": "ADA / Cardano-native stablecoins (USDM/USDCx)", "role": "x402 'exact' on Cardano via the merged Cardano facilitator (C3c, EXPERIMENTAL-preprod, stablecoin-first; ADA = per-listing opt-in only)", "rail": "x402"},
                         {"asset": "FET", "role": "custom adapter; for ASI-native agents; merchants never receive FET (round-5)", "rail": "custom"}],
                     "deferred": [
                         {"asset": "BTC", "why": "needs processor/Lightning adapter - later"},
@@ -1435,6 +1589,15 @@ class Handler(BaseHTTPRequestHandler):
             """C2: x402-protected richer feed. SIMULATED mode: stub verification.
             Wire format per payments_x402.md (C1 research)."""
             pay_hdr = self.headers.get("X-PAYMENT", "")
+            # C3c: route by network — cardano:* goes to the Cardano rail
+            _is_cardano = False
+            try:
+                _dec = json.loads(base64.b64decode(pay_hdr).decode())
+                _is_cardano = str(_dec.get("network", "")).startswith("cardano:")
+            except Exception:
+                pass
+            if _is_cardano:
+                return self._cardano_premium(pay_hdr, _dec)
             if not pay_hdr:
                 # FED4 (run #5): advertise the ACTUAL serving origin, not a
                 # hardcoded localhost:8802 — agents paid the wrong host otherwise.
@@ -1454,6 +1617,23 @@ class Handler(BaseHTTPRequestHandler):
                          "note": ("TESTNET mode: real EIP-3009 signature verification; on-chain settlement via facilitator is C3b."
                                   if PAY_MODE == "testnet" else
                                   "SIMULATED payment verification - no real settlement. Production mode verifies EIP-3009 signatures (C3a).")}
+                if CARDANO_ON:
+                    # C3c: second instant rail — Cardano stablecoin (default tUSDM
+                    # preprod; ADA=lovelace only as explicit opt-in). Payload shape
+                    # is the x402 v2 Cardano body {transaction, nonce} carried in
+                    # our v1 X-PAYMENT envelope (transport deviation, documented).
+                    terms["accepts"].append({
+                        "scheme": "exact", "network": CARDANO_NET,
+                        "asset": CARDANO_ASSET,
+                        "maxAmountRequired": str(CARDANO_PRICE),
+                        "payTo": CARDANO_PAYTO,
+                        "resource": "%s://%s/premium/events" % (_xscheme, _xhost),
+                        "description": "Premium events feed (agent-hub-v2, Cardano rail)",
+                        "maxTimeoutSeconds": 600,
+                        "extra": {"label": CARDANO_LABEL,
+                                  "assetTransferMethod": "default",
+                                  "confirmationPolicy": {"l1Confirmations": 1},
+                                  "note": "stablecoin-first rail; payload = {transaction, nonce} (x402 v2 Cardano shape) inside this X-PAYMENT envelope"}})
                 return self._json(402, terms)
             if PAY_MODE == "testnet":
                 info, err = x402verify.verify_payment(
@@ -1547,7 +1727,7 @@ class Handler(BaseHTTPRequestHandler):
                              "value": auth["value"], "settlement": "stubbed (C3a = real EIP-3009 verification)"},
                 "count": len(rich), "events": rich})
         if u.path == "/manifest.json":
-            return self._json(200, {"hub": "agent-hub-v2", "version": "0.2",  # run7 D2: matches SPEC §11 + canonical manifest (was 0.3)
+            return self._json(200, {"hub": HUB_NAME, "version": "0.2",  # run7 D2: matches SPEC §11 + canonical manifest (was 0.3)
                 "type": "universal-commerce",
                 "canonical_manifest": "/.well-known/agent-hub.json"})
         if u.path == "/openapi.json":
