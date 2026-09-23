@@ -115,7 +115,7 @@ SIGS = {
     "whoami": "anonymously",                  # probe order: signup(auto-login) -> ... -> logout-all
                                               # REVOKED the session before whoami -> anonymous is CORRECT
     "fee": "service fee",
-    "book": "Bookings need two things",
+    "book": "No listing 'even-999'",          # honest unknown-id answer (was the fairness wall)
     "set-payout": "Login first",             # probe order: logout-all ran earlier -> gate is correct
     "verify-midnight": "Login first",        # same probe order: session revoked before the probe
 }
@@ -311,6 +311,37 @@ check("r4: booking status stays in chat (chat-first law)",
 _r = chatlib.handle_text(HUB, "now back to my listing", _S7)
 check("r4: listing resume is honest when nothing is in progress",
       "Nothing in progress" in _r, _r[:90])
+
+# ---- Mega battery 2026-09-23 (owner call: most extensive pass) ----
+# Findings from the 70-turn full-lifecycle battery, pinned so none regresses.
+import re as _re_mega
+
+_M = "mega-%d" % os.getpid()
+_r = chatlib.handle_text(HUB, "signup Mega Reg", _M)
+_seed = _re_mega.search(r"[0-9a-f]{64}", _r)
+check("mega: signup returns a 64-hex seed", bool(_seed), _r[:90])
+if _seed:
+    chatlib.handle_text(HUB, "login-seed %s" % _seed.group(0), _M)
+_r = chatlib.handle_text(HUB, "deal Mega Reg Deal | 30 | 2026-10-20 | Graz", _M)
+_deal = _re_mega.search(r"p2p-[0-9a-z]+", _r)
+check("mega: private deal created with p2p id", bool(_deal), _r[:90])
+if _deal:
+    _did = _deal.group(0)
+    _r = chatlib.handle_text(HUB, "my-listings", _M)
+    check("mega: owner sees own private deal in my-listings (was: 'no listings')",
+          _did in _r, _r[:90])
+    _r = chatlib.handle_text(HUB, "show %s" % _did, _M)
+    check("mega: owner sees own deal card via show (was: 'No listing')",
+          "Graz" in _r and "No listing" not in _r, _r[:90])
+    _r = chatlib.handle_text(HUB, "show %s" % _did, _M + "-stranger")
+    check("mega: stranger still gets the no-oracle 404 for a private deal",
+          "No listing" in _r, _r[:90])
+_r = chatlib.handle_text(HUB, "book even-zzz Nobody", _M)
+check("mega: unknown-id booking is an honest chat reply, never the SDK wall",
+      "No listing 'even-zzz'" in _r and "SDK" not in _r and "agenthub" not in _r,
+      _r[:90])
+check("mega: 'rains' matches the weather regex (was a \\b miss)",
+      bool(chatlib._WEATHER_RX.search("what if it rains that day?")), "")
 
 fails = [n for n, ok in RESULTS if not ok]
 print(f"\n=== chat-help: {len(RESULTS) - len(fails)}/{len(RESULTS)} passed ===")

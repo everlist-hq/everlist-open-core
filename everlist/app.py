@@ -399,6 +399,32 @@ def _load_state():
         for _a, _v in ACCOUNTS.items():
             for _k, _d in _EFIELDS.items():
                 _v.setdefault(_k, _d)
+        # Owner call 2026-09-23: demo listings must look normal (investor demos).
+        # Titles lose the big [TEST] prefix, placeholder descriptions get
+        # realistic copy. The test flag stays in `source` and surfaces ONLY as
+        # small print in the details panel. Idempotent; demo-seed sources only.
+        _DEMO_COPY = {
+            "Open Mic Night": "Open-mic night in the back room of the Kiez cafe: five-minute slots on the small stage, sign-up sheet at the bar from 18:30. Acoustic guitar and a house piano are set up; spoken word and readings welcome. Free entry, arrive early for a slot.",
+            "Board Game Afternoon": "Long tables of modern board games in the loft space — from quick fillers to full three-hour strategy nights. A teach-and-play corner walks newcomers through a short game before they pick a table. Coffee and cake available all afternoon.",
+            "Saturday Morning Run Club": "Community run club meeting every other Saturday at the Tiergarten fountain. An easy 5k at conversational pace and a steadier 10k group. All paces welcome, nobody gets dropped, coffee at the park cafe afterwards.",
+            "Photo Walk: Old Town": "A slow two-hour walk through the old town with cameras out — street scenes, river light, and the courtyards most people walk past. Phone cameras welcome; framing tips shared as you go. Ends at a cafe with a print swap.",
+            "Language Exchange Evening": "Language tables for German, English and Spanish in the back garden of the Kiez cafe. A friendly moderator keeps the tables moving every 30 minutes so everyone gets practice. All levels welcome; drinks at bar prices.",
+            "Sunrise Yoga in the Park": "A gentle vinyasa flow on the meadow as the city wakes up — mats provided, no experience needed. The class runs about an hour, ending with ten minutes of breathing before the day starts. Free community session.",
+            "Clothes Swap Party": "Bring up to five pieces you no longer wear and take home something new-to-you. Rail sorted by size, a mirror corner, and volunteers keeping the racks flowing. Leftovers go to charity at the end of the day.",
+            "Lightning Talks: Builders Edition": "Six five-minute talks from local builders — what shipped, what broke, what they learned. After the talks the mic opens for impromptu demos. Free pizza and soft drinks all evening; doors 17:30.",
+            "Community Cook-Off": "Everyone brings one dish, everyone tastes everything. A friendly cook-off with a crowd-vote prize for the favourite plate, plus a recipe swap at the kitchen table. Families welcome; ingredients list shared a week before.",
+            "Come Sing: Pop Choir Taster": "One joyful hour of pop-choir singing — no experience needed, lyrics and warm-ups provided. We learn one easy arrangement together and finish with a run-through for anyone who wants to record it.",
+            "Chess & Coffee Open Play": "Open chess tables in the cafe's glass courtyard — quick pairings all morning, boards and clocks provided. Beginners get a coach for their first games; regulars settle into longer matches. Coffee special for players.",
+            "Star Night: Telescope Session": "Volunteer astronomers set up telescopes by the lake and guide you across the November sky — the Pleiades, Jupiter, and the darker star clusters. Warm clothes recommended; hot tea provided. Family-friendly.",
+            "Maker Meet & Greet": "Show-and-tell for makers: bring a project, a prototype, or just curiosity. Tables for electronics, 3D printing, sewing and woodworking; open mic for five-minute project stories. Free entry.",
+            "Year-End Community Dinner": "Potluck-style community dinner to close the year — bring a dish if you like, or just bring yourself. Long tables, candles, and a short year-in-review toast from the neighbourhood association.",
+        }
+        for _l in LISTINGS:
+            if (str(_l.get("source", "")).startswith("demo-seed") or str(_l.get("owner", "")).startswith("demo-test")) and "[TEST]" in str(_l.get("title", "")): 
+                _ct = str(_l["title"]).replace("[TEST] ", "").replace("[TEST]", "").strip()
+                _l["title"] = _ct
+                if _ct in _DEMO_COPY:
+                    _l["description"] = _DEMO_COPY[_ct]
         # C12: legacy listings predate payment_terms (SPEC §19) — inject the
         # vertical default at load so every listing always shows real terms
         for _l in LISTINGS:
@@ -723,11 +749,11 @@ VERTICAL_SCHEMAS = {
     # settable booking fields; booking.identity = the ONE field whose real value
     # goes to the secret store (public copy gets an unlinkable anon-ref).
     "events": {"required": ["title", "date", "location", "price", "capacity"],
-               "optional": ["description", "category", "tags", "url"],
+               "optional": ["description", "category", "tags", "url", "time"],
                "categories": ["meetup", "concert", "workshop", "conference", "market",
                                "sports", "community", "party", "exhibition", "other"],
                "tracks_capacity": True,
-               "field_types": {"capacity": "positive_int", "date": "nonempty"},
+               "field_types": {"capacity": "positive_int", "date": "nonempty", "time": "time_hhmm"},
                "booking": {"required": ["attendee"], "fields": ["attendee", "quantity"],
                             "identity": "attendee", "action": "register+pay"}},
     "food":   {"required": ["title", "merchant", "price"],
@@ -2609,6 +2635,12 @@ class Handler(BaseHTTPRequestHandler):
                         data[_f] = _iv
                     elif _t == "nonempty" and not str(data[_f]).strip():
                         return self._json(400, {"error": f"{_f} required for {v}"})
+                    elif _t == "time_hhmm":
+                        # owner call 2026-09-23: optional start time (HH:MM, 24h)
+                        _tm = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$").match(str(data[_f]).strip())
+                        if not _tm:
+                            return self._json(400, {"error": f"invalid field: {_f} must be HH:MM (24h)"})
+                        data[_f] = str(data[_f]).strip()
             except (TypeError, ValueError) as ex:
                 return self._json(400, {"error": f"invalid field: {ex}"})
             # C12: payment terms (SPEC §19) — validated object or per-vertical

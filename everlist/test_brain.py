@@ -293,7 +293,7 @@ class BrainBookShow(unittest.TestCase):
         with mock.patch.object(chatlib, "_show_listing", return_value="CARD") as sl:
             r = chatlib.brain_show("http://hub", "sh1", "the yoga one")
         self.assertEqual(r, "CARD")
-        sl.assert_called_once_with("http://hub", "even-9")
+        sl.assert_called_once_with("http://hub", "even-9", sender="sh1")
 
 
 class WeatherGrounding(unittest.TestCase):

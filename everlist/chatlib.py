@@ -98,14 +98,17 @@ def _hub_delete(hub_url: str, path: str, payload: dict, token: str | None = None
             return e.code, {"error": f"hub rejected the request (HTTP {e.code})"}
 
 
-def _show_listing(hub_url: str, arg: str) -> str:
+def _show_listing(hub_url: str, arg: str, sender: str = "") -> str:
     """H9: full listing detail via GET /listings/{id} (404 unknown, 410 archived)."""
     lid = (arg or "").strip()
     if not lid or " " in lid or "/" in lid:
         return ("Which one would you like to see? Try 'show 2' after a search, "
                 "or 'my-bookings' to see your bookings. 🙂")
+    # Owner visibility (P2): a logged-in owner may view their own private deal.
+    # The hub 404s everyone else identically (no existence oracle).
+    _tok = ((_session(sender) or {}).get("tokens", {}) or {}).get("list") if sender else None
     try:
-        l = _hub_get(hub_url, f"/listings/{lid}")
+        l = _hub_get(hub_url, f"/listings/{lid}", token=_tok)
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return f"No listing '{lid}'. Try 'search' to browse, or check the id."
@@ -294,6 +297,8 @@ def _fmt_facts(l: dict, full_date: bool = False, person: bool = True) -> str:
         wd = _weekday(d)
         if wd:
             d = "%s %s" % (wd, d)
+        if l.get("time"):
+            d += " " + str(l["time"])
         if not full_date and len(d) > 12 and d[-10:][:4].isdigit():
             d = d[:-10] + d[-5:]  # 'Sat 2026-10-03' -> 'Sat 10-03'
         bits.append("%s %s" % (_G_TIME, _mb(d)))
@@ -1634,8 +1639,9 @@ def _owned_listing(hub_url: str, sender: str, body: str, action: str) -> str:
 def _my_listings(hub_url: str, sender: str) -> str:
     sess = _session(sender)
     sender_n = (sender or "anonymous-chat")[:128]
+    _tok = (sess or {}).get("tokens", {}).get("list")
     try:
-        data = _hub_get(hub_url, "/listings")
+        data = _hub_get(hub_url, "/listings", token=_tok)
     except Exception:
         return "Sorry — the EverList hub is unreachable right now. Try again shortly."
     mine = [l for l in (data.get("listings") or [])
@@ -2131,7 +2137,7 @@ def brain_search(hub_url: str, sender: str, act: dict, text: str = "") -> str:
 
 
 _WEATHER_RX = re.compile(
-    r"\b(weather|rain|temperature|forecast|sunny|raining|cold|hot)\b", re.I)
+    r"\b(weather|rain(?:s|ing|ed)?|temperature|forecast|sunny|cold|hot)\b", re.I)
 _FEEQ_RX = re.compile(r"\bfees?\b|\bcommission\b", re.I)
 _ESCROWQ_RX = re.compile(r"\bescrow\b|\brefund\b|\bmoney back\b|\bdeposit\b|\bpayment\b", re.I)
 
@@ -2253,7 +2259,7 @@ def brain_show(hub_url: str, sender: str, which: str) -> str:
     if not got:
         return _show_results(hub_url, sender, "all")
     i, l = got
-    out = _show_listing(hub_url, str(l.get("id") or ""))
+    out = _show_listing(hub_url, str(l.get("id") or ""), sender=sender)
     return out
 
 
@@ -2700,7 +2706,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
             return _my_bookings(hub_url, sender)
         if "my listing" in arg or arg in ("listings of mine", "my listings"):
             return _my_listings(hub_url, sender)
-        return _show_listing(hub_url, text.strip()[5:].strip())
+        return _show_listing(hub_url, text.strip()[5:].strip(), sender=sender)
     if low.startswith("unarchive "):
         return _owned_listing(hub_url, sender, text.strip()[9:].strip(), "unarchive")
     if low.startswith("archive "):
@@ -2747,6 +2753,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
         bits = rest.split(None, 1)
         lid = bits[0] if bits else ""
         who = bits[1].strip() if len(bits) > 1 else ""
+        _from_stash = False
         if lid and re.fullmatch(r"\d+", lid):
             # C9f/C9i: ids are never pure digits (SPEC 14), so a digit is a
             # positional handle into the sender's last search. Empty stash or
@@ -2756,6 +2763,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
             _k = int(lid)
             if 1 <= _k <= len(_stash):
                 lid = _stash[_k - 1].get("id", lid)
+                _from_stash = True
             elif not re.search(r"pvt-[0-9a-f]{16}", who):
                 if _stash:
                     return ("No result %d - your last search found %d. "
@@ -2767,12 +2775,27 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
         if claim:
             who = who.replace(claim, "").strip()
         target = None
-        if lid:
+        _lid_rx = re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)+", lid or "")
+        if lid and _lid_rx:
+            # Mega battery 2026-09-23: fetch the listing DIRECTLY - a /search
+            # scan misses private deals and ids beyond page 1 of /listings.
+            _btok = ((_session(sender) or {}).get("tokens", {}) or {}).get("list")
             try:
-                d = _hub_get(hub_url, "/search")
-                target = next((l for l in (d.get("listings") or []) if l.get("id") == lid), None)
+                t = _hub_get(hub_url, f"/listings/{urllib.parse.quote(lid)}", token=_btok)
+                target = t if isinstance(t, dict) and t.get("id") == lid else None
+            except urllib.error.HTTPError:
+                target = None
             except Exception:
                 target = None
+            if target is None and _from_stash:
+                # C9i regression guard 2026-09-23: the id came from the sender's
+                # search stash — trust the stashed record when the direct fetch
+                # cannot resolve it (paged/mock/moved listing). Typed unknown
+                # ids still get the honest answer below.
+                _sl = next((x for x in (_LAST_RESULTS.get(sender) or [])
+                            if x.get("id") == lid), None)
+                if _sl:
+                    target = _sl
             if target is None and claim:
                 # P2: private deal — never in /search; fetch directly with the claim
                 try:
@@ -2780,6 +2803,13 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                     target = t if isinstance(t, dict) and t.get("id") == lid else None
                 except Exception:
                     target = None
+        if target is None and _lid_rx:
+            # Mega battery 2026-09-23: honest chat answer for a well-formed
+            # but unknown/hidden id - never the agent/SDK wall (that audience
+            # is SDK, not chat).
+            return (f"No listing '{lid}' that I can book from this chat.\n"
+                    "Double-check the id (ids look like 'even-1' or 'p2p-3'), "
+                    "or say 'search' to browse what's live. \U0001F642")
         if target is None:
             return (
                 "Bookings need two things EverList enforces for fairness:\n"
