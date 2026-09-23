@@ -1450,6 +1450,7 @@ class Handler(BaseHTTPRequestHandler):
         pay_resp = {"success": bool(srec and srec.get("status") == "settled"),
                     "network": CARDANO_NET,
                     "transaction": (srec or {}).get("tx", ""),
+                    "slot": ((srec or {}).get("extra") or {}).get("slot"),
                     "errorReason": (None if not srec or srec.get("status") == "settled"
                                     else ("settlement_pending" if srec.get("status") == "pending"
                                           else srec.get("error", "settlement_failed"))),

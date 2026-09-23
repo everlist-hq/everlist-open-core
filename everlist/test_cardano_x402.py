@@ -129,7 +129,7 @@ class StubCardanoFacil:
                                  "network": req.get("network", "cardano:preprod"),
                                  "payer": "addr_test1qpayerstub",
                                  "extra": {"status": "confirmed", "transactionId": tx,
-                                           "confirmations": 1}})
+                                           "confirmations": 1, "slot": 77123456}})
 
             def _send(self, code, obj):
                 data = json.dumps(obj).encode()
@@ -298,10 +298,11 @@ def main():
             try:
                 rj = json.loads(base64.b64decode(resp_hdr).decode())
                 ok_hdr = (rj.get("success") is True and len(rj.get("transaction", "")) == 64
-                          and rj.get("network") == "cardano:preprod")
+                          and rj.get("network") == "cardano:preprod"
+                          and rj.get("slot") == 77123456)
             except Exception:
                 pass
-        check("CS3b: X-PAYMENT-RESPONSE header {success, tx, network}", ok_hdr, resp_hdr[:80])
+        check("CS3b: X-PAYMENT-RESPONSE header {success, tx, network, slot}", ok_hdr, resp_hdr[:80])
 
         st, led, _ = req("GET", "/ledger")
         ev = [e for e in led.get("ledger", [])

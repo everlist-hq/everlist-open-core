@@ -181,11 +181,13 @@ class CardanoSettlementRegistry:
             rec["status"] = "settled"
             rec["tx"] = resp.get("transaction", "")
             rec["network"] = resp.get("network", "cardano:preprod")
+            rec["extra"] = resp.get("extra") or {}  # finality info: slot, confirmations (AC2)
         elif st == 0:
             rec["status"] = "unknown"
         elif st == 200 and resp.get("errorReason") == "settlement_pending":
             rec["status"] = "pending"
             rec["tx"] = resp.get("transaction", "")
+            rec["extra"] = resp.get("extra") or {}  # pending observation metadata
         elif 400 <= st < 500:
             rec["status"] = "failed"
             rec["error"] = resp.get("errorReason", "facilitator rejected")
