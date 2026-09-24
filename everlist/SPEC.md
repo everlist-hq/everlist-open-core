@@ -135,7 +135,7 @@ Server-owned booking fields (clients CANNOT set): `id` (24-hex random), `escrow`
 
 ## 9. Ledger accounting model
 
-One entry per booking; the escrow field is updated on transitions (booking→HELD; confirm→RELEASED(+released_to); cancel→REFUNDED(+refunded_to)). Totals = computed from entries. Integer minor units internally (integer cents); `hub_fee_c(price_c) = price_c * round(FEE_PCT*100) // 10000` (G3 env `HUB_FEE_PCT`, default 1%); refund = full amount to buyer; rounding loss (≤1 unit/booking) accrues to the hub by construction.
+One entry per booking; the escrow field is updated on transitions (booking→HELD; confirm→RELEASED(+released_to); cancel→REFUNDED(+refunded_to)). Totals = computed from entries. Integer minor units internally (integer cents); `hub_fee_c(price_c) = price_c * round(FEE_PCT*100) // 10000` (G3 env `HUB_FEE_PCT`, default 2%); refund = full amount to buyer; rounding loss (≤1 unit/booking) accrues to the hub by construction.
 
 ## 10. Idempotency semantics
 

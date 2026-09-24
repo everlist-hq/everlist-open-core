@@ -468,7 +468,7 @@ elif ADMIN_KEY.startswith("dev-"):
     sys.stderr.write("WARNING: HUB_ADMIN_KEY is the dev default - localhost only; set it before any network exposure\n")
 # G3: all operational config via env with sane defaults
 PORT = int(os.environ.get("HUB_PORT", "8802"))
-FEE_PCT = float(os.environ.get("HUB_FEE_PCT", "1.0"))
+FEE_PCT = float(os.environ.get("HUB_FEE_PCT", "2.0"))
 if not (0 <= FEE_PCT <= 50):
     sys.stderr.write(f"FATAL: HUB_FEE_PCT must be in [0, 50], got {FEE_PCT}\n")
     sys.exit(78)
@@ -959,7 +959,7 @@ CLIENT_BOOKING_FIELDS = {v: set(s["booking"]["fields"])
                          for v, s in VERTICAL_SCHEMAS.items()}
 
 def hub_fee_c(price_c):
-    """Hub-declared fee (G3: HUB_FEE_PCT env, default 1%). Integer minor units internally."""
+    """Hub-declared fee (G3: HUB_FEE_PCT env, default 2%). Integer minor units internally."""
     return (price_c * int(round(FEE_PCT * 100))) // 10000
 
 

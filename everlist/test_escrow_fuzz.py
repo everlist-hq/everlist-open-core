@@ -147,9 +147,9 @@ def solve_pow(kind):
 
 
 def fee_c(price, qty):
-    """Mirror hub hub_fee_c(): 1% default, integer minor units, floor."""
+    """Mirror hub hub_fee_c(): 2% default, integer minor units, floor."""
     price_c = int(round(price * 100)) * qty
-    return (price_c * 100) // 10000
+    return (price_c * 200) // 10000
 
 
 # ---------------------------------------------------------------- model
@@ -475,7 +475,7 @@ def invariants(op_no):
                   and bid in entries)
         if exp != got:
             REAL_BUG.append(
-                f"op {op_no}: listing {lid} hub_fees={got}c != 1% of released "
+                f"op {op_no}: listing {lid} hub_fees={got}c != 2% of released "
                 f"paid prices={exp}c")
             check("inv-money", False, f"{lid} {got}c vs {exp}c")
             return False

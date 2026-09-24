@@ -2080,7 +2080,7 @@ def _fee_reply(hub_url: str) -> str:
                 mm = re.search(r"([\d.]+)\s*%", declared)
                 num = (mm.group(1) + "%") if mm else declared
             elif isinstance(declared, (int, float)):
-                num = f"{declared:g}%" if abs(declared) <= 1 else f"{declared:g}"
+                num = f"{declared:g}%"
         if num == "0%":
             fee_line = "EverList charges no service fee — the price you see is what you pay. "
         elif num:
