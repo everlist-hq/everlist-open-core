@@ -350,7 +350,7 @@ _mon = (_dt5.date.today() + _dt5.timedelta(days=7 - _dt5.date.today().weekday())
 r = chatlib.handle_text(HUB, "list R5 NextWeek Special | workshop | %s | 0 | Berlin | 10" % _mon, _R)
 check("r5: seed listing for next week created", "Listed" in r, r[:120])
 _t0 = time.time()
-_r1 = chatlib.handle_text(HUB, "events outdoors", _R)
+_r1 = chatlib.handle_text(HUB, "events underwater", _R)
 check("r5: dead keyword honestly empty", "Nothing matched" in _r1, _r1[:90])
 _r2 = chatlib.handle_text(HUB, "then what else is going on next week?", _R)
 _check_ok = (chatlib._mb("R5 NextWeek Special") in _r2
@@ -360,6 +360,45 @@ check("r5: window pivot shows in-window listing (no self-contradiction)", _check
 check("r5: window pivot is instant (<1.5s, was 8.8s brain turn)", time.time() - _t0 < 1.5, "%.2fs" % (time.time() - _t0))
 _r3 = chatlib.handle_text(HUB, "nothing outdoors?", _R)
 check("r5: no bogus sort leak on non-price turns", "cheapest first" not in _r3, _r3[:90])
+
+# ---- R6 2026-09-24 (owner feedback on the real chat history): concept
+# layer, auto-tags, deterministic intents, punctuation tokens ----
+def _r6_titles(sender, msg):
+    chatlib.handle_text(HUB, msg, sender)
+    return [str(l.get("title", "")) for l in chatlib.last_results(sender)]
+
+_r6 = chatlib.handle_text(HUB, "list Riverside Rooftop Tour | workshop | 2026-10-06 | 0 | Krems | 12", "r6-tags")
+check("r6 auto-tag tip on create", "tagged it" in _r6, _r6[:90])
+
+_t0 = time.time()
+_t = _r6_titles("r6-c1", "events outdoors")
+_ms = (time.time() - _t0) * 1000
+check("r6 outdoors finds rooftop (concept)", any("Rooftop" in t for t in _t), str(_t))
+check("r6 outdoors instant fast path", _ms < 1500, "%.0fms" % _ms)
+
+_t = _r6_titles("r6-c2", "outdoor?")
+check("r6 outdoor? finds (punct token)", any("Rooftop" in t for t in _t), str(_t))
+
+_t = _r6_titles("r6-c3", "i am hungry")
+check("r6 hungry finds food (concept)", any(("Pizza" in t or "Vegan" in t) for t in _t), str(_t))
+
+_r = chatlib.handle_text(HUB, "confirm", "r6-i1")
+check("r6 bare confirm honest", ("Nothing matched" not in _r) and ("list" in _r.lower()), _r[:80])
+
+chatlib.handle_text(HUB, "events outdoors", "r6-i2")
+_r = chatlib.handle_text(HUB, "Buy!", "r6-i2")
+check("r6 Buy! with stash -> book n", "book 1" in _r, _r[:80])
+_r = chatlib.handle_text(HUB, "Buy!", "r6-i2b")
+check("r6 Buy! without stash warm", ("book 1" not in _r) and ("feel" in _r or "after" in _r), _r[:80])
+
+_r = chatlib.handle_text(HUB, "no back", "r6-i3")
+check("r6 no back resets board", "board is back" in _r, _r[:80])
+
+_r = chatlib.handle_text(HUB, "show me concerts", "r6-i4")
+check("r6 show-me browse not id-guard", "Which one would you like" not in _r, _r[:80])
+
+_r = chatlib.handle_text(HUB, "Event", "r6-f1")
+check("r6 bare Event honest", not _r.startswith("Nothing matched"), _r[:60])
 
 fails = [n for n, ok in RESULTS if not ok]
 print(f"\n=== chat-help: {len(RESULTS) - len(fails)}/{len(RESULTS)} passed ===")

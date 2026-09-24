@@ -777,8 +777,10 @@ def _intake_preview(fields: dict) -> str:
             bits.append(f"{key}: {fields[key]}")
         elif key in skipped:
             bits.append(f"{key}: —")
+    _hint = "" if "tags" in skipped or fields.get("tags") else (
+        "\nTip: tags help people find it — e.g. 'tags: outdoors, jazz' (or skip).")
     return ("Here's your listing:\n" + "\n".join("  " + b for b in bits) +
-            "\n\nSay 'confirm' to publish it, or send changes like 'price: 20' to edit a field.")
+            "\n\nSay 'confirm' to publish it, or send changes like 'price: 20' to edit a field." + _hint)
 
 
 def _intake_after_edit(fields: dict) -> str:
@@ -1549,6 +1551,7 @@ def _create_listing(hub_url: str, sender: str, text: str) -> str:
                     "it restricts booking to Tier-2-verified accounts (verify-midnight)")
         payload["require_verified_buyer"] = _rvb in ("yes", "true")
     try:
+        _added_tags = _auto_tags(payload)  # R6: never publish untagged
         if sess:
             token = sess["tokens"]["list"]   # sub=acct-<id>: listing owned by the ACCOUNT
         else:
@@ -1562,16 +1565,18 @@ def _create_listing(hub_url: str, sender: str, text: str) -> str:
     if status != 201:
         return f"Listing rejected: {res.get('error') or res.get('known') or 'unknown error'}"
     _list_counts[sender] = _list_counts.get(sender, 0) + 1
+    _tip = ("\n💡 I tagged it (%s) so people actually find it — fine-tune any time "
+            "with 'edit %s tags: a, b'." % (", ".join(_added_tags[:5]) or "your words", res.get("id"))) if _added_tags else ""
     if sess:
         return (f"✅ Listed! '{res.get('title', title)}' is live (id: {res.get('id')}). "
                 f"Anyone can find it with 'search'. "
                 f"({_list_counts[sender]}/{_ACCOUNT_CAP} listings used)\n"
                 f"Owned by your account — edit/delete anytime, no code needed: "
-                f"'edit {res.get('id')} price: 5' or 'delete {res.get('id')}'")
+                f"'edit {res.get('id')} price: 5' or 'delete {res.get('id')}'" + _tip)
     code = res.get("manage_code", "")
     return (f"✅ Listed! '{res.get('title', title)}' is live (id: {res.get('id')}). "
             f"Anyone can find it with 'search'. "
-            f"({_list_counts[sender]}/{_LIST_CAP} listings used)\n\n"
+            f"({_list_counts[sender]}/{_LIST_CAP} listings used)" + _tip + "\n\n"
             f"🔑 Your manage code (shown ONCE — store it!): {code}\n"
             f"It owns the listing: 'edit {res.get('id')} <code> ...' or 'delete {res.get('id')} <code>'. "
             f"Tip: 'signup' gives you an account (cap 25, no codes).")
@@ -1732,7 +1737,9 @@ _FILLER_WORDS = {"find", "me", "a", "an", "the", "for", "please", "show", "us", 
                  "something", "anything", "want", "looking", "i", "we", "to", "do",
                  "in", "on", "at", "my", "under", "around",
                  # R5 2026-09-24: pivot/time chatter is never search material
-                 "then", "else", "what", "whats", "going", "happening", "?", "is", "are"}
+                 "then", "else", "what", "whats", "going", "happening", "?", "is", "are",
+                 # R6: generic nouns/verbs alone are never search material
+                 "event", "listing", "thing", "things", "stuff", "am", "get", "give"}
 
 
 def _show_results(hub_url: str, sender: str, arg: str) -> str:
@@ -1781,10 +1788,60 @@ def _human_date(iso: str) -> str:
         return iso or ""
 
 
+# R6 2026-09-24 concept layer: searcher words that share no literal string
+# with any listing still find it (union-search rides the concept siblings;
+# auto-tags make listings findable in the first place).
+_CONCEPTS = {
+    "outdoor": ["open-air", "park", "rooftop", "walking", "wandern", "garden"],
+    "outdoors": ["outdoor", "open-air", "park", "rooftop", "walking", "wandern"],
+    "hungry": ["food", "pizza", "dinner", "kitchen", "restaurant", "lunch"],
+    "concert": ["konzert", "music", "live", "band", "jazz"],
+    "concerts": ["concert", "konzert", "music", "band", "jazz"],
+    "music": ["musik", "jazz", "concert", "konzert", "dj"],
+    "party": ["feier", "club", "dance", "tanz", "party"],
+    "sport": ["fitness", "yoga", "run", "lauf", "training"],
+    "culture": ["museum", "gallery", "exhibition", "tour", "fuehrung"],
+    "kids": ["family", "kinder", "children", "familie"],
+}
+
+_AUTO_TAG_RULES = [
+    ("outdoors", r"\b(outdoor|outdoors|open.air|park|rooftop|garten|garden|hike|wandern|walking|walk|forest|wald|lake)",),
+    ("music", r"\b(music|musik|jazz|concert|konzert|dj|band|singer|open.mic)",),
+    ("food", r"\b(food|pizza|pizzeria|dinner|menu|kitchen|kueche|k\u00fcche|restaurant|brunch|breakfast|lunch|bbq|grill|vegan|vegetarian)",),
+    ("family", r"\b(family|familie|kids|kinder|children|parent)",),
+    ("workshop", r"\b(workshop|kurs|course|class|training|seminar)",),
+    ("yoga", r"\b(yoga|pilates|meditation)",),
+    ("vegan", r"\b(vegan|vegetarian|plant.based)",),
+    ("tour", r"\b(tour|fuehrung|f\u00fchrung|guided|walking|walk)",),
+    ("market", r"\b(market|markt|flea|floh|bazaar)",),
+    ("free", r"\b(free|gratis|kostenlos|donation)",),
+]
+
+
+def _auto_tags(payload: dict) -> list:
+    """R6: derive tags from title/category/description/location when the owner
+    gave none. Mutates payload['tags']; returns the ADDED tags."""
+    have = {str(t).lower() for t in (payload.get("tags") or [])}
+    src = " ".join(str(payload.get(k) or "") for k in
+                   ("title", "category", "description", "location")).lower()
+    add: list = []
+    for tag, pat in _AUTO_TAG_RULES:
+        if tag in have:
+            continue
+        try:
+            if re.search(pat, src):
+                add.append(tag)
+        except Exception:
+            continue
+    if add:
+        payload["tags"] = sorted(have | set(add))[:10]
+    return add
+
+
 def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
     """Natural-language search: 'find me a free yoga class' -> max_price=0 + word match.
     Multi-word queries union per-word matches (hub q is substring-AND by design)."""
-    low = text.strip().lower()
+    low = re.sub(r"[?!.;:]+", " ", text.strip().lower()).strip()
     free = "free" in low.split()
     # C2 structured qualifiers, parsed OUT of the keyword text (regex spans so
     # dates/prices survive intact; qualifiers AND-combine in the hub):
@@ -1842,13 +1899,21 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
         if k in qual:
             params.append(k + "=" + urllib.parse.quote(qual[k]))
     words = [w for w in low.replace(",", " ").split()
-             if w not in _FILLER_WORDS and w != "free" and w not in ("search", "find", "listings", "events", "show")]
+             if w not in _FILLER_WORDS and w != "free" and w not in ("search", "find", "listings", "events", "show", "event", "listing")]
+    # R6: union literal terms with concept siblings ('outdoors' also searches
+    # open-air/park/rooftop ... where the auto-tags live). Cap = small payloads.
+    _terms = list(words[:3])
+    for _w in list(_terms):
+        _key = _w if _w in _CONCEPTS else (_w[:-1] if _w.endswith("s") and _w[:-1] in _CONCEPTS else None)
+        for _c in (_CONCEPTS.get(_key) or [])[:4]:
+            if _c not in _terms and len(_terms) < 7:
+                _terms.append(_c)
     try:
         data = _hub_get(hub_url, "/search" + (("?" + "&".join(params)) if params else ""))
         base = data.get("listings") or []
-        if words:
+        if _terms:
             seen: dict[str, dict] = {}
-            for w in words[:3]:
+            for w in _terms:
                 d2 = _hub_get(hub_url, "/search?" + "&".join(params + ["q=" + urllib.parse.quote(w)]))
                 for l in (d2.get("listings") or []):
                     seen.setdefault(l.get("id"), l)
@@ -2024,6 +2089,9 @@ _FASTPATH_SKIP = {
     "more", "next",
     # R4b: pronouns are never search keywords ('book it' must not search 'it')
     "it", "this", "that", "them", "one",
+    # R6: single conversational words are never search material
+    "really", "seriously", "sure", "well", "hmm", "huh", "wow", "oops",
+    "meh", "maybe", "perhaps", "just", "still", "also", "test", "buy",
 }
 
 # LLM-first law (owner call 2026-09-20): conversational/social shapes never
@@ -2689,7 +2757,8 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     # --- page/board reset (C9e): 'show me the main page again', 'back to all'
     if re.fullmatch(
         r"(show (me |us )?|take (me |us )?|back (to |on )?)*(the )?(main |home |start |front )?(page|screen|board|homepage)"
-        r"( again| once more| please)?|back to (all|everything|start)|reset( the)? (board|page|screen)", low):
+        r"( again| once more| please)?|back to (all|everything|start)|reset( the)? (board|page|screen)"
+        r"|(no|not) ?(back|home|main page|dashboard|board)", low):
         _LAST_RESULTS.pop(sender, None)
         _LAST_SEARCH.pop(sender, None)
         return ("[[nav:home]]🔎 The whole board is back — every live listing is up.\n"
@@ -2754,6 +2823,18 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     # C9c: numbered follow-ups to the last search ('2', '2-6', 'all')
     if re.fullmatch(r"\d+(?:\s*-\s*\d+)?|all", low):
         return _show_results(hub_url, sender, low)
+    # R6 (owner feedback 2026-09-24): 'show me concerts' / 'show my bookings'
+    # are browses, not listing-id lookups — they must not hit the id guard.
+    if re.fullmatch(r"show (?:me |us )?(?:my )?bookings?", low):
+        return _my_bookings(hub_url, sender)
+    _shm = re.fullmatch(
+        r"show (?:me |us )?(?:the |these |those |all )?"
+        r"(concerts?|events?|listings?|workshops?|parties?|results|options)", low)
+    if _shm:
+        _q = _shm.group(1)
+        if _q in ("results", "options") and (_LAST_RESULTS.get(sender) or []):
+            return _show_results(hub_url, sender, "all")
+        return _smart_search(hub_url, _q, sender)
     # H9: full listing detail — BEFORE smart-search (it would eat 'show' as a search keyword)
     if low.startswith("show "):
         arg = text.strip()[5:].strip().lower()
@@ -2991,11 +3072,12 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     # --- instant search fast path (production 2026-09-20: plain keyword
     # searches paid a multi-second LLM round-trip). Short, plain, non-question
     # searches run deterministically; conversational shapes still hit the brain.
-    _words = low.replace(",", " ").split()
+    _words = re.sub(r"[?!.;:,]+", " ", low).split()
+    _fast_clean = " ".join(_words)
     _qwords = {"who", "what", "when", "where", "why", "how", "which", "is",
                "are", "do", "does", "did", "can", "should", "whats", "wheres"}
     _fb_early = _social_fallback_reply(low, hub_url, sender)
-    if ("?" not in text and _fb_early is None
+    if ("?" not in _fast_clean and _fb_early is None
             and not (_qwords & set(_words))
             and not _CONV_RX.search(low)
             and not _LISTING_HOW_RX.search(low)):
@@ -3022,6 +3104,20 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                  r"|\bmy bookings\b", _tl) \
             and not re.match(r"^(book|search|list|cancel)\b", _tl):
         return _my_bookings(hub_url, sender)
+    # R6 (owner feedback 2026-09-24, misses seen in the real chat history):
+    if _tl in ("confirm", "done", "finish") and not _INTAKE.get(sender) \
+            and not storage.draft_get(sender):
+        return ("Nothing to confirm right now :) Start something with 'list', "
+                "or tell me what you feel like — 'jazz tonight', 'free yoga'.")
+    if _tl in ("buy", "buy!", "book!", "buy something", "buy it"):
+        _buy = _LAST_RESULTS.get(sender) or []
+        if _buy:
+            return ("Love the energy! 🛒 Say 'book 1' — that's '%s' — or name "
+                    "another number." % str(_buy[0].get("title") or "the first one"))
+        return ("Love it! Tell me what you're after — 'jazz tonight', "
+                "'free yoga', 'sushi' — and I'll pull up what's on offer.")
+    if re.fullmatch(r"(no|not) ?(back|home|main page|dashboard|board)", _tl):
+        return nav_reply(hub_url, "home", sender)
     if _tl in ("more", "next") and (_LAST_RESULTS.get(sender) or []):
         _res = _LAST_RESULTS.get(sender) or []
         _head = "%s %s \u00b7 %d found" % (_G_MARK, _mb("EverList"), len(_res))
@@ -3035,10 +3131,19 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     _mwin = re.search(
         r"\b(next weekend|next week|this weekend|this week|tomorrow|today)\b", _tl)
     _mseek = re.search(
-        r"\b(going on|what else|anything|something|events?|listings?|happening|find|search|show me)\b", _tl)
-    if (_mwin and _mseek and _fb_early is None
-            and not re.match(r"^(book|cancel|list|deal|show|edit|delete|archive|unarchive|help|signup|login|my-)\b", _tl)
-            and not _WEATHER_RX.search(_tl)):
+        r"\b(going on|what else|anything|something|events?|listings?|happening|find|search|show me"
+        r"|concerts?|konzerte?|best|things? to do|in|at|near)\b", _tl)
+    # R6 2026-09-24 (chatlog latency law): question-shaped searches
+    # ('whats the best concert to go ti?', "What's in Vienna?") are mechanically
+    # parseable -> instant deterministic search, never a 7-11s mercury turn.
+    _mwhat = re.search(r"\bwhat(?:'s| is|s)\b", _tl)
+    _msocial = re.search(r"\b(see you|until|talk to|catch you|bye|leaving)\b", _tl)
+    _mreflect = re.search(r"\b(was|were|been|felt|feel|hope|glad|sad|tired)\b", _tl)
+    if (((_mseek or _mwin) and (_mwin or _mwhat)) and _fb_early is None \
+            and not _msocial and not _mreflect \
+            and not re.match(r"^(book|cancel|list|deal|show|edit|delete|archive|unarchive|help|signup|login|my-)\b", _tl) \
+            and not _WEATHER_RX.search(_tl) \
+            and not re.search(r"\b(mean|you|2\s*\+\s*2)\b", _tl)):
         # R5b 2026-09-24: window + event-seeking is a search even when phrased
         # conversationally ('what else is going on next week?') -- instant,
         # and social closers ('see you next week!') lack _mseek and stay social.
