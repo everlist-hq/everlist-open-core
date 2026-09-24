@@ -343,6 +343,24 @@ check("mega: unknown-id booking is an honest chat reply, never the SDK wall",
 check("mega: 'rains' matches the weather regex (was a \\b miss)",
       bool(chatlib._WEATHER_RX.search("what if it rains that day?")), "")
 
+# ---- R5 2026-09-24: pivot / empty-board honesty (owner-reported chain) ----
+_R = "r5-pivot"
+import datetime as _dt5
+_mon = (_dt5.date.today() + _dt5.timedelta(days=7 - _dt5.date.today().weekday())).isoformat()
+r = chatlib.handle_text(HUB, "list R5 NextWeek Special | workshop | %s | 0 | Berlin | 10" % _mon, _R)
+check("r5: seed listing for next week created", "Listed" in r, r[:120])
+_t0 = time.time()
+_r1 = chatlib.handle_text(HUB, "events outdoors", _R)
+check("r5: dead keyword honestly empty", "Nothing matched" in _r1, _r1[:90])
+_r2 = chatlib.handle_text(HUB, "then what else is going on next week?", _R)
+_check_ok = (chatlib._mb("R5 NextWeek Special") in _r2
+             and "Nothing matched" not in _r2
+             and "cheapest first" not in _r2 and "found" in _r2)
+check("r5: window pivot shows in-window listing (no self-contradiction)", _check_ok, _r2[:120])
+check("r5: window pivot is instant (<1.5s, was 8.8s brain turn)", time.time() - _t0 < 1.5, "%.2fs" % (time.time() - _t0))
+_r3 = chatlib.handle_text(HUB, "nothing outdoors?", _R)
+check("r5: no bogus sort leak on non-price turns", "cheapest first" not in _r3, _r3[:90])
+
 fails = [n for n, ok in RESULTS if not ok]
 print(f"\n=== chat-help: {len(RESULTS) - len(fails)}/{len(RESULTS)} passed ===")
 if fails:

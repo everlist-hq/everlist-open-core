@@ -261,8 +261,19 @@ class BrainSearch(unittest.TestCase):
     def test_bare_cheaper_resorts(self):
         chatlib._LAST_SEARCH["b4"] = {"q": "jazz", "filters": {}}
         with mock.patch.object(chatlib, "_smart_search", return_value="OUT") as ss:
-            chatlib.brain_search("http://hub", "b4", {"action": "refine", "refine": True})
+            chatlib.brain_search("http://hub", "b4",
+                                 {"action": "refine", "refine": True},
+                                 text="actually cheaper")
         self.assertIn("cheapest", ss.call_args[0][1])  # honest re-sort, no invented budget
+
+    def test_no_price_word_no_sort_leak(self):
+        # R5 2026-09-24: 'nothing outdoors?' must never grow a bogus sort.
+        chatlib._LAST_SEARCH["b4b"] = {"q": "", "filters": {"from": "2026-09-28"}}
+        with mock.patch.object(chatlib, "_smart_search", return_value="OUT") as ss:
+            chatlib.brain_search("http://hub", "b4b",
+                                 {"action": "refine", "refine": True},
+                                 text="nothing outdoors?")
+        self.assertNotIn("cheapest", ss.call_args[0][1])
 
 
 class BrainBookShow(unittest.TestCase):

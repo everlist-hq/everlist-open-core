@@ -1730,7 +1730,9 @@ def _my_bookings(hub_url: str, sender: str) -> str:
 
 _FILLER_WORDS = {"find", "me", "a", "an", "the", "for", "please", "show", "us", "under", "over",
                  "something", "anything", "want", "looking", "i", "we", "to", "do",
-                 "in", "on", "at", "my", "under", "around"}
+                 "in", "on", "at", "my", "under", "around",
+                 # R5 2026-09-24: pivot/time chatter is never search material
+                 "then", "else", "what", "whats", "going", "happening", "?", "is", "are"}
 
 
 def _show_results(hub_url: str, sender: str, arg: str) -> str:
@@ -1799,6 +1801,36 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
     _take(r"\bover\s+(\d+(?:[.,]\d+)?)", "min_price")
     _take(r"\bfrom\s+(\d{4}-\d{2}-\d{2})", "from")
     _take(r"\b(?:until|till|by)\s+(\d{4}-\d{2}-\d{2})", "to")
+    # R5 battery 2026-09-24: relative time windows resolve instantly and
+    # deterministically -- never a multi-second brain roundtrip, and never a
+    # reason to drag a dead keyword along.
+    _wm = re.search(
+        r"\b(next weekend|next week|this weekend|this week|tomorrow|today)\b", low)
+    if _wm and "from" not in qual and "to" not in qual:
+        import datetime as _dtw
+        _today = _dtw.date.today()
+        _dow = _today.weekday()  # Mon=0 .. Sun=6
+        _w = _wm.group(1)
+        if _w == "today":
+            _f = _t = _today
+        elif _w == "tomorrow":
+            _f = _t = _today + _dtw.timedelta(days=1)
+        elif _w == "this weekend":
+            _f = _today if _dow in (5, 6) else _today + _dtw.timedelta(days=5 - _dow)
+            _t = _f + _dtw.timedelta(days=1 if _f.weekday() == 5 else 0)
+        elif _w == "this week":
+            _f, _t = _today, _today + _dtw.timedelta(days=6 - _dow)
+        elif _w == "next weekend":
+            # Saturday of NEXT week (this weekend is covered above)
+            _sat_off = 5 - _dow if _dow <= 5 else 12 - _dow
+            _f = _today + _dtw.timedelta(days=_sat_off + 7)
+            _t = _f + _dtw.timedelta(days=1)
+        else:  # next week: coming Monday .. its Sunday
+            _f = _today + _dtw.timedelta(days=7 - _dow)
+            _t = _f + _dtw.timedelta(days=6)
+        qual["from"] = _f.isoformat()
+        qual["to"] = _t.isoformat()
+        low = (low[:_wm.start()] + " " + low[_wm.end():]).strip()
     if re.search(r"\bcheapest\b", low):
         qual["sort"] = "price"
         low = re.sub(r"\bcheapest\b", " ", low)
@@ -1842,12 +1874,34 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
         parts.append("from " + _human_date(qual["from"]))
     if "to" in qual:
         parts.append("until " + _human_date(qual["to"]))
-    if qual.get("sort") == "price":
+    # R5 2026-09-24: sort never causes emptiness -- on an empty board a sort
+    # nobody asked for is pure noise (the bare-refine heuristic injects one).
+    if qual.get("sort") == "price" and listings:
         parts.append("cheapest first")
-    if qual.get("sort") == "date":
+    if qual.get("sort") == "date" and listings:
         parts.append("soonest first")
     qualifier = (" — " + ", ".join(parts)) if parts else ""
     if not listings:
+        # R5 battery 2026-09-24 broadening law: a keyword that zeroes out a
+        # FILTERED search must not hide filter-matching results. Retry with
+        # the filters only (they matched: `base` above) and answer from those.
+        if words and params and base:
+            _retry = "search"
+            if free:
+                _retry += " free"
+            if "max_price" in qual:
+                _retry += " under " + str(qual["max_price"])
+            if "min_price" in qual:
+                _retry += " over " + str(qual["min_price"])
+            if "from" in qual:
+                _retry += " from " + qual["from"]
+            if "to" in qual:
+                _retry += " until " + qual["to"]
+            if qual.get("sort") == "price":
+                _retry += " cheapest"
+            elif qual.get("sort") == "date":
+                _retry += " soonest"
+            return _smart_search(hub_url, _retry, sender)
         sug = ""
         try:
             import datetime as _dt
@@ -1867,7 +1921,9 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
                         _LAST_SEARCH.pop(k, None)
                 _LAST_RESULTS[sender] = up
                 _LAST_SEARCH[sender] = {
-                    "q": " ".join(words) if words else "",
+                    # R5 2026-09-24: keywords that found NOTHING are dead --
+                    # never stash them (a later refine would resurrect them).
+                    "q": "",
                     "filters": {**({"free": True} if free else {}),
                                 **{k: (float(v) if k.endswith("_price") else v) for k, v in qual.items()}}}
                 rows = "\n".join(
@@ -2108,8 +2164,11 @@ def brain_search(hub_url: str, sender: str, act: dict, text: str = "") -> str:
         for k, v in (last.get("filters") or {}).items():
             spec["filters"].setdefault(k, v)
         if not any(k in spec["filters"] for k in ("max_price", "min_price", "free")):
-            # bare 'actually cheaper': honest re-sort, no invented budget
-            spec["filters"]["sort"] = "price"
+            # bare 'actually cheaper': honest re-sort, no invented budget.
+            # R5 2026-09-24: only when the turn is actually about price --
+            # 'nothing outdoors?' must never grow a bogus 'cheapest first'.
+            if re.search(r"\b(cheap|cheaper|price|budget|expensive)\b", (text or ""), re.I):
+                spec["filters"]["sort"] = "price"
     parts = ["search"]
     if spec["q"]:
         parts.append(spec["q"])
@@ -2969,6 +3028,21 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
         return (_frame(_head, [_listing_rows(x, i + 1)
                                for i, x in enumerate(_res[:_HARD_CAP])])
                 + "\nTo book one, say 'book <n>'.")
+
+    # R5 battery 2026-09-24: time-window pivots ('what else is going on next
+    # week?', 'anything tomorrow?') are deterministic searches -- instant, and
+    # the window resolves in _smart_search, so dead keywords never tag along.
+    _mwin = re.search(
+        r"\b(next weekend|next week|this weekend|this week|tomorrow|today)\b", _tl)
+    _mseek = re.search(
+        r"\b(going on|what else|anything|something|events?|listings?|happening|find|search|show me)\b", _tl)
+    if (_mwin and _mseek and _fb_early is None
+            and not re.match(r"^(book|cancel|list|deal|show|edit|delete|archive|unarchive|help|signup|login|my-)\b", _tl)
+            and not _WEATHER_RX.search(_tl)):
+        # R5b 2026-09-24: window + event-seeking is a search even when phrased
+        # conversationally ('what else is going on next week?') -- instant,
+        # and social closers ('see you next week!') lack _mseek and stay social.
+        return _smart_search(hub_url, _tl, sender)
 
     # Owner battery 2026-09-22: weather questions WITH listing context are a
     # deterministic data lookup (grounded forecast), never LLM creativity.

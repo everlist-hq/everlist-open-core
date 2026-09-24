@@ -184,7 +184,10 @@ _SYS = (
     "- refine: user adjusts the previous search ('actually cheaper', 'only "
     "free ones', 'what about tomorrow'). Set only the CHANGED fields and "
     "refine=true. If no concrete filter changed (e.g. 'cheaper' with no "
-    "number), just set refine=true — the site handles it.\n"
+    "number), just set refine=true — the site handles it. If the previous "
+    "search found NOTHING, a wider ask ('what else is on next week?') is a "
+    "NEW search: q empty or fresh keywords, keep only the user's real "
+    "filters — never reuse the keywords that found nothing.\n"
     "- nav: user wants to move around the site ('go back', 'main page', "
     "'dashboard', 'show my results again'). target: home|dashboard|results.\n"
     "- show: user wants full details of one result ('tell me more about 2', "
@@ -225,6 +228,7 @@ _SYS = (
     '  "thanks!" -> {"action":"ack","say":"Anytime! Say the word when you want to book something."}\n'
     '  "actually cheaper" -> {"action":"refine","refine":true}\n'
     '  "only free ones" -> {"action":"refine","filters":{"free":true},"refine":true}\n'
+    '  "what else is on next week?" -> {"action":"search","q":"","filters":{"from":"<next-monday>","to":"<next-sunday>"}}\n'
     '  "tell me more about the second one" -> {"action":"show","which":"the second one"}\n'
     '  "details on the jazz night" -> {"action":"show","which":"the jazz night"}\n'
     '  "book the second one for alex" -> {"action":"book","which":"the second one","who":"alex"}\n'
