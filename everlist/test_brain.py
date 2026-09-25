@@ -472,7 +472,7 @@ class SearchPagination(unittest.TestCase):
         self.assertIn(chatlib._mb("Event 1"), r)      # first preview card shown
         self.assertIn("» Description 1", r)          # first preview card shown
         self.assertNotIn("» Description 6", r)      # card 6 NOT auto-flooded
-        self.assertIn("To book one", r)
+        self.assertIn("book <n>", r)                 # footer marker (all voice variants)
 
     def test_number_replay(self):
         self._run(10)

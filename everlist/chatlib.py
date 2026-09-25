@@ -1838,6 +1838,140 @@ def _auto_tags(payload: dict) -> list:
     return add
 
 
+# ---- Voice banks (S1, owner call 2026-09-25 'make the chat smart') -------
+# The highest-traffic stamps (booking footer, no-match, board line, post-
+# booking, acks) no longer repeat verbatim. Law:
+#   * bank[0] is ALWAYS the canonical legacy string — fresh senders (tests,
+#     agents) get it on their first turn, byte-identical to before;
+#   * real sessions rotate deterministically per turn count, no instant
+#     repeats within a session;
+#   * every variant keeps the load-bearing markers: 'book <n>' (webchat
+#     board-rewrite detector), the 'Nothing matched' prefix (fail-open
+#     checks in brain_search + tests), 'open on the board' (webchat tests);
+#   * facts, money and ids stay exact in every variant (voice contract).
+_VOICE_TURN: dict = {}
+_VOICE_TURN_CAP = 10_000          # M-C cap law: every client-keyed dict capped
+
+
+def _voice_tick(sender: str) -> int:
+    n = _VOICE_TURN.get(sender, 0)
+    _VOICE_TURN[sender] = n + 1
+    if len(_VOICE_TURN) > _VOICE_TURN_CAP:
+        for k in sorted(_VOICE_TURN, key=lambda x: _VOICE_TURN[x])[:_VOICE_TURN_CAP // 10]:
+            _VOICE_TURN.pop(k, None)
+    return n
+
+
+def _voice_pick(bank, sender: str) -> str:
+    if not bank:
+        return ""
+    return bank[_voice_tick(sender) % len(bank)]
+
+
+def _search_insight(listings: list) -> str:
+    """S2 grounded insight: ONE true observation computed from the actual
+    result set (never the LLM, never invented). Only certain facts — a wrong
+    'smart' line is worse than none."""
+    try:
+        if not listings:
+            return ""
+        prices = []
+        for l in listings:
+            try:
+                prices.append(float(l.get("price", 0) or 0))
+            except (TypeError, ValueError):
+                continue
+        if not prices:
+            return ""
+        bits = []
+        free = sum(1 for p in prices if p == 0)
+        if free == len(prices):
+            bits.append("all free")
+        elif free:
+            bits.append("%d free" % free)
+        paid = [p for p in prices if p > 0]
+        if paid:
+            bits.append("cheapest $%g" % min(paid))
+        return " · ".join(bits[:2])
+    except Exception:
+        return ""
+
+
+_BOOK_TAIL = "\nTo book one, say 'book <n>' - $0 listings book without payment."
+_BOOK_TAILS = (
+    _BOOK_TAIL,
+    "\nSee something you like? Say 'book <n>' — $0 listings book without payment.",
+    "\nFound your pick? Say 'book <n>' — $0 listings book without payment.",
+    "\nTo grab one, say 'book <n>' — $0 listings book without payment.",
+)
+_INSIGHT_TAILS = (
+    "\n%s — say 'book <n>' to book one ($0 listings book without payment).",
+    "\n%s — say 'book <n>' if one of them is your pick ($0 listings book without payment).",
+)
+
+
+def _book_tail(sender: str, listings: list = None) -> str:
+    """Booking footer: rotation bank (S1) with grounded insight (S2) woven in
+    on alternate turns (two insight templates, so no verbatim repeat in a row).
+    Fresh senders (first voice turn, tick 0) get bank[0] byte-identical."""
+    tick = _voice_tick(sender)
+    if tick and tick % 2 == 0 and listings:
+        ins = _search_insight(listings)
+        if ins:
+            _tpl = _INSIGHT_TAILS[(tick // 2) % len(_INSIGHT_TAILS)]
+            return _tpl % ins
+    return _BOOK_TAILS[tick % len(_BOOK_TAILS)]
+
+
+_NOMATCH_TAILS = (
+    (" — but new things are posted all the time! 🌱 Try a broader search like "
+     "'jazz' or 'yoga', drop a filter ('search all'), or ask me for "
+     "'something free this weekend'."),
+    (" — nothing there yet. 🌱 Loosen it up: a broader word ('jazz'), no "
+     "filters ('search all'), or 'something free this weekend'."),
+)
+_NOMATCH_SUG_TAILS = (
+    " — no worries! 🌱{sug}",
+    " — zilch for that. 🌱{sug}",
+    " — but don't give up! 🌱{sug}",
+)
+
+
+_BOARD_LINES = (
+    ("I found %d match%s — they're open on the board for you. "
+     "Say 'book <n>' to book one, or tell me what to refine."),
+    ("%d match%s, open on the board for you — say 'book <n>' to book one, "
+     "or tell me what to change."),
+    ("I found %d match%s — they're open on the board. Say 'book <n>' for "
+     "the one you want."),
+)
+_BOARD_NOMATCH_LINES = (
+    ("Nothing matched — but everything we have is on the board right now. 🌱 "
+     "Tell me what you feel like ('jazz', 'free yoga', 'outdoors') or say "
+     "'search all'."),
+    ("Nothing matched — the full board is open for you though. 🌱 Give me a "
+     "mood ('jazz', 'outdoors', 'free') or say 'search all'."),
+)
+
+
+def board_line(sender: str, n: int, listings: list = None) -> str:
+    """Webchat board rewrite of a search frame (S1 + S2).
+    bank[0] is byte-identical to the legacy line for fresh senders."""
+    tick = _voice_tick(sender)
+    base = _BOARD_LINES[tick % len(_BOARD_LINES)] % (n, "" if n == 1 else "es")
+    if tick and listings:
+        ins = _search_insight(listings)
+        if ins:
+            return ("%s — %d match%s, open on the board for you. "
+                    "Say 'book <n>' to book one." % (ins, n, "" if n == 1 else "es"))
+    return base
+
+
+def board_nomatch_line(sender: str) -> str:
+    """Webchat board rewrite of a no-match reply ('Nothing matched' prefix kept)."""
+    return _voice_pick(_BOARD_NOMATCH_LINES, sender)
+
+
 def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
     """Natural-language search: 'find me a free yoga class' -> max_price=0 + word match.
     Multi-word queries union per-word matches (hub q is substring-AND by design)."""
@@ -2002,11 +2136,9 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
         except Exception:
             sug = ""
         if sug:
-            return f"Nothing matched{qualifier} — no worries! 🌱{sug}"
-        return (f"Nothing matched{qualifier} — but new things are posted all the "
-                "time! 🌱 Try a broader search like 'jazz' or 'yoga', drop a "
-                "filter ('search all'), or ask me for "
-                "'something free this weekend'.")
+            tail = _voice_pick(_NOMATCH_SUG_TAILS, sender)
+            return f"Nothing matched{qualifier}" + tail.format(sug=sug)
+        return f"Nothing matched{qualifier}" + _voice_pick(_NOMATCH_TAILS, sender)
     if len(_LAST_RESULTS) > 500:
         # F8: evict the OLDEST sender's stash (insertion order) — never wipe
         # every user's follow-up state because the cap was hit
@@ -2020,7 +2152,7 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
                     **{k: (float(v) if k.endswith("_price") else v) for k, v in qual.items()}}}
     n = len(listings)
     head = "%s %s · %d found%s" % (_G_MARK, _mb("EverList"), n, qualifier)
-    tail = "\nTo book one, say 'book <n>' - $0 listings book without payment."
+    tail = _book_tail(sender, listings)
     if n <= _INLINE_LIMIT:
         return _frame(head, [_listing_rows(l, i + 1) for i, l in enumerate(listings[:_HARD_CAP])]) + tail
 
@@ -2258,6 +2390,32 @@ def brain_search(hub_url: str, sender: str, act: dict, text: str = "") -> str:
     say = str(act.get("say") or "").strip()
     say = re.sub(r"https?://\S+|[*_`~#>\[\]|]", "", say).strip()
     out = _smart_search(hub_url, " ".join(parts), sender)
+    # S3 (owner call 2026-09-25 'make the chat smart'): the LLM line may not
+    # invent money. Any price-like token in say must be grounded in the user's
+    # own filters or the ACTUAL results they are about to see (post-search
+    # stash) — otherwise the say line is dropped and the deterministic output
+    # ships alone. EVERLIST_SAY_UNGUARDED=1 restores the old behavior
+    # (rollback only).
+    if say and not os.environ.get("EVERLIST_SAY_UNGUARDED"):
+        _pool = set()
+        try:
+            for k in ("max_price", "min_price"):
+                if k in spec["filters"]:
+                    _pool.add("%g" % float(spec["filters"][k]))
+            for _l in (_LAST_RESULTS.get(sender) or []):
+                try:
+                    _p = float(_l.get("price", 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+                _pool.add("%g" % _p)
+        except Exception:
+            pass
+        for tok in re.findall(r"(?:\$|€|EUR\s?)\s?(\d+(?:[.,]\d+)?)", say):
+            _v = tok.replace(",", ".")
+            _vs = ["%g" % float(_v), _v, str(int(float(_v)))]
+            if not any(v in _pool for v in _vs):
+                say = ""
+                break
     if say and len(say) <= 160 and not out.startswith("Nothing matched"):
         return say + "\n" + out
     return out
@@ -2790,7 +2948,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
             _LAST_RESULTS[sender] = listings
             return (_frame("%s %s · %d found (without %s)" % (_G_MARK, _mb("EverList"), len(listings), excl or "that"),
                            [_listing_rows(l, i + 1) for i, l in enumerate(listings[:_HARD_CAP])])
-                    + "\nTo book one, say 'book <n>' - $0 listings book without payment.")
+                    + _book_tail(sender, listings))
         return ("Got it — no %s on the board right now anyway. "
                 "Tell me what you're in the mood for instead." % (excl or "that"))
 
@@ -3123,7 +3281,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
         _head = "%s %s \u00b7 %d found" % (_G_MARK, _mb("EverList"), len(_res))
         return (_frame(_head, [_listing_rows(x, i + 1)
                                for i, x in enumerate(_res[:_HARD_CAP])])
-                + "\nTo book one, say 'book <n>'.")
+                + _book_tail(sender, _res))
 
     # R5 battery 2026-09-24: time-window pivots ('what else is going on next
     # week?', 'anything tomorrow?') are deterministic searches -- instant, and
