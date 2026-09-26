@@ -11,6 +11,8 @@ from unittest import mock
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 os.environ.setdefault("EVERLIST_PHRASE", "1")
+# tests must NOT pollute the production guard log (SLO lives there)
+os.environ["EVERLIST_PHRASE_LOG"] = os.path.join(HERE, ".run", "phrase-guard-test.jsonl")
 import phrase  # noqa: E402
 
 TEMPLATE = ("I found 4 matches - they're open on the board for you. "
