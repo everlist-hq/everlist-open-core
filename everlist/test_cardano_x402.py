@@ -305,6 +305,19 @@ def main():
         check("CS3b: X-PAYMENT-RESPONSE header {success, tx, network, slot}", ok_hdr, resp_hdr[:80])
 
         st, led, _ = req("GET", "/ledger")
+        # W2 stretch: payer pseudonymization - public projections carry only
+        # the stable anon-* pseudonym; raw payment credential never leaves the server.
+        anon = C.payer_pseudonym("addr_test1qpayerstub")
+        check("W2P1: payer_pseudonym deterministic + prefixed",
+              anon.startswith("anon-") and len(anon) == 21
+              and anon == C.payer_pseudonym("ADDR_TEST1QPAYERSTUB"), anon)
+        feed_txt = json.dumps(body)
+        led_txt = json.dumps(led)
+        raw_leaked = "addr_test1qpayerstub" in feed_txt or "addr_test1qpayerstub" in led_txt
+        check("W2P2: raw payer wallet absent from feed + public ledger", not raw_leaked)
+        check("W2P3: pseudonym present in public ledger detail",
+              anon in led_txt, led_txt[:200])
+
         ev = [e for e in led.get("ledger", [])
               if isinstance(e, dict) and e.get("kind") == "x402_settlement"
               and e.get("detail", {}).get("network") == "cardano:preprod"]

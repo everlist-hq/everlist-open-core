@@ -700,6 +700,12 @@ if CARDANO_ON:
 CHAIN_INDEXER = os.environ.get("HUB_INDEXER_URL", "").strip()
 CHAIN_INDEXER_2 = os.environ.get("HUB_INDEXER_URL_2", "").strip()
 CHAIN_GATE = bool(CHAIN_INDEXER)
+# W2 #1: sponsor-relay mode (owner-approved Buildathon Wave 2 scope). When on,
+# the hub covers organizer chain fees for escrow-rail bookings - gated by the
+# abuse-resistant rules in sponsorship.py (per-org window limit, pool cap,
+# stake threshold). Default OFF: real fee payment activates with the funded
+# preprod E2E (M18); until then the gate + ledger are honest no-ops.
+SPONSOR_RELAY = os.environ.get("HUB_SPONSOR_RELAY", "") == "1"
 
 
 def _chain_gate_read(er, dual=False):
@@ -1153,7 +1159,7 @@ _SCHEMAS = {
             "owner_payout": {"type": "number"},
             "escrow": {"type": "string", "enum": ["HELD", "WAIVED", "DIRECT", "RELEASED", "REFUNDED"]},
             "released_to": {"type": "string"},
-            "detail": {"type": "object", "description": "x402_settlement: {fingerprint, tx, value, payer, network}"},
+            "detail": {"type": "object", "description": "x402_settlement: {fingerprint, tx, value, payer (pseudonymized anon-*), network}"},
             "from": {"type": "string", "description": "escrow_sync: prior hub state"},
             "to": {"type": "string", "description": "escrow_sync: new chain state"},
             "chain_tx": {"type": "string", "description": "escrow_sync: chain transaction"},
@@ -1411,7 +1417,7 @@ class Handler(BaseHTTPRequestHandler):
                                         "detail": {"fingerprint": rec["fingerprint"],
                                                     "tx": srec.get("tx", ""),
                                                     "value": CARDANO_PRICE,
-                                                    "payer": rec.get("payer", ""),
+                                                    "payer": cardano_x402.payer_pseudonym(rec.get("payer", "")),
                                                     "network": CARDANO_NET,
                                                     "asset": CARDANO_ASSET}})
                     _persist_locked()
@@ -1443,7 +1449,8 @@ class Handler(BaseHTTPRequestHandler):
                 if srec.get("status") == "settled":
                     LEDGER.append({"kind": "x402_settlement", "ts": time.time(),
                                     "detail": {"fingerprint": fp, "tx": srec.get("tx", ""),
-                                                "value": CARDANO_PRICE, "payer": payer,
+                                                "value": CARDANO_PRICE,
+                                                "payer": cardano_x402.payer_pseudonym(payer),
                                                 "network": srec.get("network", CARDANO_NET),
                                                 "asset": CARDANO_ASSET}})
                 _persist_locked()  # settlement record + ledger event persisted together
@@ -1457,7 +1464,9 @@ class Handler(BaseHTTPRequestHandler):
                      "fill_ratio": round(l.get("registered", 0) / max(1, l.get("capacity", 1)), 3),
                      "payment": {"mode": CARDANO_LABEL, "verified": True,
                                   "settlement": (srec["status"] if srec else "pending (HUB_SETTLE_MODE=off)"),
-                                  "fingerprint": fp, "payer": payer, "value": CARDANO_PRICE}}} for l in res]
+                                  "fingerprint": fp,
+                                  "payer": cardano_x402.payer_pseudonym(payer),
+                                  "payer_note": "pseudonymized: stable per wallet for anti-abuse analytics; raw credential stays server-side (W2 privacy)"}}} for l in res]
         if srec is not None and srec.get("status") == "settled":
             settle_info = {"status": "SETTLED", "tx": srec.get("tx", ""),
                             "network": srec.get("network", CARDANO_NET),
@@ -1966,6 +1975,57 @@ class Handler(BaseHTTPRequestHandler):
                 mine = [b for b in BOOKINGS if b.get("booked_by") == me]
             return self._json(200, {"bookings": mine, "principal": me,
                 "note": "principal-scoped: you see only your own bookings"})
+        if u.path == "/sponsorship/stats":
+            """W2 #1 observability: honest sponsorship budget state (no secrets)."""
+            if not _read_gate(self):
+                return self._json(429, {"error": "too many read requests - slow down (retry shortly)"})
+            import sponsorship as _sp
+            return self._json(200, _sp.stats())
+        if u.path.startswith("/escrow/") and u.path.endswith("/proof"):
+            """W2 #2: verify-without-trust escrow proof endpoint (Buildathon
+            Wave 2). Anyone (esp. AI agents) can verify chain state of an
+            escrow WITHOUT trusting the hub: we re-read the escrow from the
+            configured indexer(s) (dual-source when configured; fail-closed)
+            and return the raw chain projection + verification metadata. No
+            booking details, no identities - only what the chain itself says.
+            Path: /escrow/{escrow_id}/proof?contract=<address>
+                  (contract optional when HUB_ESCROW_CONTRACT is set)"""
+            if not _read_gate(self):
+                return self._json(429, {"error": "too many read requests - slow down (retry shortly)"})
+            eid_raw = u.path[len("/escrow/"):-len("/proof")]
+            if not re.fullmatch(r"[1-9][0-9]{0,11}", eid_raw or ""):
+                return self._json(400, {"error": "escrow id must be a positive integer"})
+            eid = int(eid_raw)
+            q = parse_qs(u.query)
+            contract = (q.get("contract", [""])[0].strip()
+                        or os.environ.get("HUB_ESCROW_CONTRACT", "").strip())
+            if not contract:
+                return self._json(400, {"error": "contract address required (?contract= or HUB_ESCROW_CONTRACT)"})
+            er = {"contract": contract, "escrow_id": eid, "tx": ""}
+            esc, gerr = _chain_gate_read(er, dual=True)
+            if esc is None:
+                code, body = gerr
+                return self._json(code, body)
+            # pseudonymous linkage: does any booking reference this escrow?
+            # (no booking details leak - only existence of the link + booking id)
+            with LOCK:
+                linked = next((b["id"] for b in BOOKINGS
+                               if (b.get("escrow_ref") or {}).get("contract") == contract
+                               and (b.get("escrow_ref") or {}).get("escrow_id") == eid), None)
+            return self._json(200, {
+                "escrow_id": eid,
+                "contract": contract,
+                "state": esc.get("state"),
+                "state_name": esc.get("state_name"),
+                "amount": esc.get("amount"),
+                "deadline": esc.get("deadline"),
+                "tx": esc.get("tx"),
+                "verified_at": time.time(),
+                "sources": ("dual (both indexers agree)" if CHAIN_INDEXER_2 else "single indexer"),
+                "trust_model": "verify-without-trust: state re-read from indexer(s); hub claim is NOT required",
+                "booking_ref": linked,
+                "note": "fail-closed projection of on-chain state; booking linkage is pseudonymous",
+            })
         if u.path.startswith("/bookings/"):
             # H10: single-booking status poll. Participant (buyer) or listing-owner
             # only. Unknown-or-not-yours is an indistinguishable 404 (no existence
@@ -3133,6 +3193,21 @@ class Handler(BaseHTTPRequestHandler):
                 # DIRECT means no escrow exists for this booking.
                 if er is not None and escrow_state in ("WAIVED", "DIRECT"):
                     return self._json(409, {"error": "escrow_ref requires an escrow-rail paid booking (free listings waive the rail; instant bookings settle directly without escrow)"})
+                # W2 #1: abuse-resistant sponsorship gate (owner-approved). When
+                # sponsor-relay mode is on, the hub covers the organizer's chain
+                # fees for this escrow lifecycle - subject to the three
+                # anti-abuse rules in sponsorship.py (window limit, pool cap,
+                # stake threshold). Refusals are honest 402s with the reason.
+                if SPONSOR_RELAY and escrow_state == "HELD":
+                    import sponsorship as _sp
+                    _funded = sum(1 for x in BOOKINGS
+                                  if x.get("listing_id") == listing["id"]
+                                  and x.get("escrow") == "RELEASED")
+                    _ok, _why = _sp.check(listing.get("owner", "unknown"), _funded)
+                    if not _ok:
+                        return self._json(402, {"error": "sponsored fee relay refused",
+                                                "reason": _why,
+                                                "sponsorship": _sp.stats()})
                 # LEVEL-1 chain gate - INTAKE ASSERTIONS (in-LOCK, no network;
                 # the chain read happened outside above). Under gating an
                 # escrow-rail paid booking MUST carry a chain-verified
