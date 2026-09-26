@@ -181,6 +181,19 @@ def _grade(reply, ms, status=None):
     return fails
 
 
+def _chains(phr, rng, n=8):
+    """Multi-turn conversations (owner ask 2026-09-26): 2-4 REAL user messages
+    chained into one session — topic switches, context dependence, mid-flow
+    drift. Grading must watch EVERY turn (an empty bubble mid-chain counts)."""
+    chains = []
+    for _ in range(n):
+        k = rng.choice([2, 2, 3, 3, 4])
+        picks = rng.sample(phr, min(k, len(phr)))
+        if len(picks) >= 2:
+            chains.append(("chain-%d" % len(picks), picks))
+    return chains
+
+
 def _past_texts():
     seen = set()
     if os.path.exists(HISTORY):
@@ -208,8 +221,20 @@ def main():
         if s != m and m not in seen:
             scen.append(("mut-" + kind, [m]))
 
+    # 1b) multi-turn conversation chains (owner ask 2026-09-26): 2-4 real
+    # messages, one session, every turn graded
+    chain_budget = max(2, args.n // 2)
+    scen += _chains(seeds, rng, n=chain_budget)
+
     # 2) LLM-invented novel angles on top
     scen += _llm_scenarios(args.n, rng)
+    # selection with quotas: keep ~half the slots for chains (owner ask:
+    # multi-message conversations), interleave with muts, then LLM angles
+    chains = [x for x in scen if x[0].startswith("chain-")]
+    others = [x for x in scen if not x[0].startswith("chain-")]
+    seen_f = []
+    n_chains = min(len(chains), max(2, args.n // 2))
+    scen = (chains[:n_chains] + others[:max(0, args.n - n_chains)])
     scen = [x for x in scen if x[1] and x[1][0] not in seen][:args.n]
     if not scen:
         print("no fresh angles available (chatlog empty?) — nothing repeated")
@@ -219,13 +244,17 @@ def main():
     ts0 = int(time.time())
     for i, (name, turns) in enumerate(scen):
         sess = "redteam-%d-%d" % (ts0, i)
-        reply, ms = "", 0
-        for t in turns:
+        reply, ms, status = "", 0, None
+        f = []
+        for j, t in enumerate(turns):
             out = _send(t, sess)
             reply, ms = out[0], out[1]
             status = out[2] if len(out) > 2 else None
+            # EVERY turn graded: a blank or robot bubble mid-chain is a fail
+            tf = _grade(reply, ms, status if j == len(turns) - 1 else None)
+            if tf:
+                f.extend("turn%d: %s" % (j + 1, x) for x in tf)
             time.sleep(0.3)
-        f = _grade(reply, ms, status if len(turns) == 1 else None)
         results.append({"angle": name, "turns": turns, "ms": ms,
                         "reply_head": (reply or "")[:100], "fails": f})
         new_texts.append({"ts": ts0, "text": turns[0]})
