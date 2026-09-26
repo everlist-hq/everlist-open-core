@@ -77,7 +77,7 @@ def solve_pow():
 
 log_fh = open(LOGF, "w")
 env = {**os.environ, "HUB_STATE_FILE": STATE, "HUB_EMAIL_MODE": "log",
-       "HUB_TRUST_PROXY": "1", "HUB_POW_SIGNUP_BITS": "8"}
+       "HUB_TRUST_PROXY": "1", "HUB_POW_SIGNUP_BITS": "8", "HUB_LISTING_CAP": "0"}  # S7: cap disabled here — B2 tests id concurrency, cap coverage lives in test_s7_caps.py
 proc = subprocess.Popen([sys.executable, os.path.join(HERE, "app.py"), str(PORT)],
                         stdout=log_fh, stderr=subprocess.STDOUT, env=env)
 _ACTIVE.append(proc)

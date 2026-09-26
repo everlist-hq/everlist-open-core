@@ -1270,8 +1270,9 @@ def _openapi_spec():
             "/listings": {
                 "get": op("Public listings (query: vertical, archived)", "listings",
                           note="?archived=1 is OWNER-ONLY (auth required)"),
-                "post": op("Create listing (manage_code ONCE; visibility:private adds a one-time claim_code)", "listings", sec=tok,
-                           note="optional payment_terms {rail: escrow|instant, refund_window_hours 1-720, deposit_required <= price}; omitted = vertical default (escrow, 72h events/services, 168h food); optional require_verified_buyer: true gates booking to Tier-2-verified accounts (SPEC section 22)")},
+                "post": {**op("Create listing (manage_code ONCE; visibility:private adds a one-time claim_code)", "listings", sec=tok,
+                           note="optional payment_terms {rail: escrow|instant, refund_window_hours 1-720, deposit_required <= price}; omitted = vertical default (escrow, 72h events/services, 168h food); optional require_verified_buyer: true gates booking to Tier-2-verified accounts (SPEC section 22)"),
+                           "responses": {"409": {"description": "cap reached (honest counts: cap, active) or duplicate of an active listing (existing id)"}}}},
             "/listings/{id}": {"get": op("One listing, full rich record (private deals need ?claim= or X-Claim-Code)", "listings",
                                         note="404 unknown / 410 archived")},
             "/listings/{id}/manage": {"post": op("Edit/archive/unarchive/make_private/make_public/delete a listing", "listings", sec=tok)},
@@ -1349,6 +1350,9 @@ def _openapi_spec():
                     "content": {"application/json": {"schema": {
                         "$ref": f"#/components/schemas/{_sch}"}}}},
         }
+    # S7: document both 409s on POST /listings (cap + duplicate)
+    spec["paths"]["/listings"]["post"]["responses"]["409"] = {
+        "description": "cap reached (honest counts: cap, active) or duplicate of an active listing (existing id)"}
     return spec
 
 
@@ -2797,6 +2801,38 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {"error": "visibility must be 'public' or 'private'"})
             data["visibility"] = _vis
             with LOCK:
+                # S7-2: duplicate detection — same principal + normalized title
+                # + same date + same location as one of their ACTIVE listings.
+                # NEVER cross-principal: distinct owners may list similar events.
+                # Checked BEFORE the cap: a duplicate must surface as duplicate
+                # (actionable: existing id), not as a generic cap 409.
+                _s7_norm = " ".join(str(data.get("title", "")).casefold().split())[:80]
+                _s7_date = str(data.get("date", "")).strip()
+                _s7_loc = str(data.get("location", "")).strip().casefold()
+                _s7_admin = p.get("act") == "confirm"
+                if not _s7_admin:
+                    for l in LISTINGS:
+                        if l.get("owner") != p["sub"] or l.get("archived"):
+                            continue
+                        if " ".join(str(l.get("title", "")).casefold().split())[:80] != _s7_norm:
+                            continue
+                        if _s7_date and str(l.get("date", "")).strip() != _s7_date:
+                            continue
+                        if _s7_loc and str(l.get("location", "")).strip().casefold() != _s7_loc:
+                            continue
+                        return self._json(409, {"error": f"duplicate of your listing {l['id']}",
+                            "existing": l["id"]})
+                    # S7-1: active-listing soft cap (env HUB_LISTING_CAP, default 20) —
+                    # raises the cost of flooding via freely-minted principals
+                    # (H5 admits the bypass; S7 makes it economic, not free).
+                    # Admin authority (act 'confirm') exempt so seeded demos never break.
+                    _s7_cap = int(os.environ.get("HUB_LISTING_CAP", "20") or 20)
+                    if _s7_cap > 0:
+                        _s7_active = [l for l in LISTINGS
+                                      if l.get("owner") == p["sub"] and not l.get("archived")]
+                        if len(_s7_active) >= _s7_cap:
+                            return self._json(409, {"error": f"listing cap reached ({_s7_cap} active). Archive one to free a slot",
+                                "cap": _s7_cap, "active": len(_s7_active)})
                 _pref = v[:4]
                 _n = ID_COUNTERS.get(_pref, 0)
                 if not _n:  # seed once from legacy state (pre-counter listings)
