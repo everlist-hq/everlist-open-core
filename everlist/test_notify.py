@@ -154,6 +154,42 @@ check("notify on 200", c == 200 and n2.get("notify_email") is True, (c, n2))
 c, bad = req("POST", "/accounts/notify", {"notify_email": "yes"}, tok=blist)
 check("notify rejects non-boolean", c == 400, (c, bad))
 
+# ---- email language (i18n W2): per-recipient locale ------------------------
+c, bad_lang = req("POST", "/accounts/lang", {"email_lang": "fr"}, tok=blist)
+check("lang rejects non-en/de", c == 400, (c, bad_lang))
+c, noauth = req("POST", "/accounts/lang", {"email_lang": "de"})
+check("lang requires auth", c == 403, (c, noauth))
+
+# organizer opts into German; buyer stays English (default)
+c, de = req("POST", "/accounts/lang", {"email_lang": "de"}, tok=ltok)
+check("org lang de 200", c == 200 and de.get("email_lang") == "de", (c, de))
+
+pre2 = open(LOGF).read()
+c, bk3 = req("POST", "/book", {"listing_id": lid, "quantity": 1,
+    "human_verified": True, "attendee": "C"}, tok=btok)
+check("third booking created", c == 201, (c, bk3))
+post2 = open(LOGF).read()[len(pre2):]
+check("organizer created-mail in German", "subject='Neue Buchung: " in post2, post2[-400:])
+
+c, adm2 = req("POST", "/admin/tokens", {"act": "confirm", "booking_id": bk3["id"]}, tok=ADMIN)
+c, cf2 = req("POST", f"/book/{bk3['id']}/confirm", {}, tok=adm2["token"])
+check("confirm bk3 200", c == 200, (c, cf2))
+check("buyer confirmed-mail stays English",
+      last_code(r"\[EMAIL:log\] to=(buyer@example\.dev) subject='Confirmed: ") == "buyer@example.dev")
+
+# signup with lang=de -> verification code mail in German
+c, de_acct = req("POST", "/accounts/signup", {"agent": "nt-de", "pow": solve_pow("signup"), "lang": "de"})
+check("signup lang=de accepted", c == 201, (c, de_acct))
+req("POST", "/accounts/email/bind", {"email": "de@example.dev", "account_code": de_acct["account_code"]})
+check("verify-code mail in German",
+      last_code(r"\[EMAIL:log\] to=(de@example\.dev) subject='EverList E-Mail-Best\u00e4tigung'") == "de@example.dev")
+
+# weekly digest honors recipient locale (org=de)
+c, dg = req("POST", "/admin/digest/send", {"weeks": 1}, tok=ADMIN)
+check("digest send 200", c == 200 and dg.get("sent", 0) >= 1, (c, dg))
+check("digest to org in German",
+      last_code(r"\[EMAIL:log\] to=(org@example\.dev) subject='Ihre Woche auf EverList") == "org@example.dev")
+
 print(f"\nnotify suite: {len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:
     print("FAILED:", ", ".join(FAIL))

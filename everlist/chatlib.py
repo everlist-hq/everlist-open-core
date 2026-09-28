@@ -911,7 +911,7 @@ def _intake_edit_field(sender: str, text: str) -> str | None:
 _INTAKE_BREAK = re.compile(
     r"^(?:search\b|find\b|show\b|browse\b|book\b|help\b|signup\b|login\b|logout\b|whoami\b|"
     r"account\b|status\b|my-(?:bookings|listings)\b|edit\s|delete\s|archive\s|unarchive\s|"
-    r"list\s|list\n|listings\b|verify-|set-payout\b|notify\b|email-|recover\b|delete-account\b|"
+    r"list\s|list\n|listings\b|verify-|set-payout\b|notify\b|lang\b|email-|recover\b|delete-account\b|"
     r"unsubscribe\b|home\b|reset\b)",
     re.IGNORECASE)
 
@@ -1235,6 +1235,27 @@ def _notify_pref(hub_url: str, sender: str, arg: str) -> str:
         return "x " + str(res.get("error", "could not update notification preference"))
     return ("Notifications ON: you get booking created/confirmed/refunded mails." if arg == "on"
             else "Notifications OFF: no booking mails to this account.")
+
+
+def _lang_pref(hub_url: str, sender: str, arg: str) -> str:
+    s = _session(sender)
+    if not s:
+        return "Login first ('login <code>' / 'login-seed <seed>'), then set your email language."
+    arg = arg.strip().lower()
+    if arg in ("de", "german", "deutsch"):
+        arg = "de"
+    elif arg in ("en", "english", "englisch"):
+        arg = "en"
+    if arg not in ("de", "en"):
+        return ("Usage: lang de | lang en\n"
+                "Sets the language of your account emails (bookings, digest, codes).")
+    code, res = _hub_post(hub_url, "/accounts/lang", {"email_lang": arg}, s["tokens"].get("list"))
+    if code is None:
+        return "Sorry - the EverList hub is unreachable right now. Try again shortly."
+    if code != 200:
+        return "x " + str(res.get("error", "could not update email language"))
+    return ("Emails kommen ab jetzt auf Deutsch (Buchungen, Digest, Codes)." if arg == "de"
+            else "Emails now arrive in English (bookings, digest, codes).")
 
 
 def _logout(sender: str) -> str:
@@ -2182,6 +2203,7 @@ _HELP = (
     "• email-bind <email> / email-code <code> — enable email recovery\n"
     "• recover <email> / recover-confirm <email> <code> — recover a lost account code\n"
     "• set-payout <64-hex coin PUBLIC key> — where your payouts are sent (PUBLIC key only!)\n"
+    "• lang de | lang en — language of your account emails (Buchungen, Digest, Codes)\n"
     "• verify-midnight <credential_id> — Tier-2 sign-in with your Midnight personhood credential\n"
     "• whoami — session status; logout — end session in this chat; logout-all — revoke every login\n"
     "• delete-account — erase your account (typed confirmation; listings archived, ledger refs kept)\n"
@@ -2894,6 +2916,10 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
         return _notify_pref(hub_url, sender, text.strip()[7:].strip())
     if low == "notify":
         return _notify_pref(hub_url, sender, "")
+    if low.startswith("lang "):
+        return _lang_pref(hub_url, sender, text.strip()[5:].strip())
+    if low == "lang":
+        return _lang_pref(hub_url, sender, "")
     if low == "set-payout":
         return _set_payout(hub_url, sender, "")
 

@@ -394,7 +394,7 @@ def _load_state():
         # B3c-email + B1 migration: legacy accounts predate email/gen fields
         _EFIELDS = {"email": None, "email_verified": False, "notify_email": True, "marketing_email": True, "pending_email": None,
                     "pending_code_hash": None, "pending_exp": 0,
-                    "recovery_code_hash": None, "recovery_exp": 0, "gen": 0,
+                    "recovery_code_hash": None, "recovery_exp": 0, "gen": 0, "email_lang": "en",
                     "payout_pk": None, "midnight_credential": None}
         for _a, _v in ACCOUNTS.items():
             for _k, _d in _EFIELDS.items():
@@ -581,17 +581,17 @@ def urlquote(s):
 
 
 def emailkit_digest(org_name, week_start, week_end, created, confirmed, cancelled,
-                    gross, listings_active, unsub_url=None):
+                    gross, listings_active, unsub_url=None, loc='en'):
     import emailkit as _ek
     return _ek.organizer_digest(org_name=org_name, week_start=week_start,
         week_end=week_end, created=created, confirmed=confirmed,
         cancelled=cancelled, gross=gross, listings_active=listings_active,
-        unsub_url=unsub_url)
+        unsub_url=unsub_url, loc=loc)
 
 
-def emailkit_code(kind, code):
+def emailkit_code(kind, code, loc='en'):
     import emailkit as _ek
-    return _ek.code_email(kind, code)
+    return _ek.code_email(kind, code, loc=loc)
 
 
 def _html_resp(self, code, html):
@@ -651,10 +651,11 @@ def _notify_booking(event, booking, listing, *, extra=''):
                 # hub event 'refunded' -> owner-facing template is 'cancelled'
                 jobs.append(('cancelled', owner, owner_p, 'owner'))
         for ev, to, principal, role in jobs:
+            _loc = 'de' if (ACCOUNTS.get(principal) or {}).get('email_lang') == 'de' else 'en'
             tmpl = emailkit.booking_email(ev, title=title, booking_id=bid,
                                           amount=amt, escrow=esc, role=role,
                                           note=(extra or None),
-                                          unsub_url=_unsub(principal))
+                                          unsub_url=_unsub(principal), loc=_loc)
             _send_email(to, tmpl['subject'], tmpl)
     except Exception as e:  # notifications must never break the money flow
         try:
@@ -1310,6 +1311,7 @@ def _openapi_spec():
                                              "post": op("One-click unsubscribe (RFC 8058)", "accounts")},
             "/accounts/payout": {"post": op("Register organizer payout coin PUBLIC key (64-hex; secrets never accepted)", "accounts")},
             "/accounts/notify": {"post": op("Booking-notification preference (notify_email: true|false)", "accounts")},
+            "/accounts/lang": {"post": op("Email language preference (email_lang: 'en'|'de') - booking mails, digest, codes", "accounts")},
             "/accounts/verify-midnight": {"post": op("Tier-2 sign-in: verify a Midnight credential (admitted + not revoked) and mark the account verified_by: midnight-zk", "accounts",
                                          note="fail-closed; mode (chain|simulated) labels the verification source")},
             "/accounts/me": {"delete": op("Account self-deletion (GDPR-style; ledger survives pseudonymously)", "accounts", sec=tok)},
@@ -2224,6 +2226,9 @@ class Handler(BaseHTTPRequestHandler):
             # RTF2: same printable-name law as /access (bidi/CRLF/BEL rejected)
             if _BAD_CHARS_RE.search(agent) or "\n" in agent or "\r" in agent:
                 return self._json(400, {"error": "agent name must not contain control characters or bidi overrides"})
+            signup_lang = str(data.get("lang", "en")).strip().lower()
+            if signup_lang not in ("en", "de"):
+                signup_lang = "en"
             pubkey_hex = str(data.get("pubkey", "")).strip().lower()
             if pubkey_hex:
                 if len(pubkey_hex) != 64:
@@ -2249,7 +2254,7 @@ class Handler(BaseHTTPRequestHandler):
                 while aid in ACCOUNTS:
                     aid = "acct-" + secrets.token_hex(4)
                 acct = {"bound": [agent], "human_verified": False,
-                        "verified_by": None, "created": time.time(),
+                        "verified_by": None, "created": time.time(), "email_lang": signup_lang,
                         "email": None, "email_verified": False,
                         "notify_email": True, "marketing_email": True,
                         "pending_email": None, "pending_code_hash": None,
@@ -2382,6 +2387,34 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True, "account_id": aid, "notify_email": bool(want),
                 "note": "notifications on: transactional booking mails (created/confirmed/refunded; verified email only; marketing digest has its own opt-out)" if want
                         else "notifications off: no booking mails to this account (security codes always send)"})
+        if path == "/accounts/lang":
+            # i18n W2: per-account EMAIL language (booking mails, digest, codes).
+            # Same auth law as /accounts/notify: login token or account_code;
+            # rate limit BEFORE any secret comparison. Affects wording only -
+            # amounts, windows and guarantees are identical in both languages.
+            want = str(data.get("email_lang", "")).strip().lower()
+            if want not in ("en", "de"):
+                return self._json(400, {"error": "email_lang must be 'en' or 'de'"})
+            code = str(data.get("account_code", "")).strip()
+            ch = hashlib.sha256(code.encode()).hexdigest() if code else None
+            cred = self.headers.get("X-Hub-Token", "")
+            p, _err = hublib.verify_token(BOOKING_KEY, cred, "list", single_use=False) if cred else (None, None)
+            if p:
+                p, _err = _gen_check(p)
+            with LOCK:
+                if not _auth_allow("payout", _source_of(self)):
+                    return self._json(429, {"error": "rate limit reached, retry later"})
+                if p and p["sub"].startswith("acct-") and p["sub"] in ACCOUNTS:
+                    aid = p["sub"]
+                else:
+                    aid = next((a for a, v in ACCOUNTS.items() if ch and v.get("code_hash") and hmac.compare_digest(v["code_hash"], ch)), None)
+                if not aid:
+                    return self._json(403, {"error": "login token or valid account_code required"})
+                ACCOUNTS[aid]["email_lang"] = want
+                _persist_locked()
+            return self._json(200, {"ok": True, "account_id": aid, "email_lang": want,
+                "note": "email language set: booking mails, weekly digest and codes arrive in "
+                        + ("German" if want == "de" else "English")})
         if path == "/accounts/verify-midnight":
             # M14 Tier-2 sign-in: the account presents its Midnight credential
             # (credential.compact, M13). The hub READS the credential contract's
@@ -2544,7 +2577,8 @@ class Handler(BaseHTTPRequestHandler):
                 ACCOUNTS[aid]["pending_exp"] = time.time() + 900   # 15 min
                 _persist_locked()
                 try:
-                    _vt = emailkit_code("verify", vcode)
+                    _vt = emailkit_code("verify", vcode,
+                                         loc=('de' if ACCOUNTS[aid].get('email_lang') == 'de' else 'en'))
                     delivery = _send_email(email, _vt["subject"], _vt)
                 except Exception as ex:
                     return self._json(502, {"error": f"email delivery failed: {ex}"})
@@ -2596,7 +2630,8 @@ class Handler(BaseHTTPRequestHandler):
                 ACCOUNTS[aid]["recovery_exp"] = time.time() + 900
                 _persist_locked()
                 try:
-                    _rt = emailkit_code("recover", rcode)
+                    _rt = emailkit_code("recover", rcode,
+                                         loc=('de' if ACCOUNTS[aid].get('email_lang') == 'de' else 'en'))
                     delivery = _send_email(email, _rt["subject"], _rt)
                 except Exception as ex:
                     return self._json(502, {"error": f"email delivery failed: {ex}"})
@@ -3664,7 +3699,8 @@ class Handler(BaseHTTPRequestHandler):
                         urlquote(o), _unsub_token(o))
                     tmpl = emailkit_digest("organizer", wk_start, wk_end,
                                            d["created"], d["confirmed"], d["cancelled"],
-                                           d["gross"], active, unsub_url=_unsub_url)
+                                           d["gross"], active, unsub_url=_unsub_url,
+                                           loc=('de' if a.get("email_lang") == "de" else "en"))
                     if dry:
                         results.append({"to": a["email"], "would_send": True, **d})
                     else:
