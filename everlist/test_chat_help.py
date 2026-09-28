@@ -400,6 +400,15 @@ check("r6 show-me browse not id-guard", "Which one would you like" not in _r, _r
 _r = chatlib.handle_text(HUB, "Event", "r6-f1")
 check("r6 bare Event honest", not _r.startswith("Nothing matched"), _r[:60])
 
+# R7 recap 2026-09-28: pay intent is deterministic truth (real prod turn
+# 'No I want to pay' fell to mercury and fail-opened into an unrelated
+# search box after 37s).
+_r = chatlib.handle_text(HUB, "No I want to pay", "r7-pay1")
+check("r7 pay-intent honest no-stash", ("escrow" in _r.lower()) and ("nothing matched" not in _r.lower()), _r[:90])
+chatlib.handle_text(HUB, "events outdoors", "r7-pay2")
+_r = chatlib.handle_text(HUB, "i want to pay", "r7-pay2")
+check("r7 pay-intent honest with-stash", ("escrow" in _r.lower()) and ("book 1" not in _r), _r[:90])
+
 fails = [n for n, ok in RESULTS if not ok]
 print(f"\n=== chat-help: {len(RESULTS) - len(fails)}/{len(RESULTS)} passed ===")
 if fails:

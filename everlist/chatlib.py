@@ -3227,6 +3227,29 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
         return ("Nothing to book yet :) Run a search first -- e.g. "
                 "'search jazz' or 'free yoga this weekend' -- then 'book <n>'.")
 
+    # R7 recap 2026-09-28 (real prod turn): 'No I want to pay' after a paid
+    # booking nudge fell to mercury (37s, provider none) and fail-opened into
+    # an unrelated 6-listing search box. Pay intent is a money moment ->
+    # deterministic truth only, mirroring the paid-listing copy. Never varies
+    # with the LLM, never promises rails that don't exist. Sits ABOVE the
+    # instant fast path: with a stash, 'i want to pay' is 3 filler-stripped
+    # keywords and would degenerate into a keyword search. Uses `low` (in
+    # scope here); `_tl` is only assigned further down in the dispatch region.
+    if re.search(r"\b(i (really )?want to pay|i wanna pay|i would like to pay"
+                 r"|i'?d like to pay|i'?ll pay|let me pay|how (do|can) i pay"
+                 r"|pay(ing)? (now|directly|here|in chat|by (card|paypal)))\b", low) \
+            or re.fullmatch(r"(no+[!,.:; )*-]*)?(i want to pay|i'?ll pay"
+                            r"|let me pay|pay)", low):
+        _pay = _LAST_RESULTS.get(sender) or []
+        if _pay:
+            return ("Happy to help with the money part! 💳 Free things book "
+                    "instantly right here in chat. For paid ones, your booking "
+                    "agent handles the wallet payment (that's what the escrow "
+                    "protects). Want me to show free options instead? 🌱")
+        return ("Happy to help with the money part! 💳 Free things book "
+                "instantly right here in chat — say 'free yoga' or 'search' to "
+                "find one. For paid ones, your booking agent handles the wallet "
+                "payment (that's what the escrow protects).")
     # --- instant search fast path (production 2026-09-20: plain keyword
     # searches paid a multi-second LLM round-trip). Short, plain, non-question
     # searches run deterministically; conversational shapes still hit the brain.
@@ -3274,6 +3297,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                     "another number." % str(_buy[0].get("title") or "the first one"))
         return ("Love it! Tell me what you're after — 'jazz tonight', "
                 "'free yoga', 'sushi' — and I'll pull up what's on offer.")
+
     if re.fullmatch(r"(no|not) ?(back|home|main page|dashboard|board)", _tl):
         return nav_reply(hub_url, "home", sender)
     if _tl in ("more", "next") and (_LAST_RESULTS.get(sender) or []):
