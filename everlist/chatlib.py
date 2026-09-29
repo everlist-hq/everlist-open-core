@@ -270,10 +270,27 @@ def _pending_book_pop(sender: str) -> dict | None:
 
 
 _BOOK_AFFIRM_RX = re.compile(
-    r"^(?:yes[ ,]*(?:please|book(?: it)?(?: for me)?)?|yep+|yup|sure|ok(?:ay)?|"
-    r"please(?: do| book(?: it)?)?|do it|book it(?: for me)?|let'?s do it|"
-    r"book (?:it|that|this)(?: for me)?|yes book)[ !.]*$", re.I)
+    r"^(?:"
+    # English
+    r"yes[ ,.!]*(?:please|book(?: it)?(?: for me)?)?"
+    r"|yep+|yup|sure|ok(?:ay)?|do it|let'?s do it"
+    r"|please(?: do| book(?: it)?)?"
+    r"|book(?: it| that| this)?(?: for me)?[!?.]*"
+    r"|my pick[ !.]*|the chosen one[ !.]*"
+    # German
+    r"|ja[ ,.!]*(?:please|bitte|gern(?:e)?|buchen|buch es|das|dieses)?[!?.]*"
+    r"|(?:sehr )?gerne?[ !.]*"
+    r"|bitte[ !.!]*"
+    r"|auf jeden fall[ !.]*|los geht'?s[ !.]*"
+    r"|buch(?:e|en)?(?: sie)?(?: es| das| ihn)?(?: f(?:ü|ue)r)? ?(?: mich)?[ !.]*"
+    r"|buchen sie es(?: bitte)?[ !.]*"
+    r"|das[ !.]*|dieses[ !.]*|selbiges[ !.]*"
+    r")[ !.]*$", re.I)
 _NAME_RX = re.compile(r"^[a-zA-ZÄäÖöÜüß' .\-]{2,60}$")
+_BOOK_REFERENTIAL_RX = re.compile(
+    r"^(?:the )?(?:one|ones) (?:i|we|you) (?:chose|picked|chosen|choosen|meant|wanted)"
+    r"|^(?:that|this|the same) one[ !.]*$|^my pick[ !.]*$|^the chosen one[ !.]*$"
+    r"|^das eine[ !.]*$|^dieses[ !.]*$|^selbiges[ !.]*$", re.I)
 
 
 def pay_intent_get(sender: str, lid: str = "") -> dict | None:
@@ -2982,6 +2999,20 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     if _ireply is not None:
         return _ireply
 
+    # --- owner 2026-09-29 (final position): resume a pending booking on
+    # human affirmation - yes book it!, book!, BOOK IT!, the one i chose!.
+    # MUST sit above the CTA-sentence parser (its \bbook\b search ate
+    # yes book it!) and above the social/energy layer (acks ate book!).
+    # Intake above still owns its yes. Fires only when a pending booking
+    # exists, so plain conversation is untouched.
+    _pbq = _pending_book_get(sender)
+    if _pbq and (_BOOK_AFFIRM_RX.match(low) or _BOOK_REFERENTIAL_RX.match(low)):
+        return handle_text(hub_url, "book " + _pbq["lid"], sender=sender)
+    if _pbq and _pbq.get("stage") == "need_name" and _NAME_RX.match(low) and not re.match(
+            r"^(search|book|help|show|list|my|cancel|whoami|signup|login)\b", low):
+        _pending_book_pop(sender)
+        return handle_text(hub_url, "book " + _pbq["lid"] + " " + low, sender=sender)
+
     # Owner 2026-09-29: human booking sentences from the UI CTAs — 'Please
     # book "Rooftop Jazz Night" for me' / 'Bitte "…" für mich buchen'. The
     # transcript keeps the human sentence; the executor keeps the typed
@@ -3031,18 +3062,6 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     # H7: account deletion — must match BEFORE the 'delete ' listing branch
     if low == "delete-account" or low.startswith("delete-account "):
         return _delete_account(hub_url, sender, text.strip()[14:].strip())
-
-    # --- owner 2026-09-29: resume a pending booking on human affirmation ---
-    # ('yes book', 'book it', 'please' after the signup gate or name ask).
-    # Runs AFTER intake/social (intake yes still owns its flow) but BEFORE
-    # the brain so the intent never derails into a search.
-    _pbq = _pending_book_get(sender)
-    if _pbq and _BOOK_AFFIRM_RX.match(low):
-        return handle_text(hub_url, "book " + _pbq["lid"], sender=sender)
-    if _pbq and _pbq.get("stage") == "need_name" and _NAME_RX.match(low) and not re.match(
-            r"^(search|book|help|show|list|my|cancel|whoami|signup|login)\b", low):
-        _pending_book_pop(sender)
-        return handle_text(hub_url, "book " + _pbq["lid"] + " " + low, sender=sender)
 
     # --- email recovery (B3c-email)
     if low.startswith("email-bind "):
