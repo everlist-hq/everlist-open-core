@@ -1290,6 +1290,7 @@ def _openapi_spec():
                                  note="Idempotency-Key supported; verified-human gate applies; optional escrow_ref {contract, escrow_id, tx} links the on-chain escrow (escrow-rail paid bookings only; REQUIRED for escrow-rail paid bookings when chain gating is enabled via HUB_INDEXER_URL - SPEC section 24). Custom payment terms (SPEC §19): paid bookings on listings with non-default terms must echo accepted_payment_terms exactly (409 otherwise; the error returns the terms). Listings with require_verified_buyer accept ONLY Tier-2-verified accounts (server-side; the human_verified stub never counts, SPEC section 22)")},
             "/book/{id}/confirm": {"post": op("Owner confirms booking (escrow RELEASE)", "bookings", sec=tok)},
             "/book/{id}/cancel": {"post": op("Buyer cancels pre-fulfillment (full refund)", "bookings", sec=tok)},
+            "/book/{id}/transfer": {"post": op("Buyer transfers booking to a new attendee name (pre-fulfillment; rotates secret + cancel token)", "bookings", sec=tok)},
             "/book/{id}/rate": {"post": op("Buyer rates a settled booking 1-5 (once)", "bookings", sec=tok,
                                 note="buyer's own book token; escrow must be RELEASED, WAIVED or DIRECT (instant = settled at booking); free (amount 0; channel set by economic value, not the mutable escrow label - run #5) ratings go to a separate free-feedback channel, paid aggregates are amount-weighted, self-reviews rejected (S6); ledger untouched")},
             "/admin/sync-escrow": {"post": op("Mirror sync: pull chain escrow state into the hub (admin)", "admin",
@@ -3544,6 +3545,59 @@ class Handler(BaseHTTPRequestHandler):
             _notify_booking("released", b, _listing_of(b))
             return self._json(200, {"ok": True, "id": bid, "escrow": "RELEASED",
                 "owner_received": b["owner_payout"], "confirmation": f"{bid}-ticket"})
+        if path.startswith("/book/") and path.endswith("/transfer"):
+            # Transfers (owner-approved 2026-09-30): re-assign a booking to a
+            # new attendee name, pre-fulfillment only. Auth = the CURRENT
+            # cancel_token (buyer credential). Escrow, fees, rating rights and
+            # capacity are untouched - only WHO attends changes. All previous
+            # credentials die: booking_secret rotates (old secret cannot view
+            # private details anymore) and cred_gen bumps (old cancel_tokens
+            # fail the gen check in /cancel and here).
+            bid = path.split("/")[2]
+            cred = self.headers.get("X-Hub-Token", "")
+            if not cred:
+                return self._json(401, {"error": "missing X-Hub-Token",
+                    "hint": "use the cancel_token returned at booking time (or from your latest transfer)"})
+            p, err = hublib.verify_token(BOOKING_KEY, cred, "cancel", subject=bid)
+            if not p:
+                return self._json(403, {"error": err or "token not valid for this booking"})
+            new_name = str((data or {}).get("name") or "").strip()
+            if not new_name or len(new_name) > 80:
+                return self._json(400, {"error": "name is required (1-80 chars)"})
+            with LOCK:
+                b = next((x for x in BOOKINGS if x["id"] == bid), None)
+                if not b: return self._json(404, {"error": "no booking"})
+                if b.get("cred_gen") and p.get("gen") != b.get("cred_gen"):
+                    return self._json(403, {"error": "token superseded by a transfer",
+                        "hint": "use the cancel_token from the most recent transfer"})
+                if b["escrow"] not in ("HELD", "WAIVED"):
+                    return self._json(409, {"error": f"cannot transfer after settlement (escrow is {b['escrow']})",
+                        "note": "transfers are pre-fulfillment only"})
+                v = b.get("vertical")
+                _idf = VERTICAL_SCHEMAS[v]["booking"]["identity"]
+                # rotate every credential the previous holder had:
+                new_secret = secrets.token_hex(16)
+                sec = SECRETS.get(bid) or {"private": {}}
+                sec["secret"] = new_secret
+                sec.setdefault("private", {})[_idf] = new_name[:80]
+                SECRETS[bid] = sec
+                b[_idf] = anon_ref()  # I5: fresh unlinkable reference
+                new_gen = int(b.get("cred_gen", 0) or 0) + 1
+                b["cred_gen"] = new_gen
+                _ptt = b.get("payment_terms") or {}
+                ttl = max(7 * 24 * 3600,
+                          int((_ptt or {}).get("refund_window_hours", 0) or 0) * 3600 + 48 * 3600)
+                new_cancel = hublib.mint_token(BOOKING_KEY, "cancel", bid, ttl=ttl,
+                                               extra={"gen": new_gen})
+                LEDGER.append({"kind": "transfer", "ts": time.time(), "booking": bid,
+                               "detail": {"to": new_name[:80], "gen": new_gen}})
+                _persist_locked()
+            _notify_booking("transferred", b, _listing_of(b))
+            return self._json(200, {"ok": True, "id": bid, "transferred_to": new_name[:80],
+                "booking_secret": new_secret,
+                "secret_note": "shown ONCE; the previous secret no longer works",
+                "cancel_token": new_cancel,
+                "escrow": b["escrow"]})
         if path.startswith("/book/") and path.endswith("/cancel"):
             bid = path.split("/")[2]
             cred = self.headers.get("X-Hub-Token", "")  # I2: buyer cancel_token required
@@ -3592,6 +3646,9 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 b = next((x for x in BOOKINGS if x["id"] == bid), None)
                 if not b: return self._json(404, {"error": "no booking"})
+                if b.get("cred_gen") and p.get("gen") != b.get("cred_gen"):
+                    return self._json(403, {"error": "token superseded by a transfer",
+                        "hint": "use the cancel_token from the most recent transfer"})
                 if b["escrow"] == "DIRECT":  # C12: instant rail settles at booking — there is no refund window to cancel inside
                     return self._json(409, {"error": "instant rail: payment settled at booking - no refund window (listing terms)"})
                 if b["escrow"] not in ("HELD", "WAIVED"):  # H15: WAIVED (free) bookings are cancellable too

@@ -120,6 +120,84 @@ def _show_listing(hub_url: str, arg: str, sender: str = "") -> str:
     return _fmt_listing(l)
 
 
+# --- vouch ping (owner lever 2026-09-30): when someone hits the vouch gate,
+# the operator finds out in minutes instead of never. Best-effort Telegram,
+# fire-and-forget, rate-limited per sender (one ping / 10 min). Never blocks.
+_VOUCH_PING_TS: dict = {}
+
+
+def _vouch_ping(sender: str, title: str) -> None:
+    try:
+        now = time.time()
+        last = _VOUCH_PING_TS.get(sender, 0)
+        if now - last < 600:
+            return
+        _VOUCH_PING_TS[sender] = now
+        tok = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        chat = os.environ.get("TELEGRAM_CHAT_ID", "")
+        if not tok or not chat:
+            return
+        msg = (f"EverList vouch needed: user '{sender[:40]}' is waiting to book "
+               f"'{title[:60]}' (one-time human check). Vouch: /accounts/vouch")
+        urllib.request.urlopen(urllib.request.Request(
+            f"https://api.telegram.org/bot{tok}/sendMessage",
+            data=json.dumps({"chat_id": chat, "text": msg}).encode(),
+            headers={"Content-Type": "application/json"}), timeout=5)
+    except Exception:
+        pass  # best-effort; the chat reply never depends on it
+
+
+def _transfer_cmd(hub_url: str, sender: str, arg: str) -> str:
+    """Transfers (owner-approved 2026-09-30): re-assign a booking to a new
+    attendee name. Usage: transfer <booking-id> <name>. Auth = the cancel
+    token stashed in this chat session at booking time (or from the latest
+    transfer). The hub rotates the booking secret + cancel token; both are
+    re-stashed here and the new secret is shown ONCE, like signup."""
+    parts = arg.strip().split(None, 1)
+    if len(parts) < 2 or not parts[1].strip():
+        return ("To transfer a booking: transfer <booking-id> <their-name>\n"
+                "e.g. transfer bk-1a2b3c4d5e6f Anna. Your bookings: 'my-bookings'.")
+    bid, new_name = parts[0].strip(), parts[1].strip()[:80]
+    if not bid.startswith("bk-"):
+        return ("That doesn't look like a booking id (they start with 'bk-'). "
+                "Find yours with 'my-bookings', then: transfer <booking-id> <their-name>.")
+    s = _session(sender)
+    tok = None
+    if s is not None:
+        tok = (s.get("cancel_tokens") or {}).get(bid)
+    if not tok:
+        return ("I can only transfer bookings made in this chat - the transfer key "
+                "lives here. If you booked on another device, ask the hub operator, "
+                "or book afresh with 'book <listing> <name>'.")
+    code, res = _hub_post(hub_url, f"/book/{bid}/transfer", {"name": new_name}, token=tok)
+    if code is None:
+        return "Sorry - the EverList hub is unreachable right now. Try again shortly."
+    if code != 200:
+        err = str(res.get("error", ""))
+        if "superseded" in err or "replayed" in err:
+            return ("That key was already used - each transfer hands out a fresh one, "
+                    "and it lives in the chat where the last change happened.")
+        if "settlement" in err or "escrow is" in err:
+            return ("Too late to transfer - that booking is already settled. The "
+                    "organizer can still help: the contact option is on the listing page.")
+        return f"Transfer didn't go through: {err or ('HTTP ' + str(code))}"
+    try:
+        _s = _SESSIONS.get(sender)
+        if _s is not None:
+            _s.setdefault("cancel_tokens", {})[bid] = res.get("cancel_token")
+    except Exception:
+        pass
+    return (f"✅ Transferred! '{res.get('transferred_to')}' now holds booking {bid}.\n"
+            "\n"
+            "🔑 NEW BOOKING SECRET - shown once, only here. The old secret stopped "
+            "working the moment we transferred. Copy it NOW and send it to them:\n"
+            f"{res.get('booking_secret')}\n"
+            "\n"
+            "💳 Everything else stays exactly as it was - payment protection, refund "
+            "window, the event itself. They can cancel via their Bookings tab like "
+            "any booking.")
+
+
 def _booking_status(hub_url: str, sender: str, arg: str) -> str:
     """H10: poll one booking's status. Logged-in: session token. Anonymous:
     re-mint /access for this chat's own agent address (deterministic principal
@@ -1146,6 +1224,11 @@ def _email_bind(hub_url: str, sender: str, email: str) -> str:
     except Exception:
         return "Sorry - the EverList hub is unreachable right now. Try again shortly."
     if code2 != 200:
+        _err = str(res.get("error", ""))
+        if "delivery" in _err or "550" in _err or "invalid" in _err.lower():
+            return ("That address looks undeliverable - the mail server refused it. "
+                    "Double-check the spelling (a real inbox you can open) and try "
+                    "again: email-bind <your email>")
         return f"Email bind rejected: {res.get('error', 'unknown reason')}"
     s["pending_email"] = res.get("email")  # remember for email-code confirmation
     mode = res.get("delivery", "")
@@ -3352,6 +3435,8 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
             return _smart_search(hub_url, (kw + " " + rest) if rest else kw, sender)
 
     # H10: booking status poll — BEFORE the booking-intent (startswith('book') would swallow it)
+    if low == "transfer" or low.startswith("transfer "):
+        return _transfer_cmd(hub_url, sender, text.strip()[len("transfer"):].strip())
     if low.startswith("booking "):
         return _booking_status(hub_url, sender, text.strip()[8:].strip())
     # C4: buyer rates a settled booking (its own command — 'book' would swallow 'rate' otherwise never)
@@ -3527,6 +3612,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
         err = res.get("error", "unknown error")
         if "verified-human" in err:
             _pending_book_put(sender, lid, str(target.get("title") or ""), "need_vouch", who or "")
+            _vouch_ping(sender, str(target.get("title") or ""))
             return ("Almost there - the booking needs a one-time human check on your account "
                     "(pilot: the hub operator vouches for you; production: Midnight zk-personhood, "
                     "real human, identity stays private).\n"

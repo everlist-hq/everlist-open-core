@@ -20,6 +20,13 @@ CAN = [
      "Search is what I do best: tell me what you're after ('jazz tonight', "
      "'free yoga this weekend') and the board fills up. Say 'book 1' on any "
      "result."),
+    ("transfer_booking",
+     ("transfer my booking", "transfer booking", "give my booking",
+      "change name on booking", "umbuchen"),
+     "Transfers work right in chat: 'transfer <booking-id> <their-name>' "
+     "hands the booking to them - the old key stops working, a new one is "
+     "shown once. Everything else (payment protection, refund window) stays "
+     "the same. Find the id with 'my-bookings'."),
     ("book",
      ("book", "reserve", "signup spot"),
      "Booking works right in chat: pick one from the board ('book 2') or say "
@@ -77,12 +84,6 @@ CAN = [
 # ------------------------------------------------------------- CANNOT ----
 # (id, trigger-keywords, standard honest answer: admit -> why -> alternative)
 CANNOT = [
-    ("transfer_booking",
-     ("transfer my booking", "transfer booking", "give my booking",
-      "change name on booking", "umbuchen", "\u00fcbertragen"),
-     "Transfers aren't supported yet - a booking is tied to the name it was "
-     "made under. Fastest real path: cancel and rebook takes seconds - "
-     "'book <n> <their-name>'."),
     ("pets",
      ("dog", "pets", "cat", "animals allowed", "haustier", "hund"),
      "That's each organizer's house rule, not a marketplace rule - it's "
