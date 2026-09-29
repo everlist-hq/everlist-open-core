@@ -251,8 +251,9 @@ _PAY_INTENTS: dict[str, dict] = {}  # P0: per-sender pay intent {lid, who, ts} f
 _PENDING_BOOK: dict[str, dict] = {}  # owner 2026-09-29: booking the user wanted before signup gate interrupted it {lid, title, stage, ts}
 
 
-def _pending_book_put(sender: str, lid: str, title: str = "", stage: str = "gate") -> None:
-    _PENDING_BOOK[sender] = {"lid": str(lid), "title": str(title), "stage": stage, "ts": time.time()}
+def _pending_book_put(sender: str, lid: str, title: str = "", stage: str = "gate", who: str = "") -> None:
+    _PENDING_BOOK[sender] = {"lid": str(lid), "title": str(title), "stage": stage,
+                             "who": str(who or ""), "ts": time.time()}
 
 
 def _pending_book_get(sender: str) -> dict | None:
@@ -2737,6 +2738,12 @@ def brain_meta(hub_url: str, sender: str, text: str, say: str, which: str = "") 
 _LLM_FIRST = os.environ.get("EVERLIST_LLM_FIRST", "1") != "0"
 
 
+# whole-input email shape (owner transcript 2026-09-29: the signup message
+# invites email-bind, so pasting an address at the name-ask must bind it,
+# not derail the booking flow into a generic ack)
+_EMAIL_FULL_RX = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
+
+
 def brain_resume_booking(hub_url: str, sender: str, who: str = ""):
     """Owner 2026-09-29 (LLM-first): deterministic executor for the brain
     resume_booking action. Truth stays here: the pending booking id comes
@@ -3025,12 +3032,44 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     # Intake above still owns its yes. Fires only when a pending booking
     # exists, so plain conversation is untouched.
     _pbq = _pending_book_get(sender)
-    if _pbq and (_BOOK_AFFIRM_RX.match(low) or _BOOK_REFERENTIAL_RX.match(low)):
-        return handle_text(hub_url, "book " + _pbq["lid"], sender=sender)
-    if _pbq and _pbq.get("stage") == "need_name" and _NAME_RX.match(low) and not re.match(
-            r"^(search|book|help|show|list|my|cancel|whoami|signup|login)\b", low):
-        _pending_book_pop(sender)
-        return handle_text(hub_url, "book " + _pbq["lid"] + " " + low, sender=sender)
+    if _pbq:
+        _pt = str(_pbq.get("title") or "your pick")
+        # affirmations resume - but never with an identical repeat (owner
+        # transcript: yes book! re-printed the account gate word for word)
+        if _BOOK_AFFIRM_RX.match(low) or _BOOK_REFERENTIAL_RX.match(low):
+            if _pbq.get("stage") == "need_account":
+                return (f"Still holding your spot for '{_pt}' - I just need an "
+                        "account for you first: say 'signup' and we'll set it up together.")
+            if _pbq.get("stage") == "need_name":
+                return (f"Still holding your spot for '{_pt}' - just tell me the "
+                        "name to book it under.")
+            _pwho = _pbq.get("who") or ""
+            return handle_text(hub_url, "book " + _pbq["lid"] + ((" " + _pwho) if _pwho else ""),
+                               sender=sender)
+        # flow-status questions while a spot is held (worked? can i book it
+        # now? why do you ask?) - deterministic answer, never a brain shrug
+        if re.search(r"\b(worked|status|did it|is it|can i book|book it now|still (there|hold)|holding|why)\b", low):
+            if _pbq.get("stage") == "need_account":
+                return (f"Yes - your spot for '{_pt}' is saved. Say 'signup' and I'll "
+                        "finish the booking right after (it includes a one-time human check).")
+            if _pbq.get("stage") == "need_name":
+                return (f"Yes - your spot for '{_pt}' is saved. Just tell me the name "
+                        "to book it under.")
+            if _pbq.get("stage") == "need_vouch":
+                return (f"Your spot for '{_pt}' is saved. One thing first: a one-time "
+                        "human check on your account (operator vouch, pilot). Once you're "
+                        "verified, say 'book it' and I'll finish it.")
+        if _pbq.get("stage") == "need_name":
+            # the signup reply invites email-bind - a pasted address binds it
+            # and keeps the booking flow alive instead of derailing
+            if _EMAIL_FULL_RX.match(low):
+                _bind = _email_bind(hub_url, sender, low.strip())
+                return (_bind + "\n\n" + f"Meanwhile your spot for '{_pt}' stays "
+                        "saved - who should the booking be under? Just tell me your name.")
+            if _NAME_RX.match(low) and not re.match(
+                    r"^(search|book|help|show|list|my|cancel|whoami|signup|login)\b", low):
+                _pending_book_pop(sender)
+                return handle_text(hub_url, "book " + _pbq["lid"] + " " + low, sender=sender)
 
     # Owner 2026-09-29: human booking sentences from the UI CTAs — 'Please
     # book "Rooftop Jazz Night" for me' / 'Bitte "…" für mich buchen'. The
@@ -3487,9 +3526,12 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                     "· You can check status anytime by asking: booking " + str(res.get('id')))
         err = res.get("error", "unknown error")
         if "verified-human" in err:
-            return ("Booking rejected: your account needs a human proof.\n"
-                    "Pilot: the operator can vouch for you. Production: Midnight zk-personhood "
-                    "(real human, identity stays private).")
+            _pending_book_put(sender, lid, str(target.get("title") or ""), "need_vouch", who or "")
+            return ("Almost there - the booking needs a one-time human check on your account "
+                    "(pilot: the hub operator vouches for you; production: Midnight zk-personhood, "
+                    "real human, identity stays private).\n"
+                    f"Your spot for '{target.get('title')}' stays saved - once you're verified, "
+                    "say 'book it' and I'll finish it right away.")
         return f"Booking rejected: {err}"
 
     # --- listing creation: chat-first, deterministic (never 'go to dashboard')
