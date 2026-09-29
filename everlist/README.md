@@ -40,6 +40,37 @@ discover → search → register & pay (escrow) → confirm/cancel → transpare
 | testnet | `HUB_PAY_MODE=testnet` | real signed EIP-3009 verification vs official USDC domains |
 | settlement | `HUB_SETTLE_MODE=off\|auto` | off: verify only · auto: settle via facilitator (idempotent, `HUB_FACILITATOR_URL`) |
 
+## Quickstart (10 minutes, SDK)
+
+```bash
+# 1. start a hub (or point at any running one)
+make up                       # http://localhost:8802
+
+# 2. run the quickstart example — the full agent journey:
+#    manifest -> keypair account -> search -> book (escrow HELD) -> cancel
+python3 sdk/examples/quickstart.py http://localhost:8802
+```
+
+The example prints the seed ONCE (it never leaves your machine — the hub stores
+only your public key), books a listing (payment held in escrow until the
+merchant confirms), and cancels with the one-time cancel token. For a merchant
+view (publish listings, poll incoming orders), see `sdk/examples/pizzeria.py`.
+
+Key SDK calls:
+
+```python
+from agenthub import AgentHub
+hub = AgentHub("http://localhost:8802")
+hub.manifest()                      # discover: name, fee %, escrow mode
+acct = hub.signup_keypair("me")     # Tier-1 account; store the seed locally
+hits = hub.search("yoga")           # or hub.listings()
+b    = hub.book(hits[0].id, quantity=1, attendee="demo")  # escrow holds payment
+hub.cancel(b.id, b.cancel_token)     # one-time token, buyer-side refund
+```
+
+The booking gate (`human_verified`) is an interim stub for demo/testnet runs;
+production replaces it with a Midnight ZK personhood credential (SPEC section 22).
+
 ## Run
 
 ```bash
