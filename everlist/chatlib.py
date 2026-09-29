@@ -3070,6 +3070,35 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     if _irep is not None:
         return _irep
 
+    # --- capability questions (owner 2026-09-29: the EverList skill) -------
+    # Single source of truth: capabilities.py. Deterministic answers - the
+    # LLM routes, never states policy. CANNOT entries answer honestly
+    # (transfer/dog/refund/resale...); CAN entries answer only when the turn
+    # is question-shaped ('can i', 'how do i', 'does everlist'), so real
+    # commands ('book 2', 'edit even-1 ...') are never swallowed.
+    if (not re.match(r"^(book|search|show|help|cancel|signup|login|logout|whoami|list|more|next|all|fee|my-bookings|bookings|dashboard|edit|delete|archive|unarchive|notify|lang|recover)\b", low)
+            # dedicated deterministic handlers own these intents - catalog stays out:
+            and not re.search(r"\bmidnight\b", low)
+            and not re.search(r"\b(list|post|create|make|add)\b[^?\n]*\b(gig|event|listing|class|service|workshop|concert|course)\b", low)
+            and not re.match(r"^(i want to|i'd like to|ich möchte)\b", low)):
+        try:
+            import capabilities as _caps
+            _qshape = ("?" in text
+                       or re.search(r"\b(can|can't|cannot|could|do(es)?|did|is|are|was|were|will|would|should|how|what|where|when|why|who|is it possible|ist|kann|kann man|geht|funktioniert|möglich|darf|weißt du|weiss|wann|wie|wo|warum)\b", low))
+            _money_law = re.search(r"\b(fee|fees|escrow|refund)\b", low)
+            _cap_ans = _caps.answer_for(low) if (_qshape and not _money_law) else None
+            if _cap_ans is None and not _qshape:
+                # no question shape, but distinctive CANNOT triggers
+                # ('transfer my booking', 'sell my tickets', 'my dog')
+                for _cid, _kws, _ans in _caps.CANNOT:
+                    if any(k in low for k in _kws):
+                        _cap_ans = _ans
+                        break
+            if _cap_ans is not None:
+                return _cap_ans
+        except Exception:
+            pass                # catalog must never take the chat down
+
     # --- owner 2026-09-29 (LLM-first inversion): the brain evaluates fuzzy
     # turns BEFORE the regex mood/social tiers, with full context (pending
     # booking + last results in its fact sheet). Deterministic executors keep

@@ -155,6 +155,10 @@ _SYS = (
     "translation, opinions, advice, math, standalone weather ('weather "
     "tomorrow', 'will it rain' with nothing attached), jokes, stories, "
     "roleplay, sports, politics.\n"
+    "CAPABILITY QUESTIONS ('can I transfer a booking', 'are dogs allowed', "
+    "'how do I get paid'): use action meta - the deterministic layer answers "
+    "with the standard capability answer; your 'say' may add one friendly "
+    "word but NO policy claims. Never claim a feature outside the catalog.\n"
     "IN-SCOPE (help): searches and refinements, booking help, escrow & fee "
     "questions, creating listings (the chat 'list' flow), account help, site "
     "navigation ('go back', 'main page'), "
@@ -572,6 +576,11 @@ def respond(hub_url: str, text: str, sender: str, chatlib, social_house: str = "
     if not _rate_ok(sender):
         return None                     # brain budget spent -> fail-open
     state = _site_state(chatlib, sender)
+    try:
+        import capabilities as _caps
+        state = (state + "\n" + _caps.summary()).strip()
+    except Exception:
+        pass                # catalog must never take the brain down
     if social_house:
         state = (state + "\n" + _HOUSE_VOICE_INSTR + social_house.strip()).strip()
     act = _call(text, _ctx(sender), state)
