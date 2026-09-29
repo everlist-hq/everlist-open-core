@@ -2607,12 +2607,64 @@ def _resolve_listing(sender: str, which: str):
 
 def brain_show(hub_url: str, sender: str, which: str) -> str:
     """Brain action 'show': full details of one result the user means."""
-    got = _resolve_listing(sender, which)
+    got = _resolve_listing(sender, which) or _resolve_live(hub_url, which, sender)
     if not got:
         return _show_results(hub_url, sender, "all")
     i, l = got
     out = _show_listing(hub_url, str(l.get("id") or ""), sender=sender)
+    # chat->board link (owner 2026-09-29): when the answer names a specific
+    # listing, the UI gets a 'show me' chip — one system, not two.
+    if out and isinstance(l, dict) and l.get("id"):
+        out = "[[focus:" + str(l["id"]) + "]]" + out
     return out
+
+
+def _resolve_live(hub_url: str, which: str, sender: str = ""):
+    """Owner 2026-09-29: a human booking sentence must work WITHOUT a prior
+    search — 'Book Rooftop Jazz Night for me' just books. Resolve a cold
+    reference: direct listing id, else a live title match against the hub
+    search API (keyword UNION, same rule as _smart_search). The winner is
+    written into the sender's stash so the typed 'book <n>' path (escrow
+    facts, PoW, gates) executes unchanged."""
+    w = (which or "").strip()
+    if not w:
+        return None
+    # direct id: 'book even-3 for Anna'
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,40}", w):
+        try:
+            l = _hub_get(hub_url, "/listings/" + urllib.parse.quote(w))
+        except Exception:
+            l = None
+        if isinstance(l, dict) and l.get("id"):
+            listings = [l]
+        else:
+            return None
+    else:
+        toks = [t for t in re.findall(r"[a-z0-9']+", w.lower())
+                if t not in {"the", "a", "an", "one", "for", "me", "please", "night", "session"}]
+        toks = toks[:4]
+        if not toks:
+            return None
+        listings = []
+        for t in toks:
+            try:
+                d = _hub_get(hub_url, "/search?q=" + urllib.parse.quote(t))
+            except Exception:
+                d = None
+            for it in (d or {}).get("listings") or (d or {}).get("results") or []:
+                if it and it.get("id") and not any(x.get("id") == it.get("id") for x in listings):
+                    listings.append(it)
+        if not listings:
+            return None
+        # best title-token overlap wins (same scoring rule as _resolve_listing)
+        wset = set(re.findall(r"[a-z0-9']+", w.lower()))
+        def _score(l):
+            return len(wset & set(re.findall(r"[a-z0-9']+", str(l.get("title") or "").lower())))
+        listings.sort(key=_score, reverse=True)
+        if _score(listings[0]) < 1:
+            return None
+    _LAST_RESULTS[sender] = listings
+    return 1, listings[0]
 
 
 def brain_book(hub_url: str, sender: str, which: str, who: str = "") -> str:
@@ -2623,6 +2675,8 @@ def brain_book(hub_url: str, sender: str, which: str, who: str = "") -> str:
     if not re.fullmatch(r"[\w \-.']{0,40}", who):
         who = ""
     got = _resolve_listing(sender, which)
+    if not got:
+        got = _resolve_live(hub_url, which, sender)   # cold reference: human sentence, no search yet
     if not got:
         stash = _LAST_RESULTS.get(sender) or []
         if stash:
@@ -2887,6 +2941,36 @@ def _social_fallback_reply(low, hub_url, sender):
     return None
 
 
+def _brain_book_sentence(hub_url: str, sender: str, text: str) -> str:
+    """Owner 2026-09-29 (kill the robotic): UI CTAs send real sentences —
+    'Please book "Rooftop Jazz Night" for me (even-3)'. Parse them here:
+    the listing id in trailing parens is the deterministic ref (exact, no
+    guessing); the quoted title is the human-readable fallback. Delegates to
+    the same book executors — escrow facts, PoW and gates unchanged."""
+    t = (text or "").strip()
+    # 1) silent deterministic ref: trailing '(even-3)'
+    m = re.search(r"\(([A-Za-z0-9][A-Za-z0-9_-]{0,40})\)\s*[.!\u2026]*\s*$", t)
+    ref = m.group(1) if m else ""
+    if ref:
+        return handle_text(hub_url, "book " + ref, sender=sender)
+    # 2) quoted title
+    m = re.search(r"[\u00ab\u2039\u201c\u201e\"]([^\u00bb\u203a\u201d\u201c\"]{2,80})[\u00bb\u203a\u201d\u201c\"]", t)
+    which = m.group(1).strip() if m else ""
+    # 3) strip polite filler and use the remainder
+    if not which:
+        which = re.sub(r"^(please\s+|bitte\s+)?(book\b|buchen?\b)", "", t,
+                       flags=re.I).strip()
+        which = re.sub(r"\s+(for\s+me|f\u00fcr\s+mich)\b[!.\u2026]*$", "", which,
+                       flags=re.I).strip()
+        which = re.sub(r"[!.\u2026]+$", "", which).strip()
+        if not (2 <= len(which) <= 80):
+            which = ""
+    if not which:
+        return ("Tell me which event to book — e.g. 'book the jazz night' — "
+                "or tap a card and hit the booking button. 🙂")
+    return brain_book(hub_url, sender, which, "")
+
+
 def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     """Map one incoming chat text to one reply text (pure function, testable)."""
     low = (text or "").strip().lower()
@@ -2897,6 +2981,13 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     _ireply = _intake_reply(hub_url, sender, text or "")
     if _ireply is not None:
         return _ireply
+
+    # Owner 2026-09-29: human booking sentences from the UI CTAs — 'Please
+    # book "Rooftop Jazz Night" for me' / 'Bitte "…" für mich buchen'. The
+    # transcript keeps the human sentence; the executor keeps the typed
+    # guarantees by delegating to brain_book (stash -> live title match).
+    if re.search(r"\bbook\b|\bbuchen\b", low) and not re.match(r"^(book|search|show|help)\b", low):
+        return _brain_book_sentence(hub_url, sender, text or "")
 
     # R4b battery: chained commands ('book 1 then show my bookings') are two
     # turns in one -- answer both, never leak the tail into booking args.
@@ -3087,6 +3178,11 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
             return _my_bookings(hub_url, sender)
         if "my listing" in arg or arg in ("listings of mine", "my listings"):
             return _my_listings(hub_url, sender)
+        # Owner 2026-09-29: typed indices ('show 2') resolve against the last
+        # search — and route through brain_show so the reply carries the
+        # [[focus:]] marker (show-me chip). Non-numeric args stay id lookups.
+        if re.fullmatch(r"\d+", arg):
+            return brain_show(hub_url, sender, arg)
         return _show_listing(hub_url, text.strip()[5:].strip(), sender=sender)
     if low.startswith("unarchive "):
         return _owned_listing(hub_url, sender, text.strip()[9:].strip(), "unarchive")
