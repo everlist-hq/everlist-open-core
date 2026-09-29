@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>EverList — Ask. Book. Done.</title>
+<meta name="description" content="Concerts, dinners, repair slots, classes — anything with a date. Ask the chat — your money stays protected until it is done.">
+<link rel="canonical" href="https://everlist.network/">
+<link rel="alternate" hreflang="de" href="https://everlist.network/de/">
+<link rel="alternate" hreflang="en" href="https://everlist.network/">
+<link rel="alternate" hreflang="x-default" href="https://everlist.network/">
+<meta property="og:locale" content="en_US">
+<meta property="og:site_name" content="EverList">
+<meta property="og:title" content="EverList — Ask. Book. Done.">
+<meta property="og:description" content="Concerts, dinners, repair slots, classes — anything with a date. Ask the chat — your money stays protected until it is done.">
+<meta property="og:url" content="https://everlist.network/">
+<meta property="og:image" content="https://everlist.network/og/default.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#0d1117">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/logo-512.png">
+<script src="/theme.js"></script>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css?v=20260925g">
+</head>
+<body>
+<a class="skip" href="#browse">Skip to listings</a>
+<div class="page">
+  <header class="top">
+    <div class="brand"><a href="/?home=1" class="wordmark"><img src="/favicon.svg" alt="" width="30" height="30"><span>EverList</span></a></div>
+    <nav class="nav" aria-label="Main">
+      <a href="#" class="on" id="nav-browse">Browse</a>
+      <a href="#" id="nav-dash">Bookings</a>
+      <a href="#" id="nav-post">List something</a>
+    </nav>
+    <div class="status"><span class="dot" id="dot"></span><span id="status-text">connecting&#8230;</span></div>
+    <a class="linkbtn langsw" href="/de/?lang=de">DE</a>
+    <button class="linkbtn" id="theme-btn" type="button" aria-label="Toggle colour theme">theme</button>
+  </header>
+
+  <!-- U1: chat-first hero — the chat IS the page until first engagement -->
+  <section class="hero" id="hero">
+    <h1 class="hero-title">Ask. Book. <em>Done.</em></h1>
+    <p class="hero-sub">EverList is the marketplace that books for you: tell me what you&rsquo;re looking for, I find it and book it &mdash; and your money is only released once it actually happened. No account needed.</p>
+    <form class="hero-form" id="hero-form" autocomplete="off">
+      <textarea id="hero-text" rows="1" placeholder="What are you looking for? I will find it!" maxlength="8000"></textarea>
+      <button id="hero-send" type="submit" aria-label="Send">&#10148;</button>
+    </form>
+    <div class="hero-suggest" id="hero-suggest" hidden></div>
+    <div class="hero-chips" id="hero-chips">
+      <!-- W3 item 19: filled from /api/verticals (taxonomy); honest generic
+           starters when the hub is cold. No hardcoded demo queries. -->
+    </div>
+    <div class="hero-live" id="hero-live" aria-live="polite">
+      <span class="hero-live-label">hot right now</span>
+      <div class="hero-strip" id="hero-strip"></div>
+    </div>
+    <div class="hero-ghost" id="hero-ghost" hidden aria-hidden="true"></div>
+  </section>
+
+  <section class="discover" id="browse">
+    <div class="dhead">
+      <h1>Discover</h1>
+      <span class="cnt" id="count">loading&#8230;</span>
+      <div class="filters" id="filters">
+        <!-- W3 item 19: filled from /api/verticals (taxonomy); show-all kept.
+             Honest generic starters when the hub is cold. -->
+        <button class="chip on" data-reset="1" type="button">show all</button>
+      </div>
+      <span class="flex"></span>
+      <button class="postbtn" id="postbtn" type="button">+ list a thing in one message</button>
+    </div>
+    <div class="grid" id="grid"></div>
+    <p class="empty" id="empty" hidden>Nothing here yet &#8212; be the first. Type <b>list &#8230;</b> in the chat below, or tap <b>+ list a thing</b>.</p>
+  </section>
+
+  <section class="discover" id="dash" hidden>
+    <div class="dhead">
+      <h1>Bookings</h1>
+      <span class="cnt" id="dash-acct"></span>
+      <span class="flex"></span>
+      <button class="linkbtn" id="dash-refresh" type="button">refresh</button>
+      <button class="linkbtn" id="dash-logout" type="button" hidden>log out</button>
+    </div>
+    <div id="signup-area" hidden>
+      <h2 class="dh2">Create an account</h2>
+      <form id="signup" class="wiz" autocomplete="off">
+        <label class="wfull">Your name <input id="s-name" required maxlength="64" placeholder="Ana &#8212; shown to organizers, never a login key"></label>
+        <div class="wfull"><button class="cta" id="s-go" type="submit">Create my account</button>
+        <span class="cnt" id="s-status"></span></div>
+        <p class="wfull cnt">Your account key is generated <b>in your browser</b> and never leaves your device &#8212; the site stores only your public key. A one-time seed is shown after signup; keep it to log in elsewhere.</p>
+      </form>
+    </div>
+    <div class="dashwrap">
+      <div class="dashcol">
+        <h2 class="dh2">My bookings</h2>
+        <div id="mybookings"></div>
+      </div>
+      <div class="dashcol">
+        <h2 class="dh2">Incoming orders</h2>
+        <div id="myorders"></div>
+      </div>
+    </div>
+    <div class="empty" id="dash-login" hidden></div>
+    <h2 style="margin:18px 0 6px;font-size:16px">My listings</h2>
+    <div id="my-listings"></div>
+  </section>
+
+  <footer class="sitefoot">
+    <div class="footrow">
+      <div class="brandline"><img src="/favicon.svg" alt="" width="22" height="22"><span>EverList</span></div>
+      <nav class="footnav">
+        <a href="/how">how it works</a>
+        <a href="/agents">for agents</a>
+        <a href="/transparency">transparency</a>
+        <a href="/network">network</a>
+      </nav>
+      <span class="footnote">no account needed to look &#183; your payment stays protected until the event ends &#183; listing is free, flat 2% fee on paid bookings only</span>
+    </div>
+  </footer>
+</div>
+
+<!-- companion dock: appears after first engagement; carries the same chat -->
+<div class="dock" id="dock" hidden>
+  <div class="panel">
+    <div class="dhead2">
+      <span class="live"><span class="dot ok"></span><b>Ask EverList</b></span>
+      <span class="tag">same brain our agents use</span>
+      <span class="flex"></span>
+      <button class="minbtn" id="minbtn" type="button" aria-label="Minimise chat" title="Minimise">&#8250;</button>
+    </div>
+    <section class="chat" id="chat" aria-live="polite">
+      <div class="msg agent"><div class="bubble">&#128075; I'm EverList. What are you looking for?<br>Find something to book below &mdash; or say &ldquo;list&rdquo; and we&rsquo;ll post yours together.</div></div>
+    </section>
+    <section class="chips" id="chips">
+      <button class="chip" data-q="help" type="button">What can you do?</button>
+      <button class="chip" data-q="search jazz berlin" type="button">Find jazz in Berlin</button>
+      <button class="chip" data-q="signup" type="button">Create an account</button>
+      <button class="chip" data-q="my-bookings" type="button">Show my bookings</button>
+    </section>
+    <form class="inputbar" id="form" autocomplete="off">
+      <textarea id="text" rows="1" placeholder="Ask for anything&#8230;" maxlength="8000"></textarea>
+      <button id="send" type="submit" aria-label="Send">&#10148;</button>
+    </form>
+    <!-- Quick Action Chips -->
+    <div class="quick-chips" aria-label="Quick actions">
+      <button class="chip" data-action="search">Search</button>
+      <button class="chip" data-action="book">Book</button>
+      <button class="chip" data-action="my-listings">My Listings</button>
+      <button class="chip" data-action="help">Help</button>
+    </div>
+    <footer class="foot">
+      <span>your payment stays protected until the event ends</span>
+      <button class="linkbtn" id="reset" type="button">new session</button>
+    </footer>
+  </div>
+</div>
+<button class="pill" id="pill" type="button" aria-label="Open chat">&#128172;</button>
+
+<!-- U5: mobile bottom tab bar (desktop nav is hidden <860px) -->
+<nav class="tabbar" id="tabbar" aria-label="Main">
+  <button class="tab on" id="tab-browse" type="button">&#128269; Browse</button>
+  <button class="tab" id="tab-dash" type="button">&#128179; Bookings</button>
+  <button class="tab" id="tab-list" type="button">&#10133; List</button>
+  <button class="tab" id="tab-chat" type="button">&#128172; Chat</button>
+</nav>
+
+<script src="/nacl-fast.min.js"></script>
+<script src="/app.js?v=20260925g"></script>
+</body>
+</html>
