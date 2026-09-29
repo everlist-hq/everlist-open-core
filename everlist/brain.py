@@ -162,7 +162,7 @@ _SYS = (
     "weather FOR a specific listing or event ('weather at the jazz night?'; "
     "owner-approved 2026-09-16).\n\n"
     "Reply with EXACTLY ONE JSON object and nothing else:\n"
-    '{"action": "search|refine|nav|ack|meta|show|book|off_topic", '
+    '{"action": "search|refine|nav|ack|meta|show|book|resume_booking|off_topic", '
     '"say": "...", "q": "...", '
     '"filters": {"free": false, "max_price": null, "min_price": null, '
     '"from": null, "to": null, "sort": null}, '
@@ -226,6 +226,9 @@ _SYS = (
     '  "free yoga this weekend" -> {"action":"search","q":"yoga","filters":{"free":true,"from":"<coming-saturday>"}}\n'
     '  "okay no go back to main page" -> {"action":"nav","target":"home","say":"Back to the main page — want to search something new?"}\n'
     '  "thanks!" -> {"action":"ack","say":"Anytime! Say the word when you want to book something."}\n'
+    '  "yes book it!" -> {"action":"resume_booking","say":"On it - locking that in for you."}\n'
+    '  "the one i chose!" -> {"action":"resume_booking","say":"Booking the one you picked."}\n'
+    '  "nimm das erste" -> {"action":"resume_booking","say":"Booking the one you chose."}\n'
     '  "actually cheaper" -> {"action":"refine","refine":true}\n'
     '  "only free ones" -> {"action":"refine","filters":{"free":true},"refine":true}\n'
     '  "what else is on next week?" -> {"action":"search","q":"","filters":{"from":"<next-monday>","to":"<next-sunday>"}}\n'
@@ -428,7 +431,7 @@ def _call(user_msg: str, ctx: list, site_state: str = ""):
                     break
                 obj = _extract_json(content)
                 if obj and obj.get("action") in ("search", "refine", "nav", "ack", "meta",
-                                                 "show", "book", "off_topic"):
+                                                 "show", "book", "resume_booking", "off_topic"):
                     LAST.clear()
                     LAST.update({"provider": name, "action": obj.get("action"),
                                  "ms": round((time.time() - _t0) * 1000, 1)})
@@ -503,29 +506,43 @@ def _filters_of(act: dict) -> dict:
 # ---- the public entry ----------------------------------------------------
 
 def _site_state(chatlib, sender: str) -> str:
-    """Compact summary of what the user is currently looking at (their last
-    search results), injected into the system prompt so references like
-    'the second one' or 'that jazz thing' resolve to a real listing."""
+    """Compact summary of what the user is looking at (last search
+    results) plus any pending booking, injected into the system prompt
+    so references like the second one or the one i chose resolve."""
     if chatlib is None:
         return ""
+    blocks = []
     try:
         results = chatlib.last_results(sender, cap=6)
-        if not results:
-            return ""
-        lines = ["THE USER IS CURRENTLY LOOKING AT THESE SEARCH RESULTS "
-                 "(number = handle for which):"]
-        for i, l in enumerate(results, 1):
-            title = str(l.get("title") or "?")
-            date = str(l.get("date") or "")
-            price = l.get("price")
-            loc = str(l.get("location") or "")
-            lines.append("%d. %s%s%s%s" % (i, title,
-                         (" · " + date) if date else "",
-                         (" · $%s" % price) if price is not None else "",
-                         (" · " + loc) if loc else ""))
-        return "\n".join(lines)
+        if results:
+            rows = ["THE USER IS CURRENTLY LOOKING AT THESE SEARCH RESULTS "
+                    "(number = handle for which):"]
+            for i, l in enumerate(results, 1):
+                title = str(l.get("title") or "?")
+                date = str(l.get("date") or "")
+                price = l.get("price")
+                loc = str(l.get("location") or "")
+                rows.append("%d. %s%s%s%s" % (i, title,
+                             (" - " + date) if date else "",
+                             (" - $" + str(price)) if price is not None else "",
+                             (" - " + loc) if loc else ""))
+            blocks.append("\n".join(rows))
     except Exception:
-        return ""
+        pass
+    try:
+        pb = chatlib._pending_book_get(sender)
+    except Exception:
+        pb = None
+    if pb:
+        blocks.append(
+            "PENDING BOOKING (chat state): the user already chose '%s' "
+            "(listing id %s); it is waiting because: %s. If the user affirms, "
+            "confirms, or refers to the thing they chose, use action "
+            "resume_booking - the listing id comes from this block only, "
+            "never invent one."
+            % (str(pb.get("title") or "?"), str(pb.get("lid") or "?"),
+               str(pb.get("stage") or "pending")))
+    return "\n".join(blocks)
 
 
 # House voice (owner call 2026-09-20 ~18:00): the deterministic house answer
@@ -581,6 +598,10 @@ def respond(hub_url: str, text: str, sender: str, chatlib, social_house: str = "
             out = chatlib.brain_show(hub_url, sender, which or text)
         elif a == "book":
             out = chatlib.brain_book(hub_url, sender, which or text, who)
+        elif a == "resume_booking":
+            out = chatlib.brain_resume_booking(hub_url, sender, who)
+            if out is None:
+                return None         # nothing pending -> hallucinated action, fail-open
         else:                           # meta
             out = chatlib.brain_meta(hub_url, sender, text, say or "", which)
         _ctx_add(sender, "user", text)

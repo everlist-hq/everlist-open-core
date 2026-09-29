@@ -2732,6 +2732,24 @@ def brain_meta(hub_url: str, sender: str, text: str, say: str, which: str = "") 
     return (say or "").strip() or _HELP
 
 
+# owner 2026-09-29 (LLM-first inversion): the brain evaluates fuzzy turns
+# BEFORE the regex mood/social tiers. Kill switch: EVERLIST_LLM_FIRST=0.
+_LLM_FIRST = os.environ.get("EVERLIST_LLM_FIRST", "1") != "0"
+
+
+def brain_resume_booking(hub_url: str, sender: str, who: str = ""):
+    """Owner 2026-09-29 (LLM-first): deterministic executor for the brain
+    resume_booking action. Truth stays here: the pending booking id comes
+    from chat state, never from the LLM. Returns None when nothing is
+    pending (hallucinated action -> brain fail-opens)."""
+    pb = _pending_book_get(sender)
+    if not pb:
+        return None
+    if who and pb.get("stage") == "need_name" and _NAME_RX.match(who):
+        return handle_text(hub_url, "book " + pb["lid"] + " " + who, sender=sender)
+    return handle_text(hub_url, "book " + pb["lid"], sender=sender)
+
+
 def last_results(sender: str, cap: int = 48) -> list:
     """Public read-only view of a sender's stashed search results (raw dicts,
     same order the 'book <n>' / 'rate <n>' indexes refer to). Web UI uses this
@@ -2991,6 +3009,7 @@ def _brain_book_sentence(hub_url: str, sender: str, text: str) -> str:
 def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     """Map one incoming chat text to one reply text (pure function, testable)."""
     low = (text or "").strip().lower()
+    _brain_tried = False   # LLM-first: early brain call already ran this turn?
 
     # --- U2: conversational listing intake (owner call 2026-09-18: no forms).
     # Bare 'list' starts the guided flow; mid-intake free text fills fields.
@@ -3017,7 +3036,16 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     # book "Rooftop Jazz Night" for me' / 'Bitte "…" für mich buchen'. The
     # transcript keeps the human sentence; the executor keeps the typed
     # guarantees by delegating to brain_book (stash -> live title match).
-    if re.search(r"\bbook\b|\bbuchen\b", low) and not re.match(r"^(book|search|show|help)\b", low):
+    # (LLM-first 2026-09-29) the CTA parser fires only on real CTA shapes -
+    # a listing ref in trailing parens, a quoted title, or please/bitte.
+    # The old catch-all swallowed affirmations (yes book it!); everything
+    # else now reaches the brain first (early call below).
+    if (re.search(r"\bbook\b|\bbuchen\b", low)
+            and not re.match(r"^(book|search|show|help)\b", low)
+            and (re.search(r"\([A-Za-z0-9][A-Za-z0-9_\-]{0,40}\)[.!…]*\s*$", low)
+                 or chr(0x201c) in low or chr(0x201e) in low or chr(0xab) in low
+                 or chr(34) in low
+                 or re.search(r"\bplease\b|\bbitte\b", low))):
         return _brain_book_sentence(hub_url, sender, text or "")
 
     # R4b battery: chained commands ('book 1 then show my bookings') are two
@@ -3036,15 +3064,45 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     if low == "list" or low.startswith("list ") or low.startswith("list\n") or low.startswith("list\r\n"):
         return _create_listing(hub_url, sender, text.strip())
 
+    # instant phatic tier (owner law 2026-09-20): thanks/ok/lol stay 0-8ms
+    # templates BEFORE the brain - never vary, never pay LLM latency.
+    _irep = _social_instant_reply(low, hub_url, sender)
+    if _irep is not None:
+        return _irep
+
+    # --- owner 2026-09-29 (LLM-first inversion): the brain evaluates fuzzy
+    # turns BEFORE the regex mood/social tiers, with full context (pending
+    # booking + last results in its fact sheet). Deterministic executors keep
+    # every fact; the regex tiers below become the fail-open fallback (brain
+    # down / rate-capped / EVERLIST_LLM_FIRST=0 -> byte-identical old chat).
+    # Typed commands and plain keyword searches stay instant, no LLM.
+    _w0 = low.split()
+    _skip_brain = (
+        "|" in text
+        or re.match(r"^(book|search|show|help|cancel|signup|login|logout|login-seed|whoami|list|listings|more|next|all|fee|my-bookings|bookings|my-listings|dashboard|edit|delete|archive|unarchive|verify-|set-payout|notify|lang|email-|recover|delete-account)\b", low)
+        or re.match(r"^\d[\d\s,\-]*$", low)
+        or (len(_w0) <= 3
+            and re.match(r"^[a-z0-9äöüß][a-z0-9äöüß \-]*$", low)
+            and not re.search(r"\b(yes|no|yeah|nope|ok|okay|please|bitte|danke|dank|thanks|thx|gern|book|buchen)\b", low))
+    )
+    if _LLM_FIRST and not _skip_brain:
+        try:
+            import brain as _brain_early
+            _out = _brain_early.respond(hub_url, text, sender,
+                                        chatlib=sys.modules[__name__],
+                                        social_house=_social_fallback_reply(low, hub_url, sender) or "")
+            if _out is not None:
+                return _out
+        except Exception:
+            pass                    # fail-open law: brain never takes the chat down
+        _brain_tried = True
+
     # --- deterministic social / semantic layer (120-input battery 2026-09-20):
     # greetings, acks, moods, account/stack help, cancellation policy, typos,
     # junk inputs — answers that must NEVER vary with the LLM.
     _srep = _social_safe_reply(low, hub_url, sender)
     if _srep is not None:
         return _srep
-    _irep = _social_instant_reply(low, hub_url, sender)
-    if _irep is not None:
-        return _irep
 
     # --- account auth (B3c-accounts)
     if low == "signup" or low.startswith("signup "):
@@ -3582,7 +3640,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
         import brain
     except ImportError:
         brain = None
-    if brain is not None:
+    if brain is not None and not _brain_tried:
         try:
             out = brain.respond(hub_url, text, sender, chatlib=sys.modules[__name__],
                                 social_house=_fb_early or "")
