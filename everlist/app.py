@@ -1775,8 +1775,31 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/openapi.json":
             # H13: machine-readable API contract — agents read it natively
             return self._json(200, _openapi_spec())
-        if u.path == "/verticals":
-            return self._json(200, {"verticals": VERTICAL_SCHEMAS})
+        if u.path.startswith("/payterms/"):
+            # P0 human paid bookings (spec 2026-09-29): the SINGLE SOURCE OF
+            # TRUTH for what a browser wallet must pay for this listing. The
+            # webchat relays these terms to the Pay button — payment numbers
+            # are never invented client-side; they are the same terms the
+            # /book X-PAYMENT verification checks against.
+            _plid = u.path.split("/", 2)[2] if u.path.count("/") >= 2 else ""
+            _pl = None
+            with LOCK:
+                _pl = next((x for x in LISTINGS if x["id"] == _plid), None)
+                if _pl is not None:
+                    _plp = float(_pl["price"])
+                    _plr = str(_pl.get("receive_addr") or PAYTO).lower()
+                    _plt = dict(_pl.get("payment_terms") or {})
+                    _plv = _pl["vertical"]
+            if _pl is None:
+                return self._json(404, {"error": f"no listing {_plid}"})
+            if _plp <= 0:
+                return self._json(409, {"error": "free listing — no payment needed"})
+            return self._json(200, {
+                "listing_id": _plid, "vertical": _plv,
+                "scheme": "EIP-3009", "network": "base-sepolia",
+                "asset": BASE_SEPOLIA_USDC, "pay_to": _plr,
+                "max_amount_units": str(int(round(_plp * 1_000_000))),
+                "mode": PAY_MODE.upper(), "payment_terms": _plt})
         if u.path == "/listings":
             if not _read_gate(self):
                 return self._json(429, {"error": "too many read requests — slow down (retry shortly)"})

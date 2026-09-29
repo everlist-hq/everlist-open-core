@@ -90,6 +90,20 @@ DEFAULT_ASSETS = {
 }
 
 
+def payer_pseudonym(payer: str) -> str:
+    """W2 stretch: privacy-preserving payer projection.
+
+    Deterministic pseudonym (sha256, 16 hex chars, 'anon-' prefix): stable
+    per wallet so the hub can still do anti-abuse analytics (repeated-payer,
+    interlock) on the PUBLIC data, but the raw payment credential address is
+    never disclosed outside the server. Real address stays server-internal
+    (S6 review integrity + pending-resume are unaffected).
+    """
+    if not payer:
+        return ""
+    return "anon-" + hashlib.sha256(str(payer).lower().encode()).hexdigest()[:16]
+
+
 def payment_fingerprint_c(auth: dict) -> str:
     """Stable id for a Cardano payment.
 

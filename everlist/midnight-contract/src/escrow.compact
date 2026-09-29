@@ -1,0 +1,315 @@
+/**
+ * EverList Booking Escrow - funded state machine (M3 increment)
+ *
+ * The booking escrow lifecycle the EverList hub already uses, now with REAL
+ * (simulated) shielded money:
+ *   HELD (1)    -> RELEASED (2)  organizer confirmed -> organizer paid
+ *   HELD (1)    -> REFUNDED (3)  agent cancelled / timeout -> agent refunded
+ *
+ * Parties are privacy-preserving: each side ACTS via a commitment
+ * (persistentHash of a secret key), never an address. Money moves via coin
+ * public keys stored in two ledger maps (ZswapCoinPublicKey) — payout
+ * destinations are fixed at creation, so even the permissionless timeout
+ * cannot redirect funds.
+ *
+ * Coin flows (M3):
+ *   createEscrow  : agent deposits EXACTLY `amount` into the contract
+ *                   (receiveShielded; deposit.value == amount asserted)
+ *   releaseEscrow : contract spends the deposited coin -> organizer
+ *   refundEscrow  : contract spends the deposited coin -> agent
+ *   timeoutRefund : anyone (liveness) spends the deposited coin -> agent
+ *                   after the deadline (before the claim deadline)
+ *   autoRelease   : anyone (M17) spends the deposited coin -> organizer
+ *                   after the CLAIM deadline passes with no refund claim
+ *
+ * The spender supplies the coin as a QualifiedShieldedCoinInfo (in real
+ * deployments this carries the merkle membership witness); the contract
+ * asserts it matches the stored custody (nonce, color, value).
+ *
+ * Disclosure discipline: disclose() at ledger writes and stdlib calls that
+ * need public values; witness->hash->assert comparisons need none.
+ *
+ * Language: Compact 0.26 (compiler 0.34.0)
+ */
+
+pragma language_version 0.26;
+// M12 (pending owner decision, recommendation = A): pilot contract, NO
+// upgrade path assumed - effective immutability. Liveness guarantee =
+// timeoutRefund (permissionless, pays the agent key fixed at creation).
+// Never hold mainnet-size funds here until the upgrade decision is made.
+
+import CompactStandardLibrary;
+
+struct Escrow {
+  amount: Uint<128>,
+  agentCommitment: Bytes<32>,
+  organizerCommitment: Bytes<32>,
+  state: Uint<8>,
+  bookingRef: Bytes<32>,
+  deadline: Uint<64>,
+  claimDeadline: Uint<64>,
+  coinNonce: Bytes<32>,
+  coinColor: Bytes<32>
+}
+
+export ledger escrows: Map<Uint<64>, Escrow>;
+export ledger nextId: Counter;
+export ledger agentPks: Map<Uint<64>, ZswapCoinPublicKey>;
+export ledger organizerPks: Map<Uint<64>, ZswapCoinPublicKey>;
+
+witness agentSecretKey(): Bytes<32>;
+witness organizerSecretKey(): Bytes<32>;
+
+/** Commitment of an agent (buyer). sk never leaves the agent's machine. */
+export circuit agentCommitment(sk: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "everlist:agent:"), sk]);
+}
+
+/** Commitment of an organizer (seller). sk never leaves their machine. */
+export circuit organizerCommitment(sk: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "everlist:organizer:"), sk]);
+}
+
+/**
+ * Agent opens AND FUNDS an escrow. The deposit coin must equal the escrow
+ * amount exactly; it becomes contract custody via receiveShielded.
+ */
+export circuit createEscrow(
+  amount: Uint<128>,
+  organizerCommitmentInput: Bytes<32>,
+  bookingRef: Bytes<32>,
+  deadline: Uint<64>,
+  claimDeadline: Uint<64>,
+  deposit: ShieldedCoinInfo,
+  agentPk: ZswapCoinPublicKey,
+  organizerPk: ZswapCoinPublicKey
+): [] {
+  assert(amount > 0, "amount must be positive");
+  assert(deposit.value == amount, "deposit must equal escrow amount");
+  assert(claimDeadline > deadline, "claim deadline must be after refund deadline");
+  receiveShielded(disclose(deposit));
+
+  nextId.increment(1);
+  const id = disclose(nextId.read() as Uint<64>);
+  const aComm = agentCommitment(agentSecretKey());
+
+  escrows.insert(id, Escrow {
+    amount: disclose(amount),
+    agentCommitment: disclose(aComm),
+    organizerCommitment: disclose(organizerCommitmentInput),
+    state: 1, // HELD
+    bookingRef: disclose(bookingRef),
+    deadline: disclose(deadline),
+    claimDeadline: disclose(claimDeadline),
+    coinNonce: disclose(deposit.nonce),
+    coinColor: disclose(deposit.color)
+  });
+  agentPks.insert(id, disclose(agentPk));
+  organizerPks.insert(id, disclose(organizerPk));
+}
+
+/**
+ * Organizer releases the funds (service confirmed): the deposited coin is
+ * spent to the organizer's stored coin public key. Only the organizer
+ * (commitment match) and only while HELD.
+ */
+export circuit releaseEscrow(escrowId: Uint<64>, spendCoin: QualifiedShieldedCoinInfo): [] {
+  const id = disclose(escrowId);
+  assert(escrows.member(id), "escrow not found");
+  const e = escrows.lookup(id);
+  assert(e.state == 1, "escrow not in HELD state"); // HELD
+  const caller = organizerCommitment(organizerSecretKey());
+  assert(caller == e.organizerCommitment, "only organizer can release");
+  assert(spendCoin.nonce == e.coinNonce, "coin does not match escrow custody");
+  assert(spendCoin.color == e.coinColor, "coin does not match escrow custody");
+  assert(spendCoin.value == e.amount, "coin does not match escrow custody");
+
+  sendShielded(
+    disclose(spendCoin),
+    left<ZswapCoinPublicKey, ContractAddress>(organizerPks.lookup(id)),
+    e.amount
+  );
+
+  escrows.insert(id, Escrow {
+    amount: e.amount,
+    agentCommitment: e.agentCommitment,
+    organizerCommitment: e.organizerCommitment,
+    state: 2, // RELEASED
+    bookingRef: e.bookingRef,
+    deadline: e.deadline,
+    claimDeadline: e.claimDeadline,
+    coinNonce: e.coinNonce,
+    coinColor: e.coinColor
+  });
+}
+
+/**
+ * Agent takes the refund (cancellation before service): the deposited coin
+ * returns to the agent's stored coin public key. Only the agent and only
+ * while HELD.
+ */
+export circuit refundEscrow(escrowId: Uint<64>, spendCoin: QualifiedShieldedCoinInfo): [] {
+  const id = disclose(escrowId);
+  assert(escrows.member(id), "escrow not found");
+  const e = escrows.lookup(id);
+  assert(e.state == 1, "escrow not in HELD state"); // HELD
+  const caller = agentCommitment(agentSecretKey());
+  assert(caller == e.agentCommitment, "only agent can refund");
+  assert(!(blockTimeGte(e.claimDeadline)), "claim deadline passed - merchant auto-release applies");
+  assert(spendCoin.nonce == e.coinNonce, "coin does not match escrow custody");
+  assert(spendCoin.color == e.coinColor, "coin does not match escrow custody");
+  assert(spendCoin.value == e.amount, "coin does not match escrow custody");
+
+  sendShielded(
+    disclose(spendCoin),
+    left<ZswapCoinPublicKey, ContractAddress>(agentPks.lookup(id)),
+    e.amount
+  );
+
+  escrows.insert(id, Escrow {
+    amount: e.amount,
+    agentCommitment: e.agentCommitment,
+    organizerCommitment: e.organizerCommitment,
+    state: 3, // REFUNDED
+    bookingRef: e.bookingRef,
+    deadline: e.deadline,
+    claimDeadline: e.claimDeadline,
+    coinNonce: e.coinNonce,
+    coinColor: e.coinColor
+  });
+}
+
+/**
+ * Permissionless timeout refund (liveness): once the deadline has passed,
+ * ANYONE may return the deposit — to the AGENT'S STORED KEY, which the
+ * caller cannot choose. The agent never loses funds to a silent organizer.
+ */
+export circuit timeoutRefund(escrowId: Uint<64>, spendCoin: QualifiedShieldedCoinInfo): [] {
+  const id = disclose(escrowId);
+  assert(escrows.member(id), "escrow not found");
+  const e = escrows.lookup(id);
+  assert(e.state == 1, "escrow not in HELD state"); // HELD
+  assert(blockTimeGte(e.deadline), "deadline not reached yet");
+  assert(!(blockTimeGte(e.claimDeadline)), "claim deadline passed - merchant auto-release applies");
+  assert(spendCoin.nonce == e.coinNonce, "coin does not match escrow custody");
+  assert(spendCoin.color == e.coinColor, "coin does not match escrow custody");
+  assert(spendCoin.value == e.amount, "coin does not match escrow custody");
+
+  sendShielded(
+    disclose(spendCoin),
+    left<ZswapCoinPublicKey, ContractAddress>(agentPks.lookup(id)),
+    e.amount
+  );
+
+  escrows.insert(id, Escrow {
+    amount: e.amount,
+    agentCommitment: e.agentCommitment,
+    organizerCommitment: e.organizerCommitment,
+    state: 3, // REFUNDED
+    bookingRef: e.bookingRef,
+    deadline: e.deadline,
+    claimDeadline: e.claimDeadline,
+    coinNonce: e.coinNonce,
+    coinColor: e.coinColor
+  });
+}
+
+/**
+ * M16 — Mutual refund after settlement (both parties consent).
+ *
+ * After RELEASED the original deposit coin is gone (spent to the organizer
+ * by releaseEscrow), so the organizer returns equivalent funds THROUGH the
+ * contract: this circuit receives the organizer's return coin and routes it
+ * atomically to the agent's stored coin public key. BOTH commitments must
+ * prove — neither party alone can move settled funds (one stolen key is
+ * useless), and the payout destination is the agent key fixed at creation,
+ * so the caller cannot redirect the refund.
+ *
+ * Equivalent-funds rule: the return coin must match the escrow's color and
+ * exact amount; its nonce is intentionally NOT compared (it is a fresh
+ * coin — the deposit coin no longer exists).
+ */
+export circuit mutualRefund(escrowId: Uint<64>, returnCoin: QualifiedShieldedCoinInfo): [] {
+  const id = disclose(escrowId);
+  assert(escrows.member(id), "escrow not found");
+  const e = escrows.lookup(id);
+  assert(e.state == 2, "escrow not in RELEASED state"); // RELEASED
+  const callerAgent = agentCommitment(agentSecretKey());
+  assert(callerAgent == e.agentCommitment, "agent consent missing");
+  const callerOrg = organizerCommitment(organizerSecretKey());
+  assert(callerOrg == e.organizerCommitment, "organizer consent missing");
+  assert(returnCoin.color == e.coinColor, "return coin wrong asset");
+  assert(returnCoin.value == e.amount, "return coin wrong amount");
+
+  receiveShielded(disclose(ShieldedCoinInfo {
+    nonce: returnCoin.nonce,
+    color: returnCoin.color,
+    value: returnCoin.value
+  }));
+  sendShielded(
+    disclose(returnCoin),
+    left<ZswapCoinPublicKey, ContractAddress>(agentPks.lookup(id)),
+    e.amount
+  );
+
+  escrows.insert(id, Escrow {
+    amount: e.amount,
+    agentCommitment: e.agentCommitment,
+    organizerCommitment: e.organizerCommitment,
+    state: 3, // REFUNDED
+    bookingRef: e.bookingRef,
+    deadline: e.deadline,
+    claimDeadline: e.claimDeadline,
+    coinNonce: e.coinNonce,
+    coinColor: e.coinColor
+  });
+}
+
+/**
+ * M17 — Merchant auto-release after a quiet claim deadline (liveness for
+ * the seller side). Once the claim deadline has passed with no refund
+ * claimed, ANYONE may spend the deposited coin to the ORGANIZER'S STORED
+ * key — the caller cannot redirect it. This closes the bad-faith-buyer
+ * gap: a buyer who received the service can no longer claw back forever.
+ * Guard ordering: before the claim deadline the buyer-favoring
+ * timeoutRefund applies; after it, autoRelease applies.
+ */
+export circuit autoRelease(escrowId: Uint<64>, spendCoin: QualifiedShieldedCoinInfo): [] {
+  const id = disclose(escrowId);
+  assert(escrows.member(id), "escrow not found");
+  const e = escrows.lookup(id);
+  assert(e.state == 1, "escrow not in HELD state"); // HELD
+  assert(blockTimeGte(e.claimDeadline), "claim deadline not reached yet");
+  assert(spendCoin.nonce == e.coinNonce, "coin does not match escrow custody");
+  assert(spendCoin.color == e.coinColor, "coin does not match escrow custody");
+  assert(spendCoin.value == e.amount, "coin does not match escrow custody");
+
+  sendShielded(
+    disclose(spendCoin),
+    left<ZswapCoinPublicKey, ContractAddress>(organizerPks.lookup(id)),
+    e.amount
+  );
+
+  escrows.insert(id, Escrow {
+    amount: e.amount,
+    agentCommitment: e.agentCommitment,
+    organizerCommitment: e.organizerCommitment,
+    state: 2, // RELEASED
+    bookingRef: e.bookingRef,
+    deadline: e.deadline,
+    claimDeadline: e.claimDeadline,
+    coinNonce: e.coinNonce,
+    coinColor: e.coinColor
+  });
+}
+
+/**
+ * Public read helper: is this escrow still HELD?
+ * (the hub polls this via the indexer to mirror on-chain state)
+ */
+export circuit isHeld(escrowId: Uint<64>): Boolean {
+  const id = disclose(escrowId);
+  assert(escrows.member(id), "escrow not found");
+  const e = escrows.lookup(id);
+  return e.state == 1; // HELD
+}

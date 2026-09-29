@@ -1,0 +1,138 @@
+{
+  "manifest-version": "1",
+  "compiler-version": "0.34.0",
+  "language-version": "0.26.0",
+  "runtime-version": "0.19.0",
+  "compiler": {
+    "type": "directory",
+    "contract-info.json": {
+      "type": "file",
+      "size": 3692,
+      "hash": "aedf9cece610762b394aaf94b523ad12dff2b3e81f669787798c1be6ab01fdf8"
+    }
+  },
+  "contract": {
+    "type": "directory",
+    "index.d.ts": {
+      "type": "file",
+      "size": 4250,
+      "hash": "967c0f8ec20022ee5795f900f9f942f59eb30a48f828d6df7469118ae557209e"
+    },
+    "index.js": {
+      "type": "file",
+      "size": 86952,
+      "hash": "0a1d724bd6247df37efe04b029e8f6c9f8201715bea1528deed1b5ef2432144c"
+    },
+    "index.js.map": {
+      "type": "file",
+      "size": 2823,
+      "hash": "0966fa3f214a1b140c11efc0e1430e24733ed5914ab7c3b280a19796724b25f4"
+    }
+  },
+  "zkir": {
+    "type": "directory",
+    "initializeIssuer.bzkir": {
+      "type": "file",
+      "size": 209,
+      "hash": "83cb6617e38173f5f49a5d53cc5bf416c4b4a22f1770f497ffc3de3ce172ae35"
+    },
+    "initializeIssuer.zkir": {
+      "type": "file",
+      "size": 3176,
+      "hash": "2d5332438f0985f43db5319a72d5e41f75a7c0c79e86bda15e9160a28d4ade60"
+    },
+    "isRevoked.bzkir": {
+      "type": "file",
+      "size": 149,
+      "hash": "e6558d59834396e9b2b3134747e5c0a54ba55d7e52bf56511183998e32fc1039"
+    },
+    "isRevoked.zkir": {
+      "type": "file",
+      "size": 2395,
+      "hash": "fa5fd9cf6edc0aae85ede4673233ed912844cc3135f986f1e44918bc3ce8f696"
+    },
+    "issueCredential.bzkir": {
+      "type": "file",
+      "size": 392,
+      "hash": "c524ab65ed47486cdce6a232ee3586e067f2618930dc8b86155f0e8e972297a9"
+    },
+    "issueCredential.zkir": {
+      "type": "file",
+      "size": 6556,
+      "hash": "b0a5b829472eb11edc5c10050aad767ca7b4c2f35f51f8c0e838b0ac8321ba78"
+    },
+    "proveHolder.bzkir": {
+      "type": "file",
+      "size": 258,
+      "hash": "389bf90059ae90fca8f5ca740deb05556a2bcdd3242f491eafcaad27e30e2023"
+    },
+    "proveHolder.zkir": {
+      "type": "file",
+      "size": 4101,
+      "hash": "2431f82dda04d099b50c30e8a9097fce24e1dc2caaf2a90b836145d8d9333bfa"
+    },
+    "revokeCredential.bzkir": {
+      "type": "file",
+      "size": 325,
+      "hash": "28e241d53af5b2154cb1a53a543cf5c5e90608f633061e036f5c2c491de24876"
+    },
+    "revokeCredential.zkir": {
+      "type": "file",
+      "size": 5307,
+      "hash": "7b3540a21a254ddded2d7633e52ff37b60ae1a2961b8a53f68996c6db6508929"
+    }
+  },
+  "keys": {
+    "type": "directory",
+    "initializeIssuer.prover": {
+      "type": "file",
+      "size": 2820202,
+      "hash": "91efb8d65fbe8c57e68359f3b37f79e176c6bb7ef22e1bb9c3a7b9b9da8d6f90"
+    },
+    "initializeIssuer.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "626a40f87053a240d99f668fd61eeda23e2c31ef2619f56170667aaec4dafaee"
+    },
+    "isRevoked.prover": {
+      "type": "file",
+      "size": 41561,
+      "hash": "cbf1c99ef32f63d6dce311d251fb12254e0639f121ee282558b9bc89059ed5b6"
+    },
+    "isRevoked.verifier": {
+      "type": "file",
+      "size": 1351,
+      "hash": "f1e97a9fa009325276af8567aa2681494f3cfab3f14241032dd2c66c1935e129"
+    },
+    "issueCredential.prover": {
+      "type": "file",
+      "size": 2820591,
+      "hash": "f8f12035ac51e342837d79fcd951b3346ff6178016a145b1da10f3e32c985c48"
+    },
+    "issueCredential.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "b1a7cec8158bc760456c5abba7ebc63141b2e791303720759028d5ed1eea36ab"
+    },
+    "proveHolder.prover": {
+      "type": "file",
+      "size": 2820281,
+      "hash": "dad90a68b5a38f73ea0c3906d5936c6b530eda4cfac5537c5a4db4b5e2a6ad26"
+    },
+    "proveHolder.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "c7ffb37b0efd02ef9ad15ca10b7e2036330385cb0c173d7e4584636ff03031c4"
+    },
+    "revokeCredential.prover": {
+      "type": "file",
+      "size": 2820358,
+      "hash": "b57c104f87a2376458c6c6f019cd8f82f0b7c3c6ed1137b2b05f74a38ba7affb"
+    },
+    "revokeCredential.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "f9a73674164bc901fda1d83910fffa5f6627d1ecdcdcf04742b3f78b20cc6717"
+    }
+  }
+}
