@@ -182,6 +182,27 @@ def main():
     ans = chatlib.handle_text(hub, "do you have discount codes?", sender="promo-cap-1")
     check("P10 capability CAN answer", "promo" in ans.lower() and "book" in ans.lower(), ans[:120])
 
+    # --- P11: anon paid booking + promo -> stash survives the signup gate ---
+    anon = "web-promo-anon-1"
+    r11 = chatlib.handle_text(hub, f"book {lid} Zoe promo CHAT10", sender=anon)
+    _st = chatlib._PENDING_BOOK.get(anon) or {}
+    check("P11 anon paid gate holds", "signup" in r11.lower() and "paid listing" in r11.lower(), r11[:100])
+    check("P11 stash carries who+promo", _st.get("who") == "Zoe" and _st.get("promo") == "CHAT10", str(_st))
+
+    # --- P12: signup resumes the SAME paid booking with the promo intact ---
+    r12 = chatlib.handle_text(hub, "signup", sender=anon)
+    _int2 = chatlib._PAY_INTENTS.get(anon) or {}
+    check("P12 signup resumes pay flow", "[[pay:" in r12, r12[-120:])
+    check("P12 pay intent carries promo+who", _int2.get("promo_code") == "CHAT10" and _int2.get("who") == "Zoe", str(_int2))
+    code, pub12 = call("GET", hub + f"/listings/{lid}")
+    check("P12 promo NOT burned pre-payment", pub12.get("promo_uses_left") == 5, str(pub12.get("promo_uses_left")))
+
+    # --- P13: free flow stash shape keeps promo field (regression) ---
+    anon2 = "web-promo-anon-2"
+    chatlib.handle_text(hub, f"book {flid} Max", sender=anon2)
+    _st2 = chatlib._PENDING_BOOK.get(anon2) or {}
+    check("P13 free stash shape", _st2.get("stage") == "need_account" and _st2.get("promo") == "" and _st2.get("who") == "Max", str(_st2))
+
 
 if __name__ == "__main__":
     try:

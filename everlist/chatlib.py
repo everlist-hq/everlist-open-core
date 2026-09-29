@@ -329,9 +329,10 @@ _PAY_INTENTS: dict[str, dict] = {}  # P0: per-sender pay intent {lid, who, ts} f
 _PENDING_BOOK: dict[str, dict] = {}  # owner 2026-09-29: booking the user wanted before signup gate interrupted it {lid, title, stage, ts}
 
 
-def _pending_book_put(sender: str, lid: str, title: str = "", stage: str = "gate", who: str = "") -> None:
+def _pending_book_put(sender: str, lid: str, title: str = "", stage: str = "gate", who: str = "", promo: str = "") -> None:
     _PENDING_BOOK[sender] = {"lid": str(lid), "title": str(title), "stage": stage,
-                             "who": str(who or ""), "ts": time.time()}
+                             "who": str(who or ""), "promo": str(promo or ""),
+                             "ts": time.time()}
 
 
 def _pending_book_get(sender: str) -> dict | None:
@@ -1178,7 +1179,12 @@ def _signup(hub_url: str, sender: str) -> str:
             "operator vouch makes you human-verified (pilot).")
     _pb = _pending_book_pop(sender)
     if _pb:
-        return _seed_msg + "\n\n" + handle_text(hub_url, "book " + _pb["lid"], sender=sender)
+        _cmd = "book " + _pb["lid"]
+        if _pb.get("who"):
+            _cmd += " " + _pb["who"]
+        if _pb.get("promo"):
+            _cmd += " promo " + _pb["promo"]
+        return _seed_msg + "\n\n" + handle_text(hub_url, _cmd, sender=sender)
     return _seed_msg
 
 
@@ -3137,8 +3143,10 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                 return (f"Still holding your spot for '{_pt}' - just tell me the "
                         "name to book it under.")
             _pwho = _pbq.get("who") or ""
-            return handle_text(hub_url, "book " + _pbq["lid"] + ((" " + _pwho) if _pwho else ""),
-                               sender=sender)
+            _pcmd = "book " + _pbq["lid"] + ((" " + _pwho) if _pwho else "")
+            if _pbq.get("promo"):
+                _pcmd += " promo " + _pbq["promo"]
+            return handle_text(hub_url, _pcmd, sender=sender)
         # flow-status questions while a spot is held (worked? can i book it
         # now? why do you ask?) - deterministic answer, never a brain shrug
         if re.search(r"\b(worked|status|did it|is it|can i book|book it now|still (there|hold)|holding|why)\b", low):
@@ -3561,6 +3569,10 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                             if pt.get("rail") == "instant" else
                             "\n\ud83d\udee1 Terms: protected \u00b7 refund window %sh" % pt.get("refund_window_hours", "?"))
                 if not _wp:
+                    # anon paid booking: stash lid/who/promo so 'signup' can
+                    # resume the exact booking (promo rides through the gate)
+                    _pending_book_put(sender, lid, str(target.get("title") or ""),
+                                      "need_account", who=who or "", promo=promo_code or "")
                     return (f"'{target.get('title')}' is a paid listing (${target.get('price')}).\n"
                             "You can pay right here in chat \u2014 wallet to escrow, one tap.\n"
                             "One-time setup first: say 'signup' to create your account "
@@ -3583,7 +3595,11 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
             )
         sess = _session(sender)
         if not sess:
-            _pending_book_put(sender, lid, str(target.get("title") or ""), "need_account")
+            # carry the name through the gate when given (uniform with the
+            # paid path): book <id> <name> + signup -> straight to vouch,
+            # never re-ask a name already provided
+            _pending_book_put(sender, lid, str(target.get("title") or ""), "need_account",
+                              who=who or "")
             return (f"'{target.get('title')}' is FREE — I can book it for you right here.\n"
                     "I just need an account for you first — say 'signup' and we'll set that "
                     "up together (a one-time human check, the hub operator vouches for you).\n"
