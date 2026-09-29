@@ -127,7 +127,7 @@ def _paginate(items, query):
 
 # S6: rating_wsum/rating_wtot (weighted-average numerator/denominator), review_flags
 # (L4 interlock heuristics) and rating_times (burst detection) are server-internal.
-_SERVER_ONLY_LISTING_FIELDS = frozenset({"manage_code_hash", "claim_code_hash", "rating_wsum", "rating_wtot", "review_flags", "rating_times"})
+_SERVER_ONLY_LISTING_FIELDS = frozenset({"manage_code_hash", "claim_code_hash", "rating_wsum", "rating_wtot", "review_flags", "rating_times", "promo_code_hash"})
 
 
 def _review_weight(b):
@@ -784,7 +784,7 @@ VERTICAL_SCHEMAS = {
 # I1: field ownership. Server-owned fields may never come from clients.
 RESERVED_BOOKING_FIELDS = {"id", "vertical", "escrow", "amount", "hub_fee",
     "owner_payout", "created", "booking_secret", "rail", "confirmation",
-    "verified_by", "payment_terms", "claim",
+    "verified_by", "payment_terms", "claim", "promo_applied",
     "payment_payer", "payment_value", "payment_nonce"}  # M14: verification provenance is server-derived only; C12: terms snapshot is server-copied from the listing (clients echo consent via accepted_payment_terms, never claim terms); S6: x402 payment evidence is server-verified, never client-claimed
 
 # EverList taxonomy: category = controlled vocab per vertical (validated at
@@ -3017,7 +3017,8 @@ class Handler(BaseHTTPRequestHandler):
                         changes[_k] = _BAD_CHARS_RE.sub("", _v)
                 _pt_edit = "payment_terms" in data  # C12: terms are owner-editable pre-booking; booked bookings keep their snapshot
                 _rvb_edit = "require_verified_buyer" in data  # C11: verified-buyer gate is owner-editable pre-booking
-                if not changes and not _pt_edit and not _rvb_edit:
+                _promo_edit = "promo" in data  # owner-approved 2026-09-30: promo codes, paid listings only
+                if not changes and not _pt_edit and not _rvb_edit and not _promo_edit:
                     return self._json(400, {"error": "no editable fields given",
                                             "editable": sorted(editable | {"require_verified_buyer"})})
                 if "price" in changes:
@@ -3058,6 +3059,46 @@ class Handler(BaseHTTPRequestHandler):
                     if not isinstance(data["require_verified_buyer"], bool):
                         return self._json(400, {"error": "require_verified_buyer must be a boolean"})
                     changes["require_verified_buyer"] = data["require_verified_buyer"]
+                if _promo_edit:  # promo codes (owner-approved 2026-09-30):
+                    # promo: null clears; {code, pct, uses} sets. Code stored as
+                    # sha256 ONLY (H9 law - same wall as manage codes); the plain
+                    # code is echoed ONCE in this response so the organizer can
+                    # share it. pct 1-50 (paid stays paid), uses 1-1000.
+                    pv = data["promo"]
+                    if pv is None:
+                        listing.pop("promo_code_hash", None)
+                        listing.pop("promo_pct", None)
+                        listing.pop("promo_uses_left", None)
+                        _persist_locked()
+                        return self._json(200, {"ok": True, "id": lid, "promo": None,
+                                                "note": "promo code removed"})
+                    if not isinstance(pv, dict) or set(pv) != {"code", "pct", "uses"}:
+                        return self._json(400, {"error": "promo must be an object with exactly: code, pct, uses (or null to remove)"})
+                    code_p = str(pv["code"]).strip().upper()
+                    if not re.fullmatch(r"[A-Z0-9]{3,24}", code_p):
+                        return self._json(400, {"error": "promo code must be 3-24 letters/digits"})
+                    try:
+                        pct_p = int(pv["pct"])
+                    except (TypeError, ValueError):
+                        return self._json(400, {"error": "promo pct must be an integer"})
+                    if not (1 <= pct_p <= 50):
+                        return self._json(400, {"error": "promo pct must be 1-50 (paid stays paid)"})
+                    try:
+                        uses_p = int(pv["uses"])
+                    except (TypeError, ValueError):
+                        return self._json(400, {"error": "promo uses must be an integer"})
+                    if not (1 <= uses_p <= 1000):
+                        return self._json(400, {"error": "promo uses must be 1-1000"})
+                    _new_price_p = changes.get("price", listing.get("price", 0))
+                    if not (isinstance(_new_price_p, (int, float)) and float(_new_price_p) > 0):
+                        return self._json(400, {"error": "promo needs a paid listing (price > 0)"})
+                    listing["promo_code_hash"] = hashlib.sha256(code_p.encode()).hexdigest()
+                    listing["promo_pct"] = pct_p
+                    listing["promo_uses_left"] = uses_p
+                    _persist_locked()
+                    return self._json(200, {"ok": True, "id": lid,
+                        "promo": {"code": code_p, "pct": pct_p, "uses": uses_p},
+                        "note": "promo code shown ONCE - share it with your buyers; the hub stores only its hash"})
                 if "url" in changes:
                     u3 = str(changes["url"]).strip()
                     if not (u3.startswith("http://") or u3.startswith("https://")) or len(u3) > 300:
@@ -3183,7 +3224,7 @@ class Handler(BaseHTTPRequestHandler):
             reserved_seen = [k for k in data if k in RESERVED_BOOKING_FIELDS]
             if reserved_seen:
                 return self._json(400, {"error": f"reserved fields rejected: {reserved_seen}"})
-            allowed = CLIENT_BOOKING_FIELDS[v] | {"listing_id", "human_verified", "escrow_ref", "accepted_payment_terms"}
+            allowed = CLIENT_BOOKING_FIELDS[v] | {"listing_id", "human_verified", "escrow_ref", "accepted_payment_terms", "promo_code"}
             unknown = [k for k in data if k not in allowed]
             if unknown:
                 return self._json(400, {"error": f"unknown fields rejected: {unknown}",
@@ -3267,6 +3308,29 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(409, {"error": "listing unavailable"})
                 # I3: money as integer minor units internally (convert at the edge)
                 price_c = int(round(listing["price"] * 100)) * qty
+                # promo redemption (owner-approved 2026-09-30): validate + recompute
+                # the price EARLY so fee/escrow/chain-amount checks all validate
+                # against the honest discounted total. The use is only decremented
+                # at booking-commit time - a failed booking never burns a use.
+                _promo_pcode = data.get("promo_code")
+                _promo_pct = 0
+                if _promo_pcode is not None:
+                    if not isinstance(_promo_pcode, str) or not re.fullmatch(r"[A-Za-z0-9]{3,24}", _promo_pcode.strip()):
+                        return self._json(400, {"error": "promo_code must be 3-24 letters/digits"})
+                    _promo_pcode = _promo_pcode.strip().upper()
+                    _ph = listing.get("promo_code_hash")
+                    if not _ph:
+                        return self._json(404, {"error": "this listing has no promo code"})
+                    if not hmac.compare_digest(hashlib.sha256(_promo_pcode.encode()).hexdigest(), str(_ph)):
+                        return self._json(403, {"error": "invalid promo code"})
+                    if int(listing.get("promo_uses_left") or 0) < 1:
+                        return self._json(409, {"error": "promo code exhausted - no redemptions left"})
+                    if price_c <= 0:
+                        return self._json(409, {"error": "promo needs a paid listing (this one is free)"})
+                    _promo_pct = int(listing.get("promo_pct") or 0)
+                    if not (1 <= _promo_pct <= 50):
+                        return self._json(409, {"error": "promo on this listing is misconfigured - the organizer needs to reset it"})
+                    price_c = price_c * (100 - _promo_pct) // 100
                 fee_c = hub_fee_c(price_c); payout_c = price_c - fee_c
                 price = price_c / 100.0; fee = fee_c / 100.0; payout = payout_c / 100.0
                 # C12 (SPEC §19a): booking = acceptance of the listing's payment
@@ -3387,12 +3451,16 @@ class Handler(BaseHTTPRequestHandler):
                 priv_fields = {k: d for k, d in data.items() if k == _idf}
                 pub = {k: (anon_ref() if k == _idf else d)
                        for k, d in data.items() if k in CLIENT_BOOKING_FIELDS[v]}
+                if _promo_pcode is not None:  # commit the redemption (same LOCK as the booking append)
+                    listing["promo_uses_left"] = int(listing.get("promo_uses_left") or 0) - 1
                 booking = {"id": bid, "listing_id": lid, "vertical": v,
                     "escrow": escrow_state, "amount": price, "hub_fee": fee,
                     "owner_payout": payout, "quantity": qty, "created": time.time(),
                     "booked_by": principal,
                     "payment_terms": _pt,  # C12: server-copied snapshot of the terms IN FORCE at booking time; later listing edits never rewrite a done deal
                     **pub}
+                if _promo_pct:
+                    booking["promo_applied"] = {"pct": _promo_pct}  # server-derived; the raw code is never stored
                 # M14: bookings carry verification provenance SERVER-SIDE only
                 # (verified_by is reserved - clients can never claim it)
                 if principal.startswith("acct-"):

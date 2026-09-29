@@ -20,6 +20,14 @@ CAN = [
      "Search is what I do best: tell me what you're after ('jazz tonight', "
      "'free yoga this weekend') and the board fills up. Say 'book 1' on any "
      "result."),
+    ("promo_discount",
+     ("discount code", "promo code", "promo", "rabatt", "discount",
+      "gutschein"),
+     "Yes - organizers set promo codes on their listings "
+     "(edit <id> promo: CODE 20% 10 uses), and you redeem at booking: "
+     "book <n> <name> promo CODE. The discount applies before payment, so "
+     "fees and escrow follow the reduced price. Ask the organizer for "
+     "their code."),
     ("transfer_booking",
      ("transfer my booking", "transfer booking", "give my booking",
       "change name on booking", "umbuchen"),
@@ -73,7 +81,7 @@ CAN = [
      "Organizers receive money to a coin key you set once: 'set-payout "
      "<key>'. Payouts then go straight to that key."),
     ("deals",
-     ("private deal", "deal", "negotiate", "discount"),
+     ("private deal", "deal", "negotiate"),
      "Organizers can run private deals for special prices or groups - ask me "
      "about the private-deal flow and I'll walk you through it."),
     ("language",
@@ -106,11 +114,6 @@ CANNOT = [
      ("sell my tickets", "resell", "weiterverkaufen", "tickets verkaufen"),
      "Resale isn't built yet. You can edit or delete your own listing and "
      "post a fresh one ('edit <id> ...')."),
-    ("group_discount",
-     ("group discount", "gruppenrabatt", "discount", "rabatt"),
-     "That's between you and the organizer - the contact option on the "
-     "listing page is the way to ask. Private deals exist for organizers: "
-     "'private deal' flow."),
 ]
 
 UNKNOWN_LINE = (

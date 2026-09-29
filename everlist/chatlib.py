@@ -1777,6 +1777,16 @@ def _owned_listing(hub_url: str, sender: str, body: str, action: str) -> str:
         for k in ("title", "description", "price", "location", "date", "capacity", "category", "tags", "url"):
             if rich.get(k):
                 payload[k] = rich[k]
+        # promo setup/clear (owner-approved 2026-09-30):
+        #   edit <id> promo: SAVE20 20% 10   -> {code,pct,uses}
+        #   edit <id> promo: off             -> null (removes the code)
+        mp = re.search(r"promo\s*:\s*(off|none|remove)", rest, re.IGNORECASE)
+        if mp:
+            payload["promo"] = None
+        else:
+            mp = re.search(r"promo\s*:\s*([A-Za-z0-9]{3,24})\s+(\d{1,2})\s*%\s*(?:x\s*|for\s+|uses?\s*)?(\d{1,4})", rest, re.IGNORECASE)
+            if mp:
+                payload["promo"] = {"code": mp.group(1).upper(), "pct": int(mp.group(2)), "uses": int(mp.group(3))}
         if len(payload) == (2 if not sess else 1):
             return ("Nothing to change. Example: "
                     + (f"edit {lid} price: 5 capacity: 30" if sess else f"edit {lid} mgr-abc123 price: 5"))
@@ -3481,6 +3491,11 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
         claim = mclaim.group(0) if mclaim else ""
         if claim:
             who = who.replace(claim, "").strip()
+        mpromo = re.search(r"\b(?:promo|rabatt(?:code)?)\s+([A-Za-z0-9]{3,24})", who,
+                           re.IGNORECASE)  # promo redemption (owner-approved 2026-09-30)
+        promo_code = mpromo.group(1).upper() if mpromo else ""
+        if promo_code:
+            who = who.replace(mpromo.group(0), "").strip()
         target = None
         _lid_rx = re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)+", lid or "")
         if lid and _lid_rx:
@@ -3552,7 +3567,8 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                             "(the hub operator vouches you in \u2014 one-time human check, pilot)."
                             + _wpt)
                 _PAY_INTENTS[sender] = {"lid": str(target.get("id") or ""),
-                                        "who": who or "", "ts": time.time()}
+                                        "who": who or "", "ts": time.time(),
+                                        **({"promo_code": promo_code} if promo_code else {})}
                 return (f"'{target.get('title')}' is a paid listing (${target.get('price')}).\n"
                         "[[pay:" + str(target.get("id")) + "]]"
                         "Tap Pay to pay from your wallet \u2014 same protected flow agents use "
@@ -3581,6 +3597,8 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
             payload = {"listing_id": lid, sch["identity"]: who[:80]}
             if claim:
                 payload["claim"] = claim  # P2: private-deal claim (hub validates, never stores)
+            if promo_code:
+                payload["promo_code"] = promo_code  # hub validates + applies the discount
             status, res = _hub_post(hub_url, "/book", payload, token=sess["tokens"]["book"])
         except Exception:
             return "Sorry — the EverList hub is unreachable right now. Try again shortly."
