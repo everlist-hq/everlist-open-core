@@ -247,6 +247,45 @@ _HARD_CAP = 12      # never flood the chat with more full cards at once
 _INDEX_CAP = 20     # index lines shown before pointing at refinement
 _PREVIEW_CARDS = 3  # full cards attached under a long index
 _LAST_RESULTS: dict[str, list] = {}  # per-sender stash for '3' / '2-6' / 'all' follow-ups
+_PAY_INTENTS: dict[str, dict] = {}  # P0: per-sender pay intent {lid, who, ts} for /api/pay/submit
+_PENDING_BOOK: dict[str, dict] = {}  # owner 2026-09-29: booking the user wanted before signup gate interrupted it {lid, title, stage, ts}
+
+
+def _pending_book_put(sender: str, lid: str, title: str = "", stage: str = "gate") -> None:
+    _PENDING_BOOK[sender] = {"lid": str(lid), "title": str(title), "stage": stage, "ts": time.time()}
+
+
+def _pending_book_get(sender: str) -> dict | None:
+    it = _PENDING_BOOK.get(sender)
+    if not it or time.time() - it.get("ts", 0) > 30 * 60:
+        _PENDING_BOOK.pop(sender, None)
+        return None
+    return it
+
+
+def _pending_book_pop(sender: str) -> dict | None:
+    it = _pending_book_get(sender)
+    _PENDING_BOOK.pop(sender, None)
+    return it
+
+
+_BOOK_AFFIRM_RX = re.compile(
+    r"^(?:yes[ ,]*(?:please|book(?: it)?(?: for me)?)?|yep+|yup|sure|ok(?:ay)?|"
+    r"please(?: do| book(?: it)?)?|do it|book it(?: for me)?|let'?s do it|"
+    r"book (?:it|that|this)(?: for me)?|yes book)[ !.]*$", re.I)
+_NAME_RX = re.compile(r"^[a-zA-ZÄäÖöÜüß' .\-]{2,60}$")
+
+
+def pay_intent_get(sender: str, lid: str = "") -> dict | None:
+    """P0: consume the pending pay intent for this sender (optionally for a
+    specific listing). TTL-bounded like sessions; returns None when absent."""
+    it = _PAY_INTENTS.get(sender)
+    if not it or time.time() - it.get("ts", 0) > 30 * 60:
+        _PAY_INTENTS.pop(sender, None)
+        return None
+    if lid and str(it.get("lid") or "") != lid:
+        return None
+    return it
 _LAST_SEARCH: dict[str, dict] = {}   # Brain v2: last search spec per sender (q + filters)
 
 
@@ -1031,7 +1070,9 @@ def _signup(hub_url: str, sender: str) -> str:
         logged = "\n✅ You are logged in here right away — list away!"
     else:
         logged = "\nLog in here with: login-seed <seed>"
-    return (f"✅ Account created ({aid}) — cryptographic kind.\n\n"
+    # owner 2026-09-29: seed message is built FIRST (shown ONCE, never swallowed);
+    # a pending booking from before the signup gate resumes right after it.
+    _seed_msg = (f"✅ Account created ({aid}) — cryptographic kind.\n\n"
             f"🔑 Your account SEED (shown ONCE — store it like a crypto seed phrase):\n"
             f"{seed}\n"
             "The hub stores ONLY your public key — it cannot leak or lose your secret. "
@@ -1039,6 +1080,10 @@ def _signup(hub_url: str, sender: str) -> str:
             + logged + "\n"
             "Next: 'email-bind you@example.com' enables self-service recovery, and "
             "operator vouch makes you human-verified (pilot).")
+    _pb = _pending_book_pop(sender)
+    if _pb:
+        return _seed_msg + "\n\n" + handle_text(hub_url, "book " + _pb["lid"], sender=sender)
+    return _seed_msg
 
 
 
@@ -1958,13 +2003,13 @@ _NOMATCH_SUG_TAILS = (
 )
 
 
-_BOARD_LINES = (
+_BOARD_LINES = (  # owner 2026-09-29: human speech, no command syntax in webchat
     ("I found %d match%s — they're open on the board for you. "
-     "Say 'book <n>' to book one, or tell me what to refine."),
-    ("%d match%s, open on the board for you — say 'book <n>' to book one, "
-     "or tell me what to change."),
-    ("I found %d match%s — they're open on the board. Say 'book <n>' for "
-     "the one you want."),
+     "Just tell me which one you'd like."),
+    ("%d match%s, open on the board for you — tell me the one you want "
+     "and I'll book it."),
+    ("Found %d match%s, open on the board for you — if one speaks to you, "
+     "just say so and it's booked."),
 )
 _BOARD_NOMATCH_LINES = (
     ("Nothing matched — but everything we have is on the board right now. 🌱 "
@@ -1983,8 +2028,8 @@ def board_line(sender: str, n: int, listings: list = None) -> str:
     if tick and listings:
         ins = _search_insight(listings)
         if ins:
-            return ("%s — %d match%s, open on the board for you. "
-                    "Say 'book <n>' to book one." % (ins, n, "" if n == 1 else "es"))
+            return ("%s — %d match%s open on the board for you; tell me which "
+                    "one you'd like." % (ins, n, "" if n == 1 else "es"))
     return base
 
 
@@ -2896,6 +2941,18 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     if low == "delete-account" or low.startswith("delete-account "):
         return _delete_account(hub_url, sender, text.strip()[14:].strip())
 
+    # --- owner 2026-09-29: resume a pending booking on human affirmation ---
+    # ('yes book', 'book it', 'please' after the signup gate or name ask).
+    # Runs AFTER intake/social (intake yes still owns its flow) but BEFORE
+    # the brain so the intent never derails into a search.
+    _pbq = _pending_book_get(sender)
+    if _pbq and _BOOK_AFFIRM_RX.match(low):
+        return handle_text(hub_url, "book " + _pbq["lid"], sender=sender)
+    if _pbq and _pbq.get("stage") == "need_name" and _NAME_RX.match(low) and not re.match(
+            r"^(search|book|help|show|list|my|cancel|whoami|signup|login)\b", low):
+        _pending_book_pop(sender)
+        return handle_text(hub_url, "book " + _pbq["lid"] + " " + low, sender=sender)
+
     # --- email recovery (B3c-email)
     if low.startswith("email-bind "):
         return _email_bind(hub_url, sender, text.strip()[10:].strip())
@@ -3152,13 +3209,28 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                            + (f" · deposit {pt.get('deposit_required')}" if pt.get("deposit_required") else "")
                            + "\nCustom terms: the SDK booking must echo accepted_payment_terms exactly.")
             if sender.startswith("web-"):
-                return (
-                    f"'{target.get('title')}' is a paid listing (${target.get('price')}). 💳\n"
-                    "Free things book instantly right here in chat — for paid ones, "
-                    "your booking agent handles the wallet payment (that's what the "
-                    "escrow protects). Want me to show free options instead? 🌱"
-                    + pt_line
-                )
+                # P0 human paid bookings (spec 2026-09-29): offer the REAL
+                # payment flow. The marker [[pay:<lid>]] is stripped by the
+                # webchat and turned into a Pay button; the intent (who)
+                # is stashed for /api/pay/submit. Escrow facts stay exact.
+                _wp = _session(sender)
+                _wpt = ""
+                if isinstance(pt, dict):
+                    _wpt = ("\n\u26a1 Terms: instant rail \u2014 settled at booking, no refund window."
+                            if pt.get("rail") == "instant" else
+                            "\n\ud83d\udee1 Terms: protected \u00b7 refund window %sh" % pt.get("refund_window_hours", "?"))
+                if not _wp:
+                    return (f"'{target.get('title')}' is a paid listing (${target.get('price')}).\n"
+                            "You can pay right here in chat \u2014 wallet to escrow, one tap.\n"
+                            "One-time setup first: say 'signup' to create your account "
+                            "(the hub operator vouches you in \u2014 one-time human check, pilot)."
+                            + _wpt)
+                _PAY_INTENTS[sender] = {"lid": str(target.get("id") or ""),
+                                        "who": who or "", "ts": time.time()}
+                return (f"'{target.get('title')}' is a paid listing (${target.get('price')}).\n"
+                        "[[pay:" + str(target.get("id")) + "]]"
+                        "Tap Pay to pay from your wallet \u2014 same protected flow agents use "
+                        "(pilot: real flow, test money)." + _wpt)
             return (
                 f"'{target.get('title')}' is a PAID listing ({target.get('price')}).\n"
                 "Payment goes through x402 — use the EverList SDK (agenthub client) "
@@ -3169,13 +3241,15 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
             )
         sess = _session(sender)
         if not sess:
+            _pending_book_put(sender, lid, str(target.get("title") or ""), "need_account")
             return (f"'{target.get('title')}' is FREE — I can book it for you right here.\n"
-                    "First create an account ('signup'), then: book " + lid + " <your-name>\n"
-                    "(First booking? A one-time human check — the hub operator vouches for you, just ask.)")
+                    "I just need an account for you first — say 'signup' and we'll set that "
+                    "up together (a one-time human check, the hub operator vouches for you).\n"
+                    "After that I'll hold your spot right away.")
         if not who:
-            return (f"'{target.get('title')}' is FREE. Who is the booking for?\n"
-                    "book " + lid + " <your-name>\n"
-                    "(First booking? A one-time human check — the hub operator vouches for you, just ask.)")
+            _pending_book_put(sender, lid, str(target.get("title") or ""), "need_name")
+            return (f"'{target.get('title')}' is FREE — lovely choice. Who should the "
+                    "booking be under? Just tell me your name.")
         try:
             sch = _hub_get(hub_url, "/verticals")["verticals"][target["vertical"]]["booking"]
             payload = {"listing_id": lid, sch["identity"]: who[:80]}
@@ -3267,6 +3341,16 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
             or re.fullmatch(r"(no+[!,.:; )*-]*)?(i want to pay|i'?ll pay"
                             r"|let me pay|pay)", low):
         _pay = _LAST_RESULTS.get(sender) or []
+        _paid = next((l for l in _pay if float(l.get("price") or 0) > 0), None)
+        if _paid and sender.startswith("web-"):
+            # P0 (spec 2026-09-29): a paid listing is in reach — offer the
+            # real wallet flow instead of routing to an agent.
+            _PAY_INTENTS[sender] = {"lid": str(_paid.get("id") or ""),
+                                    "who": "", "ts": time.time()}
+            return (f"You can pay right here in chat — wallet to escrow, one tap.\n"
+                    "[[pay:" + str(_paid.get("id")) + "]]"
+                    "That's '%s' ($%s). Pilot: real flow, test money."
+                    % (_paid.get("title") or "that one", _paid.get("price")))
         if _pay:
             return ("Happy to help with the money part! 💳 Free things book "
                     "instantly right here in chat. For paid ones, your booking "

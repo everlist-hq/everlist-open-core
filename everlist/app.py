@@ -1775,6 +1775,8 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/openapi.json":
             # H13: machine-readable API contract — agents read it natively
             return self._json(200, _openapi_spec())
+        if u.path == "/verticals":
+            return self._json(200, {"verticals": VERTICAL_SCHEMAS})
         if u.path.startswith("/payterms/"):
             # P0 human paid bookings (spec 2026-09-29): the SINGLE SOURCE OF
             # TRUTH for what a browser wallet must pay for this listing. The
@@ -1796,6 +1798,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(409, {"error": "free listing — no payment needed"})
             return self._json(200, {
                 "listing_id": _plid, "vertical": _plv,
+                "identity_field": VERTICAL_SCHEMAS[_plv]["booking"]["identity"],
                 "scheme": "EIP-3009", "network": "base-sepolia",
                 "asset": BASE_SEPOLIA_USDC, "pay_to": _plr,
                 "max_amount_units": str(int(round(_plp * 1_000_000))),
@@ -3342,12 +3345,16 @@ class Handler(BaseHTTPRequestHandler):
                                 and x["escrow_ref"]["escrow_id"] == er["escrow_id"]), None)
                     if dup is not None:
                         return self._json(409, {"error": "escrow_ref already claimed by booking %s" % dup["id"]})
-                # S6-L1: instant-rail payment evidence (testnet). A valid X-PAYMENT
-                # header binds the buyer's wallet address to this booking; it powers
-                # the self-pay review wall and interlock detection below. Absent
-                # header -> booking proceeds, rating later weights at the floor.
+                # S6-L1 + P0 human paid bookings (spec 2026-09-29): payment
+                # evidence (testnet). A valid X-PAYMENT header binds the
+                # buyer's wallet to this booking (self-pay review walls,
+                # interlock detection). P0 widens this from instant-rail-only
+                # to EVERY paid booking: humans in the webchat pay the same
+                # way agents do. Absent header -> booking proceeds, rating
+                # later weights at the floor.
                 _payer6 = _pvalue6 = _pnonce6 = None
-                if escrow_state == "DIRECT" and price_c > 0 and PAY_MODE == "testnet":
+                _paysettle = None
+                if price_c > 0 and PAY_MODE == "testnet":
                     _phdr = self.headers.get("X-PAYMENT", "")
                     if _phdr:
                         _recv6 = str(listing.get("receive_addr") or PAYTO).lower()
@@ -3361,6 +3368,16 @@ class Handler(BaseHTTPRequestHandler):
                         _payer6 = str(_info6["from"]).lower()
                         _pvalue6 = _info6["value"]
                         _pnonce6 = _info6["nonce"]
+                        # N7 replay-across-restart + D4 crash safety: persist
+                        # the used nonce and the pending marker IMMEDIATELY.
+                        _persist_locked()
+                        if SETTLE_MODE == "auto":
+                            _fp6 = x402facilitate.payment_fingerprint(
+                                {"from": _info6["from"], "to": _recv6,
+                                 "value": _info6["value"], "nonce": _info6["nonce"]})
+                            SETTLEMENTS.mark_pending(_fp6)
+                            _persist_locked()
+                            _paysettle = (_fp6, _info6, _recv6)
                 # H2: unguessable booking IDs (no sequential enumeration)
                 bid = "bk-" + secrets.token_hex(12)
                 secret = secrets.token_hex(16)
@@ -3397,6 +3414,28 @@ class Handler(BaseHTTPRequestHandler):
                     listing["registered"] = listing.get("registered", 0) + qty
                 _persist_locked()
             _notify_booking("created", booking, listing)
+            # P0 human paid bookings (spec 2026-09-29): settle the verified
+            # payment OUTSIDE the global LOCK (the settlement lesson — one
+            # facilitator hop must never serialize the hub). The x402 nonce
+            # is already marked used + persisted and SETTLEMENTS.settle() is
+            # fingerprint-idempotent, so this is safe unlocked. Booking ships
+            # immediately; settlement lands in the ledger either way.
+            if _paysettle is not None:
+                _fp6, _info6, _recv6 = _paysettle
+                _srec6 = SETTLEMENTS.settle(
+                    _fp6, _info6["payload"],
+                    {"scheme": "exact", "network": "base-sepolia",
+                     "asset": BASE_SEPOLIA_USDC, "payTo": _recv6,
+                     "maxAmountRequired": str(_info6["value"])},
+                    FACIL)
+                with LOCK:
+                    if _srec6["status"] == "settled":
+                        LEDGER.append({"kind": "x402_settlement", "ts": time.time(),
+                                       "detail": {"fingerprint": _fp6, "tx": _srec6["tx"],
+                                                   "value": _info6["value"], "payer": _info6["from"],
+                                                   "network": _srec6.get("network", "base-sepolia"),
+                                                   "booking": bid}})
+                    _persist_locked()
             # C12: per-rail flow lines (plain list building — no starred unpacks)
             if escrow_state == "DIRECT":
                 _flow = ["instant rail — payment settled at booking (DIRECT, no refund window)"]

@@ -545,29 +545,7 @@ function afterReply(data, dt) {
      tiny tappable row of the first 3 results INSIDE the answer bubble, so
      the two-bubble state is glanceable without touching the board. Tap =
      expand that card on the board (same openDetail path as card clicks). */
-  if (Array.isArray(data.results) && data.results.length && data.panel !== "open") {
-    const bubbles = chat.querySelectorAll(".msg.agent .bubble");
-    const last = bubbles[bubbles.length - 1];
-    if (last && !last.querySelector(".prevrow")) {
-      const row = document.createElement("div");
-      row.className = "prevrow";
-      data.results.slice(0, 3).forEach((l) => {
-        const chip = document.createElement("button");
-        chip.type = "button";
-        chip.className = "prevchip";
-        const price = priceOf(l);
-        chip.textContent = (l.title || L("Untitled")).slice(0, 26) + (String(l.title || "").length > 26 ? "\u2026" : "") + " \u00b7 " + price.txt;
-        chip.addEventListener("click", (ev) => {
-          ev.stopPropagation();
-          const target = grid.querySelector('.card[data-listing]') && Array.from(grid.querySelectorAll('.card')).find((c) => {
-            try { return (JSON.parse(c.dataset.listing || "{}").id) === l.id; } catch { return false; }
-          });
-          if (target) { openChat(); target.click(); }
-        });
-        row.appendChild(chip);
-      });
-      last.appendChild(row);
-    }
+  if (Array.isArray(data.results) && data.results.length) {
     /* Item 2: ambient echo — matched cards keep a faint glow tint. */
     grid.classList.add("echo");
   }
