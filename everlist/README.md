@@ -78,5 +78,11 @@ python3 app.py [port]        # default 8802
 make test                    # full suite (unit + E2E + security)
 ```
 
+### Midnight contracts (Compact)
+
+`midnight-contract/` holds the on-chain escrow + ZK personhood credential
+contracts (Compact sources, compiled artifacts, offline tests — see
+`midnight-contract/README.md` for the two-command test run).
+
 See `SPEC.md` for the protocol contract and `../registry/` for the hub-of-hubs
 registry + conformance checker.
