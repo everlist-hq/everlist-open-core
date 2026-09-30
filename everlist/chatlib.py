@@ -121,8 +121,10 @@ def _show_listing(hub_url: str, arg: str, sender: str = "") -> str:
 
 
 # --- vouch ping (owner lever 2026-09-30): when someone hits the vouch gate,
-# the operator finds out in minutes instead of never. Best-effort Telegram,
-# fire-and-forget, rate-limited per sender (one ping / 10 min). Never blocks.
+# the operator finds out in minutes instead of never. Owner call 2026-09-30:
+# NO Telegram — alerts ride the existing SMTP email channel (same creds as
+# ops/external-watchdog.sh: SMTP_* + MAIL_TO env). Best-effort, fire-and-
+# forget, rate-limited per sender (one ping / 10 min). Never blocks.
 _VOUCH_PING_TS: dict = {}
 
 
@@ -133,16 +135,26 @@ def _vouch_ping(sender: str, title: str) -> None:
         if now - last < 600:
             return
         _VOUCH_PING_TS[sender] = now
-        tok = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-        chat = os.environ.get("TELEGRAM_CHAT_ID", "")
-        if not tok or not chat:
+        host = os.environ.get("SMTP_HOST", "")
+        to = os.environ.get("MAIL_TO", "")
+        if not host or not to:
             return
-        msg = (f"EverList vouch needed: user '{sender[:40]}' is waiting to book "
-               f"'{title[:60]}' (one-time human check). Vouch: /accounts/vouch")
-        urllib.request.urlopen(urllib.request.Request(
-            f"https://api.telegram.org/bot{tok}/sendMessage",
-            data=json.dumps({"chat_id": chat, "text": msg}).encode(),
-            headers={"Content-Type": "application/json"}), timeout=5)
+        import smtplib
+        from email.message import EmailMessage
+        msg = EmailMessage()
+        msg["Subject"] = "[EverList] Vouch needed - someone is waiting to book"
+        msg["From"] = os.environ.get("MAIL_FROM", os.environ.get("SMTP_USER", "everlist@localhost"))
+        msg["To"] = to
+        msg.set_content(
+            f"User '{sender[:60]}' hit the vouch gate while booking "
+            f"'{title[:80]}' at {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())}.\n\n"
+            "One-time human check (pilot). Vouch via: POST /accounts/vouch\n"
+            "(admin token) - see docs/ops/runbook.md.")
+        port = int(os.environ.get("SMTP_PORT", "587"))
+        with smtplib.SMTP(host, port, timeout=15) as s:
+            s.starttls()
+            s.login(os.environ.get("SMTP_USER", ""), os.environ.get("SMTP_PASS", ""))
+            s.send_message(msg)
     except Exception:
         pass  # best-effort; the chat reply never depends on it
 
