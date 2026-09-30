@@ -266,19 +266,31 @@ def _log(event: dict) -> None:
         pass
 
 
-def phrase(reply: str, user_text: str, sender: str = "") -> str:
+def phrase(reply: str, user_text: str, sender: str = "", history=None) -> str:
     """Author an AI reply grounded in the deterministic one. Any failure mode
-    returns the deterministic template — today's chat is always the floor."""
+    returns the deterministic template — today's chat is always the floor.
+    history: optional list of the user's previous messages (text only, oldest
+    first) so the author understands references like 'the jazz one'. Facts
+    STILL come only from the template (guard law unchanged); history is
+    context to interpret the request, never a token source."""
     if not _eligible(reply) or not _rate_ok(sender):
         _STAT["skipped"] += 1
         return reply
     template = reply
     redacted, secrets = _redact(template)
+    hist_block = ""
+    if history:
+        hist = [str(h)[:200] for h in list(history)[-3:] if str(h or "").strip()]
+        if hist:
+            hist_txt = "\n".join("- " + h for h in hist)
+            hist_block = ("\n\nRECENT CONVERSATION (context only — helps you "
+                          "understand what the user means; NEVER copy facts, "
+                          "names, prices or ids from here):\n" + hist_txt + "\n")
     user_lang = "the user's language"
     base_msgs = [
         {"role": "system", "content": _SYSTEM},
         {"role": "user",
-         "content": ("USER MESSAGE:\n" + (user_text or "").strip()[:600]
+         "content": (hist_block + "USER MESSAGE:\n" + (user_text or "").strip()[:600]
                      + "\n\nFACT SHEET (verbatim tokens; complete):\n"
                      + json.dumps(sorted(_fact_tokens(template)), ensure_ascii=False)
                      + "\n\nVERIFIED ANSWER:\n" + redacted[:4000])},
