@@ -2855,6 +2855,38 @@ _LLM_FIRST = os.environ.get("EVERLIST_LLM_FIRST", "1") != "0"
 _EMAIL_FULL_RX = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
 
 
+def brain_list(hub_url: str, sender: str, text: str) -> str:
+    """Brain action 'list': the LLM classified a create-listing intent.
+    Deterministic executors own the doing (HONESTY LAW 2026-09-30: the LLM
+    must never narrate or claim a published listing — the 'Listed!' answer
+    from _create_listing is the only proof). If the guided intake already
+    holds a COMPLETE draft, affirmative text publishes it immediately;
+    otherwise the deterministic wizard starts/resumes."""
+    s = _intake_get(sender)
+    if s:
+        fields = dict(s["fields"])
+        skipped = set(fields.get("__skipped", []))
+        _open = [k for k, _, _ in _INTAKE_STEPS
+                 if not fields.get(k) and k not in skipped]
+        if _open:
+            return ("Let's finish your listing — still open: " + ", ".join(_open)
+                    + "." + chr(10) + chr(10) + _intake_next_question(fields))
+        return _intake_create(hub_url, sender, fields)
+    d = storage.draft_get(sender)
+    if d:
+        _intake_put(sender, d)
+        _skip1 = set(d.get("__skipped", []))
+        _open1 = [k for k, _, _ in _INTAKE_STEPS
+                  if not d.get(k) and k not in _skip1]
+        if _open1:
+            return ("Picking up your draft — still open: " + ", ".join(_open1)
+                    + "." + chr(10) + chr(10) + _intake_next_question(d))
+        return _intake_create(hub_url, sender, d)
+    _intake_put(sender, {})
+    return ("✨ Let's list it. I'll ask a few things — answer each in one line.\n"
+            + _intake_next_question({}))
+
+
 def brain_resume_booking(hub_url: str, sender: str, who: str = ""):
     """Owner 2026-09-29 (LLM-first): deterministic executor for the brain
     resume_booking action. Truth stays here: the pending booking id comes

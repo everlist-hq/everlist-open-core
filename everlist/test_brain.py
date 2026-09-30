@@ -303,8 +303,40 @@ class BrainBookShow(unittest.TestCase):
         chatlib._LAST_RESULTS["sh1"] = [{"id": "even-9", "title": "Yoga"}]
         with mock.patch.object(chatlib, "_show_listing", return_value="CARD") as sl:
             r = chatlib.brain_show("http://hub", "sh1", "the yoga one")
-        self.assertEqual(r, "CARD")
+        # focus-marker contract (2026-09-29 show-me chip): marker + card
+        self.assertIn("CARD", r)
+        self.assertIn("[[focus:even-9]]", r)
         sl.assert_called_once_with("http://hub", "even-9", sender="sh1")
+
+
+class BrainListHonesty(unittest.TestCase):
+    """HONESTY LAW (2026-09-30): the LLM's 'list' action must route to the
+    deterministic executor — it can never narrate a fake 'Published!'.
+    Regression for the live chat incident where 'Yes, publish it' reached the
+    LLM (no list action existed) which invented a success with no POST."""
+
+    def test_no_draft_starts_wizard(self):
+        r = chatlib.brain_list("http://hub", "bl-none", "I want to list a workshop")
+        self.assertIn("list it", r.lower())
+        self.assertNotIn("Published", r)
+
+    def test_open_draft_asks_remaining(self):
+        chatlib._intake_put("bl-open", {"title": "Yoga"})
+        r = chatlib.brain_list("http://hub", "bl-open", "yes, publish it")
+        self.assertNotIn("Published", r)
+        self.assertNotIn("Listed", r)
+
+    def test_complete_draft_publishes_via_create(self):
+        fields = {"title": "T", "price": "10", "date": "any", "location": "Vienna",
+                  "category": "workshop", "capacity": "8", "description": "d"}
+        chatlib._intake_put("bl-full", fields)
+        with mock.patch.object(chatlib, "_create_listing",
+                               return_value="✅ Listed! (id: even-x)") as cl:
+            r = chatlib.brain_list("http://hub", "bl-full", "yes, publish it")
+        self.assertIn("Listed", r)
+        cl.assert_called_once()
+        # intake consumed on success
+        self.assertIsNone(chatlib._intake_get("bl-full"))
 
 
 class WeatherGrounding(unittest.TestCase):
