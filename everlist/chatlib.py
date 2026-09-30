@@ -1565,6 +1565,115 @@ def _create_deal(hub_url: str, sender: str, text: str) -> str:
             + mgmt)
 
 
+_FREE_MONTHS = {
+    "jan": 1, "jän": 1, "feb": 2, "mar": 3, "mär": 3, "apr": 4, "may": 5,
+    "mai": 5, "jun": 6, "jul": 7, "aug": 8, "sep": 9, "oct": 10, "okt": 10,
+    "nov": 11, "dec": 12, "dez": 12,
+}
+_FREE_MONTH_RX = "jan|jän|feb|mar|mär|apr|may|mai|jun|jul|aug|sep|oct|okt|nov|dec|dez"
+_FREE_WEEKDAY_RX = (r"monday|tuesday|wednesday|thursday|friday|saturday|sunday"
+                    r"|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonnabend|sonntag")
+
+
+def _freeform_extract(body: str) -> dict:
+    """Owner 2026-09-30 (intake fix): extract date, time, price and location
+    from a free-form one-line listing sentence; the leftovers become the
+    title. Deterministic regexes only (honesty law: no LLM in the doing).
+    Whole-word removal: matched spans drop ENTIRE words from the title, so
+    'Rooftop Jazz Night — concert on Saturday 3 Oct 2026 at 19:30 in Berlin,
+    15 euros' yields 'Rooftop Jazz Night', never fragments. Returns {} when
+    nothing confident matches (caller keeps legacy behavior for wizard
+    handoffs like 'list a concert')."""
+    src = body.strip()
+    spans: list = []
+    out: dict = {}
+    found_date = False
+
+    def _mark(m: "re.Match") -> None:
+        spans.append((m.start(), m.end()))
+
+    m = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", src)
+    if m:
+        out["date"] = m.group(1)
+        _mark(m)
+        found_date = True
+    else:
+        m = (re.search(r"\b(\d{1,2})[.,]?\s*(" + _FREE_MONTH_RX + r")[a-z]*\.?,?\s*(\d{4})\b", src, re.I)
+             or re.search(r"\b(" + _FREE_MONTH_RX + r")[a-z]*\.?\s+(\d{1,2}),?\s*(\d{4})\b", src, re.I))
+        if m:
+            try:
+                if str(m.group(1)).isdigit() and len(m.group(1)) <= 2 and int(m.group(1)) <= 31:
+                    day, mon, yr = int(m.group(1)), _FREE_MONTHS[m.group(2)[:3].lower()], int(m.group(3))
+                else:
+                    mon, day, yr = _FREE_MONTHS[m.group(1)[:3].lower()], int(m.group(2)), int(m.group(3))
+                out["date"] = "%04d-%02d-%02d" % (yr, mon, day)
+                _mark(m)
+                found_date = True
+            except (KeyError, ValueError):
+                pass
+    if found_date:
+        # a weekday word glued to the date phrase ('Saturday 3 Oct 2026')
+        mw = re.search(r"\b(?:on|am)\s+(?:" + _FREE_WEEKDAY_RX + r")\b[,]?", src, re.I) \
+            or re.search(r"\b(?:" + _FREE_WEEKDAY_RX + r")\b[,]?(?=\s|,|$)", src, re.I)
+        if mw:
+            _mark(mw)
+    mt = (re.search(r"\b(?:at|um)\s+(\d{1,2}):(\d{2})\b", src, re.I)
+          or re.search(r"(?<=\s)(\d{1,2}):(\d{2})\b", src))
+    if mt:
+        try:
+            hh, mm = int(mt.group(1)), int(mt.group(2))
+            if 0 <= hh <= 23 and 0 <= mm <= 59:
+                out["time"] = "%02d:%02d" % (hh, mm)
+                _mark(mt)
+        except ValueError:
+            pass
+    mp = (re.search(r"(?:^|[\s,])(\d+(?:[.,]\d+)?\s*(?:euros?|eur\b|\u20ac|usd\b|dollars?))", src, re.I)
+          or re.search(r"(?:^|[\s,])([\u20ac$]\s*\d+(?:[.,]\d+)?)", src))
+    if mp:
+        num = re.sub(r"[^\d.,]", "", mp.group(1)).replace(",", ".")
+        try:
+            out["price"] = str(float(num))
+            _mark(mp)
+        except ValueError:
+            pass
+    else:
+        # mark EVERY free-word occurrence (title must not keep a trailing 'free')
+        for mf in re.finditer(r"(?:^|[\s,])(free|gratis|kostenlos)(?=$|[\s,.])", src, re.I):
+            out["price"] = "0"
+            _mark(mf)
+    mlast = None
+    for m in re.finditer(r"\bin\s+([A-Z\u00c0-\u00df][\w\u00e4\u00f6\u00fc\u00df.-]*(?:\s+[A-Z][\w\u00e4\u00f6\u00fc\u00df.-]*)*)", src):
+        mlast = m
+    if mlast:
+        out["location"] = mlast.group(1)
+        _mark(mlast)
+    for mcat in re.finditer(r"\b(concert|konzert|workshop|kurs|market|markt|meetup|tour|f\u00fchrung|fuehrung)\b", src, re.I):
+        out["category"] = mcat.group(1).lower()
+        break  # category stays in the title (DE one-liners are often just 'Konzert am ...')
+    # remove marked spans WHOLE-WORD: a word touching any span is dropped
+    words = []
+    for wm in re.finditer(r"\S+", src):
+        w0, w1 = wm.start(), wm.end()
+        if any(not (w1 <= s0 or w0 >= s1) for s0, s1 in spans):
+            continue
+        words.append(src[w0:w1])
+    title = " ".join(words)
+    title = re.sub(r"\s+[\u2014\u2013-]\s*", " ", title)
+    # drop edge connector tokens ('Astrophotography on' -> 'Astrophotography')
+    _CONN = {"on", "at", "in", "am", "um", "for", "\u2014", "-"}
+    parts_t = title.split()
+    while parts_t and parts_t[0].lower() in _CONN:
+        parts_t.pop(0)
+    while parts_t and parts_t[-1].lower() in _CONN:
+        parts_t.pop()
+    title = " ".join(parts_t).strip(" \u2014\u2013-,.")
+    title = re.sub(r"\s+", " ", title).strip(" \u2014\u2013-,.")
+    if title and (found_date or "price" in out):
+        out["title"] = title
+        return out
+    return {}
+
+
 def _create_listing(hub_url: str, sender: str, text: str) -> str:
     """One-prompt listing, two formats:
     Quick:  list Title | category | date | price | location | capacity
@@ -1588,6 +1697,28 @@ def _create_listing(hub_url: str, sender: str, text: str) -> str:
     else:
         parts = [p.strip() for p in body.split("|")]
         extra = {}
+        if len(parts) == 1:
+            # Owner 2026-09-30 (intake fix): a free-form sentence like
+            # 'list Rooftop Jazz Night — concert on Saturday 3 Oct 2026 at
+            # 19:30 in Berlin, 15 euros' used to become one giant title with
+            # date TBD / price 0. Conservative deterministic extraction
+            # (honesty law: regexes, no LLM) fills date/time/price/location
+            # and cleans the title; wizard handoffs without confident facts
+            # ('list a concert') keep the legacy behavior.
+            ff = _freeform_extract(parts[0])
+            if ff.get("title"):
+                parts = [ff["title"]]
+                if ff.get("category"):
+                    parts.append(ff["category"])
+                else:
+                    parts.append("")
+                parts.append(ff.get("date", ""))
+                parts.append(ff.get("price", ""))
+                parts.append(ff.get("location", ""))
+                if ff.get("time"):
+                    extra["time"] = ff["time"]
+            elif ff and not ff.get("title"):
+                parts = [""]
     if not parts or not parts[0]:
         return ("To list an event, send either:\n"
                 "list Rooftop Jazz Night | concert | 2026-09-20 | 15 | Berlin | 50\n"
@@ -1700,6 +1831,8 @@ def _create_listing(hub_url: str, sender: str, text: str) -> str:
             "date": date, "price": float(price), "location": location,
             "capacity": cap, "source": "chat-agent",
         }
+        if extra.get("time"):
+            payload["time"] = extra["time"]  # freeform intake fix 2026-09-30
     else:  # unreachable while the whitelist gate above holds - stay honest if it ever drifts
         return "Internal routing error: no listing builder for this vertical. Please report it."
     if extra.get("description"):
