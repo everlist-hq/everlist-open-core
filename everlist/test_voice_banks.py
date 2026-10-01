@@ -34,7 +34,7 @@ class VoiceBanks(unittest.TestCase):
     def test_first_turn_canonical_footer(self):
         with mock.patch.object(chatlib, "_hub_get", return_value={"listings": _ls(3)}):
             r = chatlib.handle_text("http://hub", "search concert", sender="v1")
-        self.assertIn("\nTo book one, say 'book <n>' - $0 listings book without payment.", r)
+        self.assertIn("\nTo book one, say 'book <n>' - €0 listings book without payment.", r)
 
     def test_footer_rotates_within_session(self):
         outs = []
@@ -57,7 +57,7 @@ class VoiceBanks(unittest.TestCase):
             chatlib._VOICE_TURN["vins"] = 2  # even tick -> insight path
             r = chatlib.handle_text("http://hub", "search concert", sender="vins")
         self.assertNotIn("free", r)     # nothing is free -> no free claim, ever
-        self.assertIn("cheapest $5", r)  # but the true cheapest price is stated
+        self.assertIn("cheapest €5", r)  # but the true cheapest price is stated
 
     def test_insight_free_count(self):
         ls = _ls(4)
@@ -68,7 +68,7 @@ class VoiceBanks(unittest.TestCase):
             chatlib._VOICE_TURN["vfree"] = 2  # even tick -> insight path
             r = chatlib.handle_text("http://hub", "search concert", sender="vfree")
         self.assertIn("2 free", r)
-        self.assertIn("cheapest $8", r)
+        self.assertIn("cheapest €8", r)
 
     def test_board_line_canonical_first(self):
         r = chatlib.board_line("vb1", 3)

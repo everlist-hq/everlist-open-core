@@ -449,7 +449,7 @@ class CardFormat(unittest.TestCase):
         self.assertTrue(c.startswith("╔═፨"))
         self.assertIn(" " + chatlib._mb("Rooftop Jazz Night"), c)
         self.assertNotIn("even-2", c)  # C9f: id removed, number is the handle
-        self.assertIn("⌂ Berlin rooftop · ◷ " + chatlib._mb("Sat 2026-10-03") + " · $15", c)
+        self.assertIn("⌂ Berlin rooftop · ◷ " + chatlib._mb("Sat 2026-10-03") + " · €15", c)
         self.assertIn("♟ 18 left · ✪ protected · refund window 72h", c)
         self.assertIn("✪ protected · refund window 72h", c)
         self.assertIn("» Live jazz on the rooftop", c)
@@ -458,7 +458,7 @@ class CardFormat(unittest.TestCase):
     def test_card_variants(self):
         self.assertIn("♟ 0 left",
                       chatlib._fmt_listing(self._l(capacity=20, registered=20)))
-        self.assertIn("$0", chatlib._fmt_listing(self._l(price=0)))
+        self.assertIn("€0", chatlib._fmt_listing(self._l(price=0)))
         self.assertIn("⇢ instant rail",
                       chatlib._fmt_listing(self._l(payment_terms={"rail": "instant"})))
         self.assertIn("verified buyers only",

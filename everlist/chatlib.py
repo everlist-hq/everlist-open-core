@@ -406,15 +406,17 @@ def _weekday(date_s: str) -> str | None:
 
 
 def _fmt_price(l: dict) -> str:
-    """'$15' / '$12.50' / '$0' - free is $0: the count language covers all."""
+    """'€15' / '€12.50' / '€0' - free is €0: the count language covers all.
+    Verification 2026-10-01: EUR display per design-payment-choice-20260923
+    ('merchants quote in plain numbers, € display') — $ was a lab leftover."""
     try:
         p = float(l.get("price", 0))
     except (TypeError, ValueError):
-        return "$%s" % l.get("price", "?")
+        return "€%s" % l.get("price", "?")
     s = "%.2f" % p
     if s.endswith(".00"):
         s = s[:-3]
-    return "$" + s
+    return "€" + s
 
 
 def _fmt_spots(l: dict) -> str | None:
@@ -1647,9 +1649,21 @@ def _freeform_extract(body: str) -> dict:
     if mlast:
         out["location"] = mlast.group(1)
         _mark(mlast)
-    for mcat in re.finditer(r"\b(concert|konzert|workshop|kurs|market|markt|meetup|tour|f\u00fchrung|fuehrung)\b", src, re.I):
-        out["category"] = mcat.group(1).lower()
-        break  # category stays in the title (DE one-liners are often just 'Konzert am ...')
+    # verification 2026-10-01: DE words normalize to hub-valid categories
+    # (konzert->concert, kurs->workshop, markt->market); tour/führung are NOT
+    # hub categories and stay pure title words. A category word directly
+    # after a separator ('— concert on …', ', market,') is a descriptor:
+    # it leaves the title. A lone category word at the start ('Konzert am
+    # Samstag …') stays — it IS the title.
+    _CAT_MAP = {"concert": "concert", "konzert": "concert", "workshop": "workshop",
+                "kurs": "workshop", "market": "market", "markt": "market", "meetup": "meetup"}
+    _cat_src_word = ""
+    for mcat in re.finditer(r"\b(" + "|".join(_CAT_MAP) + r")\b", src, re.I):
+        if not _cat_src_word:
+            _cat_src_word = mcat.group(1)
+            out["category"] = _CAT_MAP[mcat.group(1).lower()]
+        if re.search(r"[\u2014\u2013:,\-]\s*$", src[:mcat.start()]):
+            _mark(mcat)
     # remove marked spans WHOLE-WORD: a word touching any span is dropped
     words = []
     for wm in re.finditer(r"\S+", src):
@@ -2219,22 +2233,22 @@ def _search_insight(listings: list) -> str:
             bits.append("%d free" % free)
         paid = [p for p in prices if p > 0]
         if paid:
-            bits.append("cheapest $%g" % min(paid))
+            bits.append("cheapest €%g" % min(paid))
         return " · ".join(bits[:2])
     except Exception:
         return ""
 
 
-_BOOK_TAIL = "\nTo book one, say 'book <n>' - $0 listings book without payment."
+_BOOK_TAIL = "\nTo book one, say 'book <n>' - €0 listings book without payment."
 _BOOK_TAILS = (
     _BOOK_TAIL,
-    "\nSee something you like? Say 'book <n>' — $0 listings book without payment.",
-    "\nFound your pick? Say 'book <n>' — $0 listings book without payment.",
-    "\nTo grab one, say 'book <n>' — $0 listings book without payment.",
+    "\nSee something you like? Say 'book <n>' — €0 listings book without payment.",
+    "\nFound your pick? Say 'book <n>' — €0 listings book without payment.",
+    "\nTo grab one, say 'book <n>' — €0 listings book without payment.",
 )
 _INSIGHT_TAILS = (
-    "\n%s — say 'book <n>' to book one ($0 listings book without payment).",
-    "\n%s — say 'book <n>' if one of them is your pick ($0 listings book without payment).",
+    "\n%s — say 'book <n>' to book one (€0 listings book without payment).",
+    "\n%s — say 'book <n>' if one of them is your pick (€0 listings book without payment).",
 )
 
 
@@ -3750,7 +3764,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                     # resume the exact booking (promo rides through the gate)
                     _pending_book_put(sender, lid, str(target.get("title") or ""),
                                       "need_account", who=who or "", promo=promo_code or "")
-                    return (f"'{target.get('title')}' is a paid listing (${target.get('price')}).\n"
+                    return (f"'{target.get('title')}' is a paid listing (€{target.get('price')}).\n"
                             "You can pay right here in chat \u2014 wallet to escrow, one tap.\n"
                             "One-time setup first: say 'signup' to create your account "
                             "(the hub operator vouches you in \u2014 one-time human check, pilot)."
@@ -3758,7 +3772,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                 _PAY_INTENTS[sender] = {"lid": str(target.get("id") or ""),
                                         "who": who or "", "ts": time.time(),
                                         **({"promo_code": promo_code} if promo_code else {})}
-                return (f"'{target.get('title')}' is a paid listing (${target.get('price')}).\n"
+                return (f"'{target.get('title')}' is a paid listing (€{target.get('price')}).\n"
                         "[[pay:" + str(target.get("id")) + "]]"
                         "Tap Pay to pay from your wallet \u2014 same protected flow agents use "
                         "(pilot: real flow, test money)." + _wpt)
@@ -3819,7 +3833,12 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                     "⏭ What happens next:\n"
                     "· The organizer confirms via the hub — just wait, no action needed.\n"
                     "· Changed your mind? Cancel from your Bookings tab (/?view=dash).\n"
-                    "· You can check status anytime by asking: booking " + str(res.get('id')))
+                    "· You can check status anytime by asking: booking " + str(res.get('id'))
+                    # verification 2026-10-01: booking replies must carry the
+                    # [[focus:]] marker so the UI chain (✓ chip, share chip,
+                    # 🎟 pill) fires — same marker brain_show uses.
+                    + "\n[[focus:" + str(lid) + "]]"
+                    )
         err = res.get("error", "unknown error")
         if "verified-human" in err:
             _pending_book_put(sender, lid, str(target.get("title") or ""), "need_vouch", who or "")
@@ -3890,7 +3909,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                                     "who": "", "ts": time.time()}
             return (f"You can pay right here in chat — wallet to escrow, one tap.\n"
                     "[[pay:" + str(_paid.get("id")) + "]]"
-                    "That's '%s' ($%s). Pilot: real flow, test money."
+                    "That's '%s' (€%s). Pilot: real flow, test money."
                     % (_paid.get("title") or "that one", _paid.get("price")))
         if _pay:
             return ("Happy to help with the money part! 💳 Free things book "
