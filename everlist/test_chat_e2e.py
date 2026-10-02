@@ -318,7 +318,7 @@ async def main():
     r_edit = RESULTS["edit"] or ""
 
     chk("B6 signup reply shows seed once", "SEED" in r_signup and bool(RESULTS["seed"]), r_signup[:80])
-    chk("B6 signup auto-login announced", "logged in here right away" in r_signup)
+    chk("B6 signup auto-login announced", "logged in right here" in r_signup)
     p_sign = PROBES.get("after-signup", {})
     chk("B6 exactly ONE signup reached the hub (one-shot works)", p_sign.get("n_acc") == 2,
         f"n_acc={p_sign.get('n_acc')} (1 regression + 1 test signup)")

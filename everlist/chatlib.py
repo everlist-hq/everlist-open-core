@@ -1154,9 +1154,12 @@ def _welcome(res: dict) -> str:
             f"Your listings: cap {_ACCOUNT_CAP}, no per-listing codes needed.{v}")
 
 
-def _signup(hub_url: str, sender: str) -> str:
+def _signup(hub_url: str, sender: str, email: str = "") -> str:
     """CRYPTO accounts: the seed is generated HERE and shown ONCE; the hub
-    stores ONLY the public key. Nothing secret ever exists server-side."""
+    stores ONLY the public key. Nothing secret ever exists server-side.
+    Owner 2026-10-02 (email-first): an email passed here — or pasted bare
+    while logged out — binds recovery in the SAME turn: paste address,
+    get key + code, one step. The message is numbered and scannable."""
     pow_ = _pow_solve(hub_url, "signup")
     if pow_ is None:
         return "Sorry — the EverList hub is unreachable right now. Try again shortly."
@@ -1178,19 +1181,47 @@ def _signup(hub_url: str, sender: str) -> str:
     code2, lres = _sign_login(hub_url, seed, sender)  # auto-login: we still hold the seed
     if code2 == 200:
         _set_session(sender, lres)
-        logged = "\n✅ You are logged in here right away — list away!"
+        _step2 = ("2️⃣ You're logged in right here — list or book away.\n"
+                  "   (Other chats: 'login-seed <seed>')\n")
     else:
-        logged = "\nLog in here with: login-seed <seed>"
+        _step2 = ("2️⃣ Log in here with: login-seed <seed>\n"
+                  "   (the key above, after saving it)\n")
+    # owner 2026-10-02 (email-first): if the signup came with an email
+    # ('signup me@x.com' or a bare pasted address while logged out), bind
+    # recovery in the SAME turn. Failure is honest but non-fatal — the
+    # account exists; the user can retry email-bind with a clear error.
+    _email_note = ""
+    if email and _EMAIL_FULL_RX.match(email.strip()):
+        _b = _email_bind(hub_url, sender, email.strip())
+        if _b.startswith("Verification code sent") and "delivery mode: off" in _b:
+            _email_note = (f"✉️ {email.strip()} noted — but this hub has email delivery switched "
+                           f"off, so no code was sent and recovery isn't active yet. "
+                           f"Retry 'email-bind <email>' once the operator enables email.")
+        elif _b.startswith("Verification code sent"):
+            _dev = "dev mode: code visible in hub log" in _b
+            _email_note = (f"✉️ Recovery email {email.strip()} — a 6-digit code was "
+                           + ("posted to the hub log (dev mode). The operator can hand it to you. " if _dev else "sent. ")
+                           + "Paste the code here to finish setup.")
+        else:
+            _reason = _b.split(chr(10))[0]
+            if "already" in _reason.lower():
+                _email_note = (f"✉️ {email.strip()} already belongs to an EverList "
+                               f"account. To get back into THAT one: recover {email.strip()} "
+                               f"(this new account stays separate).")
+            else:
+                _email_note = (f"✉️ Recovery email {email.strip()} couldn't be bound: "
+                               f"{_reason} — retry anytime with 'email-bind <email>'.")
     # owner 2026-09-29: seed message is built FIRST (shown ONCE, never swallowed);
     # a pending booking from before the signup gate resumes right after it.
-    _seed_msg = (f"✅ Account created ({aid}) — cryptographic kind.\n\n"
-            f"🔑 Your account SEED (shown ONCE — store it like a crypto seed phrase):\n"
-            f"{seed}\n"
-            "The hub stores ONLY your public key — it cannot leak or lose your secret. "
-            "From any other chat: login-seed <seed>"
-            + logged + "\n"
-            "Next: 'email-bind you@example.com' enables self-service recovery, and "
-            "operator vouch makes you human-verified (pilot).")
+    # owner 2026-10-02: numbered, scannable structure — the transcript showed
+       # the old block was hard to read and users didn't know what to do next.
+    _seed_msg = (f"✅ Account created ({aid}).\n\n"
+            f"1️⃣ Save your account SEED — shown ONCE, like a crypto seed phrase:\n"
+            f"   {seed}\n"
+            "   (Only you hold it — the hub stores just your public key. "
+            "Lost it + no recovery email = account gone.)\n"
+            + _step2
+            + (f"3️⃣ {_email_note}\n" if _email_note else "3️⃣ Add a recovery email anytime: just paste your address here.\n"))
     _pb = _pending_book_pop(sender)
     if _pb:
         _cmd = "book " + _pb["lid"]
@@ -3329,7 +3360,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
         if _BOOK_AFFIRM_RX.match(low) or _BOOK_REFERENTIAL_RX.match(low):
             if _pbq.get("stage") == "need_account":
                 return (f"Still holding your spot for '{_pt}' - I just need an "
-                        "account for you first: say 'signup' and we'll set it up together.")
+                        "account for you first: say 'signup' — or just paste your email — and we'll set it up together.")
             if _pbq.get("stage") == "need_name":
                 return (f"Still holding your spot for '{_pt}' - just tell me the "
                         "name to book it under.")
@@ -3342,7 +3373,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
         # now? why do you ask?) - deterministic answer, never a brain shrug
         if re.search(r"\b(worked|status|did it|is it|can i book|book it now|still (there|hold)|holding|why)\b", low):
             if _pbq.get("stage") == "need_account":
-                return (f"Yes - your spot for '{_pt}' is saved. Say 'signup' and I'll "
+                return (f"Yes - your spot for '{_pt}' is saved. Say 'signup' (or paste your email) and I'll "
                         "finish the booking right after (it includes a one-time human check).")
             if _pbq.get("stage") == "need_name":
                 return (f"Yes - your spot for '{_pt}' is saved. Just tell me the name "
@@ -3430,6 +3461,25 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
         except Exception:
             pass                # catalog must never take the chat down
 
+    # whole-input email (owner transcript 2026-10-02): the signup reply
+    # invites 'email-bind you@example.com', so a pasted bare address binds
+    # deterministically in ANY logged-in state — never a brain shrug.
+    # The need_name booking branch above keeps its richer bind+resume reply.
+    if _EMAIL_FULL_RX.match(low):
+        if _session(sender):
+            return _email_bind(hub_url, sender, text.strip())
+        # owner 2026-10-02 (email-first): a pasted address while logged out
+        # IS the signup — account, key and recovery-bind in ONE turn. This
+        # is the natural reading of the gate message ('say signup').
+        return _signup(hub_url, sender, email=text.strip())
+
+    # owner 2026-10-02 (email-first companion): the signup/bind note says
+    # 'paste the code here' — a BARE 6-hex code with a pending email in
+    # this session confirms deterministically, never a brain shrug.
+    _ps = _session(sender)
+    if _ps and _ps.get("pending_email") and re.fullmatch(r"[0-9A-Fa-f]{6}", low):
+        return _email_code(hub_url, sender, text.strip())
+
     # --- owner 2026-09-29 (LLM-first inversion): the brain evaluates fuzzy
     # turns BEFORE the regex mood/social tiers, with full context (pending
     # booking + last results in its fact sheet). Deterministic executors keep
@@ -3466,7 +3516,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
 
     # --- account auth (B3c-accounts)
     if low == "signup" or low.startswith("signup "):
-        return _signup(hub_url, sender)
+        return _signup(hub_url, sender, email=text.strip()[7:].strip() if low.startswith("signup ") else "")
     if low.startswith("login-seed "):
         return _login_seed(hub_url, sender, text.strip()[11:].strip())
     if low.startswith("login"):
@@ -3766,7 +3816,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                                       "need_account", who=who or "", promo=promo_code or "")
                     return (f"'{target.get('title')}' is a paid listing (€{target.get('price')}).\n"
                             "You can pay right here in chat \u2014 wallet to escrow, one tap.\n"
-                            "One-time setup first: say 'signup' to create your account "
+                            "One-time setup first: say 'signup' — or just paste your email — to create your account "
                             "(the hub operator vouches you in \u2014 one-time human check, pilot)."
                             + _wpt)
                 _PAY_INTENTS[sender] = {"lid": str(target.get("id") or ""),
@@ -3792,7 +3842,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
             _pending_book_put(sender, lid, str(target.get("title") or ""), "need_account",
                               who=who or "")
             return (f"'{target.get('title')}' is FREE — I can book it for you right here.\n"
-                    "I just need an account for you first — say 'signup' and we'll set that "
+                    "I just need an account for you first — say 'signup' (or paste your email) and we'll set that "
                     "up together (a one-time human check, the hub operator vouches for you).\n"
                     "After that I'll hold your spot right away.")
         if not who:
