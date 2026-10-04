@@ -374,6 +374,7 @@ _BOOK_AFFIRM_RX = re.compile(
     r"|(?:sehr )?gerne?[ !.]*"
     r"|bitte[ !.!]*"
     r"|auf jeden fall[ !.]*|los geht'?s[ !.]*"
+    r"|ich (?:moe?chte|will)(?: es| das| ihn)?(?: jetzt)? buchen[ !.]*"
     r"|buch(?:e|en)?(?: sie)?(?: es| das| ihn)?(?: f(?:ü|ue)r)? ?(?: mich)?[ !.]*"
     r"|buchen sie es(?: bitte)?[ !.]*"
     r"|das[ !.]*|dieses[ !.]*|selbiges[ !.]*"
@@ -1149,7 +1150,7 @@ def _set_session(sender: str, res: dict) -> None:
 def _welcome(res: dict) -> str:
     v = ("\n✅ You are verified as human — bookings need no extra credential."
          if res.get("human_verified") else
-         "\n⏳ Not yet human-verified — ask the hub operator to vouch for you (pilot).")
+         "\n⏳ One-time human check pending — just paste your email here (or 'email-bind <email>') and enter the code; bookings unlock right after.")
     return (f"✅ Welcome back! This chat now acts as account {res.get('account_id')} (24h). "
             f"Your listings: cap {_ACCOUNT_CAP}, no per-listing codes needed.{v}")
 
@@ -1304,9 +1305,24 @@ def _email_code(hub_url: str, sender: str, code: str) -> str:
         return f"{res.get('error', 'Invalid or expired code. Request a new one with email-bind <email>.')}"
     if res.get("account_id") != s.get("account_id"):
         return "That code verified a different chat's pending email. Do the bind from this chat."
-    return ("Email verified - recovery enabled! If you ever lose your account code:\n"
-            "  recover <your email>  -> code arrives by email\n"
-            "  recover-confirm <code>  -> new account code (old one dies)")
+    # owner GO 2026-10-03: the confirmed code IS the one-time human check
+    # (Tier-1 email proof) - refresh the session so bookings pass the gate.
+    s["verified"] = bool(res.get("human_verified"))
+    s["verified_by"] = res.get("verified_by")
+    s["ts"] = time.time()
+    _base = ("✅ Email verified — recovery enabled AND your one-time human check is done."
+             " If you ever lose your account code:\n"
+             "  recover <your email>  -> code arrives by email\n"
+             "  recover-confirm <code>  -> new account code (old one dies)")
+    _pb = _pending_book_pop(sender)
+    if _pb:
+        _cmd = "book " + _pb["lid"]
+        if _pb.get("who"):
+            _cmd += " " + _pb["who"]
+        if _pb.get("promo"):
+            _cmd += " promo " + _pb["promo"]
+        return _base + "\n\n" + handle_text(hub_url, _cmd, sender=sender)
+    return _base
 
 
 def _recover(hub_url: str, email: str) -> str:
@@ -1361,8 +1377,9 @@ def _whoami(hub_url: str, sender: str) -> str:
     vby = s.get("verified_by")
     vline = {"midnight-zk": "✅ verified: Midnight ZK credential (Tier-2)",
              "midnight-zk-revoked": "⚠️ your Midnight credential was REVOKED — verification lost",
-             "admin-vouch": "✅ verified: operator vouch (pilot)"}.get(
-        vby, "⏳ not human-verified yet ('verify-midnight <credential_id>' or ask the operator)")
+             "admin-vouch": "✅ verified: operator vouch (pilot)",
+             "email-code": "✅ verified: email code (Tier-1)"}.get(
+        vby, "⏳ one-time human check pending — paste your email here (or 'email-bind <email>')")
     return (f"Logged in as {s['account_id']} · {vline} · "
             f"listing cap {_ACCOUNT_CAP} · {pline}. 'logout' to end the session here.")
 
@@ -3032,6 +3049,59 @@ _LLM_FIRST = os.environ.get("EVERLIST_LLM_FIRST", "1") != "0"
 # not derail the booking flow into a generic ack)
 _EMAIL_FULL_RX = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
 
+# natural search sentence (owner transcript 2026-10-03): polite frames over a
+# search verb mean 'search the board' — never a capability lecture.
+_NATURAL_SEARCH_RX = re.compile(
+    r"^(?:can|could|would)\s+you\s+(?:please\s+)?(?:find|show|search|look\s+for)(?:\s+me)?"
+    r"|^(?:i(?:'m|\s+am)\s+)?looking\s+for"
+    r"|^show\s+me"
+    r"|^find\s+(?:me\s+)?"
+    r"|^(?:do|does)\s+(?:you|everlist)\s+have\s+any"
+    r"|^search\s+for\s+")
+
+# what remains after stripping the frame must contain a real search subject
+# (a noun-ish word), not only politeness/stop words.
+_SEARCH_CONTENT_RX = re.compile(r"[a-z\u00e4öü]{3,}")
+
+
+# leading greetings never change intent (owner probe 2026-10-03: 'hello, can
+# you help me find a concert in vienna?' must search, not lecture)
+_GREET_RX = re.compile(
+    r"^(?:hi|hello|hey|hallo|good\s+(?:morning|afternoon|evening)"
+    r"|guten\s+(?:tag|morgen|abend))\b[,!\s]*", re.I)
+
+# board-content nouns: naming one of these means 'search the board'
+_TOPIC_NOUN_RX = re.compile(
+    r"\b(events?|concerts?|gigs?|yoga|workshops?|classes?|courses?"
+    r"|jobs?|cinema|theaters?|theatres?|food|dinner|brunch|lunch|breakfast"
+    r"|veranstaltungen|konzerte|kurse|seminare?|meetups?|touren)"
+    r"\b", re.I)
+
+# capability/policy shields: these turn shapes belong to the catalog or
+# dedicated handlers, never to the topic-noun search
+_CAP_SHIELD_RX = re.compile(
+    r"\b(can\s+i|can't|cannot|how\s+do|how\s+does|how\s+can"
+    r"|what\s+if|what\s+happens|what\s+is|what\s+are|what\s+was"
+    r"|my\s+(bookings?|listings?|deals?|account|seed|payout)"
+    r"|does\s+everlist|is\s+it\s+possible|refund|fees?|escrow|payout"
+    r"|promo\s+code|discount|transfer)\b", re.I)
+
+# qualified stash picks: 'the free one', 'the jazz one', 'das erste bitte'
+_STASH_PICK_RX = re.compile(
+    r"^(?:the |die |das |der |den )?"
+    r"(?:(?P<pos>first|second|third|last|1st|2nd|3rd|erste[rnsm]*|zweite[rnsm]*|dritte[rnsm]*|letzte[rnsm]*|\d+)"
+    r"|(?P<qual>free|cheapest|kostenlos(?:e)?|g(?:ü|ue|u)nstige?)"
+    r"|(?P<kw>[a-z\u00e4\u00f6\u00fc\u00df]{3,}))\s*(?:one|s)?\s*(?:please|bitte)?[!., ]*$", re.I)
+_STASH_ORDINALS = {"first": 0, "1st": 0, "erste": 0, "erster": 0, "erstes": 0,
+                   "second": 1, "2nd": 1, "zweite": 1, "zweiter": 1, "zweites": 1,
+                   "third": 2, "3rd": 2, "dritte": 2, "dritter": 2, "drittes": 2,
+                   "last": -1, "letzte": -1, "letzter": -1, "letztes": -1}
+
+# booking/creation shields: dedicated handlers own these intents
+_BOOK_SHIELD_RX = re.compile(
+    r"\b(book|booking|reserve|buchen|post|publish|austragen|erstellen|anlegen)\b",
+    re.I)
+
 
 def brain_list(hub_url: str, sender: str, text: str) -> str:
     """Brain action 'list': the LLM classified a create-listing intent.
@@ -3364,6 +3434,9 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
             if _pbq.get("stage") == "need_name":
                 return (f"Still holding your spot for '{_pt}' - just tell me the "
                         "name to book it under.")
+            if _pbq.get("stage") == "need_name":
+                return (f"Still holding your spot for '{_pt}' - just tell me the "
+                        "name to book it under.")
             _pwho = _pbq.get("who") or ""
             _pcmd = "book " + _pbq["lid"] + ((" " + _pwho) if _pwho else "")
             if _pbq.get("promo"):
@@ -3379,9 +3452,26 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                 return (f"Yes - your spot for '{_pt}' is saved. Just tell me the name "
                         "to book it under.")
             if _pbq.get("stage") == "need_vouch":
-                return (f"Your spot for '{_pt}' is saved. One thing first: a one-time "
-                        "human check on your account (operator vouch, pilot). Once you're "
-                        "verified, say 'book it' and I'll finish it.")
+                return (f"Your spot for '{_pt}' is saved. One thing first: the one-time "
+                        "human check — just paste your email here (or 'email-bind <email>') "
+                        "and enter the 6-digit code. Then say 'book it' and I'll finish it.")
+        if _pbq.get("stage") == "need_account":
+            # owner probe C2/C3: a name offered early ('book it under Maria
+            # please', or a bare 'Tom') is REMEMBERED for the booking - the
+            # reply stays the account ask, the name rides in the pending book.
+            # NOTE: uses `low` (defined at fn top), never _ns_full (defined
+            # later - a NameError here poisoned whole need_account turns).
+            _underm2 = re.search(r"\bunder\s+([a-zA-Z\u00c4\u00e4\u00d6\u00f6\u00dc\u00fc\u00df' .\-]{2,40})", low)
+            _namem = (_underm2.group(1).strip() if _underm2 else
+                      (low if re.fullmatch(r"[a-zA-Z\u00c4\u00e4\u00d6\u00f6\u00dc\u00fc\u00df' .\-]{2,60}", low) and len(low.split()) <= 2 and not _TOPIC_NOUN_RX.search(low)
+                       and not re.match(r"^(search|book|help|show|list|my|cancel|whoami|signup|login|yes|no|ok|lol)\b", low) else ""))  # P12 2026-10-04: command words ('signup') are not booking names — let them reach their handlers
+            _namem = re.sub(r"\s+(?:please|bitte)[!., ]*$", "", _namem).strip()
+            if _namem and not re.match(r"^(search|book|help|show|list|my|cancel|whoami|signup|login|yes|no|ok|lol)\b", _namem):
+                _pbq["who"] = _namem.title()
+                _PENDING_BOOK[sender] = _pbq
+            if _underm2 or (_namem and _underm2 is None and _NAME_RX.match(_namem)):
+                return (f"Got it - I'll book '{_pt}' under {_namem.title()}. I just need an "
+                        "account for you first: say 'signup' — or just paste your email.")
         if _pbq.get("stage") == "need_name":
             # the signup reply invites email-bind - a pasted address binds it
             # and keeps the booking flow alive instead of derailing
@@ -3389,6 +3479,11 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                 _bind = _email_bind(hub_url, sender, low.strip())
                 return (_bind + "\n\n" + f"Meanwhile your spot for '{_pt}' stays "
                         "saved - who should the booking be under? Just tell me your name.")
+            _underm = re.search(r"\bunder\s+([a-zA-Z\u00c4\u00e4\u00d6\u00f6\u00dc\u00fc\u00df' .\-]{2,40})", low)
+            if _underm:
+                _uname = re.sub(r"\s+(?:please|bitte)[!., ]*$", "", _underm.group(1).strip()).strip()
+                _pending_book_pop(sender)
+                return handle_text(hub_url, "book " + _pbq["lid"] + " " + _uname, sender=sender)
             if _NAME_RX.match(low) and not re.match(
                     r"^(search|book|help|show|list|my|cancel|whoami|signup|login)\b", low):
                 _pending_book_pop(sender)
@@ -3431,6 +3526,138 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     _irep = _social_instant_reply(low, hub_url, sender)
     if _irep is not None:
         return _irep
+
+    # pure ordinal picks ('das erste bitte', 'the first one') book the stash pick
+    _st_pick_fired = False
+    _ordm = (re.match(r"^(?:the |die |das |der |den )?(erste[rnsm]*|zweite[rnsm]*|dritte[rnsm]*|letzte[rnsm]*|first|second|third|last|1st|2nd|3rd)\s*(?:one|bitte|please)?[!., ]*$", low)
+             if low else None)
+    if not _pbq and _ordm and (_LAST_RESULTS.get(sender) or []):
+        _st_pick_fired = True
+    # --- booking affirmations resolve the SEARCH STASH (owner probe 2026-10-03)
+    # Multi-turn human speech: search -> 'the jazz one sounds nice' -> 'yes
+    # book it for me' must BOOK the narrowed pick, never re-search. Fires on
+    # affirm/booking shapes when a pending booking does NOT exist (the
+    # pending-book tier above owns the gate-resume cases).
+    _shortpick = (re.match(
+        r"^(?:(?:ok|okay|and|then)\s+)?(?:the |die |das |der |den )?"
+        r"(first|second|third|last|1st|2nd|3rd|erste[rnsm]*|zweite[rnsm]*|dritte[rnsm]*|letzte[rnsm]*"
+        r"|free|cheapest|kostenlos(?:e)?|g(?:\u00fc|ue|u)nstige?)"
+        r"\s*(?:one|s)?\s*(?:then|please|bitte)?[!., ]*$", low) if low else None)
+    if (not _pbq
+            and not re.match(r"^book\s+[a-z]+-[0-9a-z]", low)   # typed id command: typed path owns it (no recursion)
+            and not re.match(r"^book\s+\d+(?:\s|$)", low)   # r3 gate 2026-10-04: typed positional ('book 1 W1 Buyer') — typed path owns it, the name must survive
+            and not _NAVHOME_RX.match(low)   # r4 gate 2026-10-04: 'take me to the main page' is nav — bare 'take' must not pose as a booking verb
+            and (_st_pick_fired or _shortpick
+                 or re.match(r"^(?:(?:ok|okay|yes|yep|sure|and|then|actually|also|please|bitte|gerne|ja|danke)[,\s]+)*(?:i(?:'d|\s+would|\s+want\s+to|\s+will)?\s+(?:like\s+|will\s+)?|ich\s+(?:moe?chte|will|nehme)|let'?s\s+)?(?:book|buchen?|nimm|take)\b", low))):
+        _st = _LAST_RESULTS.get(sender) or []
+        if not _st:
+            # r5 gate 2026-10-04 (first-touch corpus): a book-shaped sentence
+            # with NO stash is a search request - 'i want to book something
+            # outdoors in vienna' must search, never dead-end.
+            _restq = re.sub(r"\b(?:i|want|wanna|to|book|buchen|nimm|take|the|a|an|one|please|bitte|like|would|ok|okay|yes|yep|sure|it|that|this|and|then|also|actually)\b", " ", low)
+            _restq = re.sub(r"[^a-z0-9\u00e4\u00f6\u00fc\u00df ]", " ", _restq)
+            _restq = re.sub(r"\s+", " ", _restq).strip()
+            if _SEARCH_CONTENT_RX.search(_restq):
+                return _smart_search(hub_url, "search " + _restq, sender)
+            return ("Nothing to book yet - tell me what you're after "
+                    "('jazz tonight', 'free yoga') and I'll find it first.")
+        # trailing 'under Maria' / 'for Maria' carries the booking name
+        _mwho = re.search(r"\b(?:under|for|f(?:ü|ue)r)\s+(?!me\b|mich\b|him\b|her\b|us\b)([a-zA-Z\u00c4\u00e4\u00d6\u00f6\u00dc\u00fc\u00df' .\-]{2,40})", low)
+        _who = _mwho.group(1).strip() if _mwho else ""
+        _core = re.sub(r"\b(?:under|for|f(?:ü|ue)r)\s+[a-zA-Z\u00c4\u00e4\u00d6\u00f6\u00dc\u00fc\u00df' .\-]{2,40}", " ", low)
+        _core = re.sub(r"^(?:(?:ok|okay|yes|yep|sure|and|then|actually|also|please|bitte|gerne|ja)[,\s]+)*(?:i(?:'d|\s+would)?\s+like\s+|let'?s\s+)?", " ", _core)
+        _core = re.sub(r"\b(book|buchen?|nimm|take|it|that|this|das|den|ihn|es|please|bitte|for me|f(?:ü|ue)r mich)\b", " ", _core)
+        _core = re.sub(r"[^a-z\u00e4\u00f6\u00fc\u00df0-9 ]", " ", _core)
+        _core = re.sub(r"\s+", " ", _core).strip()
+        if _shortpick:
+            _core = _shortpick.group(1)
+        _cands = _st
+        if _core:
+            _mp = _STASH_PICK_RX.match(_core)
+            if _mp:
+                _pos = _mp.group("pos")
+                if _pos:
+                    _pi = _STASH_ORDINALS.get(_pos.lower())
+                    if _pi is None and _pos.isdigit():
+                        _pi = int(_pos) - 1
+                    if _pi is None or not (-len(_st) <= _pi < len(_st)):
+                        return (f"We're looking at {len(_st)} matches - which one? "
+                                "Say 'the first one', 'the last one', or its name.")
+                    _cands = [_st[_pi]]
+                else:
+                    _q = (_mp.group("qual") or _mp.group("kw") or "").lower()
+                    if _q in ("free", "kostenlos", "kostenlose"):
+                        _fr = [l for l in _st if float(l.get("price") or 0) == 0]
+                        if not _fr:
+                            return "None of your matches are free - say 'cheapest' and I'll sort them."
+                        _cands = _fr
+                    else:
+                        _hits = [l for l in _st
+                                 if _q in str(l.get("title") or "").lower()
+                                 or any(_q in str(tg).lower() for tg in (l.get("tags") or []))]
+                        if not _hits:
+                            return (f"None of your matches match '{_q}' - which one "
+                                    "would you like, or search again?")
+                        _cands = _hits
+            else:
+                _hits = [l for l in _st
+                         if _core in str(l.get("title") or "").lower()
+                         or any(_core in str(tg).lower() for tg in (l.get("tags") or []))]
+                if len(_hits) == 1:
+                    _cands = _hits
+                elif _hits:
+                    _cands = _hits
+                # no keyword hit: keep full stash and ask below
+        if len(_cands) == 1:
+            _cmd = "book " + str(_cands[0].get("id") or "")
+            if _who:
+                _cmd += " " + _who
+            return handle_text(hub_url, _cmd, sender=sender)
+        if not _core and _cands:
+            # bare 'book it' after a narrowing: the human means the top of
+            # what they were just shown. Paid picks still stop at the
+            # payment gate, so a wrong guess never moves money.
+            _cmd = "book " + str(_cands[0].get("id") or "")
+            if _who:
+                _cmd += " " + _who
+            return handle_text(hub_url, _cmd, sender=sender)
+        return (f"We're looking at {len(_cands)} matches - which one? "
+                "Say 'the first one', 'the free one', or its name.")
+
+    # --- natural search sentences (owner transcript 2026-10-03) ------------
+    # 'Can you find me outdoor events in vienna?' must EXECUTE a search, not
+    # lecture about search. The capability catalog below is question-shaped
+    # and its CAN['search'] trigger word is 'find' — without this executor
+    # the catalog swallowed real search requests. Strips the polite frame;
+    # if real search content remains, run the SAME deterministic search path
+    # the typed 'search ...' command uses. Capability questions without a
+    # search verb ('can i bring a dog', 'how do transfers work') still reach
+    # the catalog.
+    _ns_full = _GREET_RX.sub("", low).strip()
+    _ns = _NATURAL_SEARCH_RX.match(_ns_full)
+    if _ns:
+        _rest = _ns_full[_ns.end():].strip().rstrip("?!. ")
+        if _rest and _SEARCH_CONTENT_RX.search(_rest):
+            return _smart_search(hub_url, "search " + _rest, sender)
+    # bare-name steer (owner probe C1: 'Anna' after a pick question must never
+    # become a search): a NAME-shaped turn with no booking pending and no topic
+    # noun gets an honest steer to pick a match first.
+    if (_ns_full and _NAME_RX.match(_ns_full)
+            and len(_ns_full.split()) <= 2
+            and not _TOPIC_NOUN_RX.search(_ns_full)
+            and not re.match(r"^(search|find|show|book|cancel|help|my-bookings|bookings|more|next|all|edit|delete|archive|list|fee|whoami|dashboard|signup|login|logout|notify|recover)\b", _ns_full)  # r4 gate 2026-10-04: typed commands are not names — 'search pizza' re-run must search, not steer
+            and (_LAST_RESULTS.get(sender) or [])):
+        return ("Which one would you like? Say 'the first one', 'the free one', "
+                "or its name - then I'll take the booking name.")
+    # topic-noun law (owner 2026-10-03, "chat first, really really smart"):
+    # a turn naming board content IS a search - greetings, bare topics,
+    # 'any X in Y?', 'what X are on this weekend?' all execute the real
+    # search. Capability (can i / how do / refund...) and booking/posting
+    # intents are shielded and keep their dedicated handlers.
+    if (_ns_full and _TOPIC_NOUN_RX.search(_ns_full)
+            and not _CAP_SHIELD_RX.search(_ns_full)
+            and not _BOOK_SHIELD_RX.search(_ns_full)):
+        return _smart_search(hub_url, "search " + _ns_full, sender)
 
     # --- capability questions (owner 2026-09-29: the EverList skill) -------
     # Single source of truth: capabilities.py. Deterministic answers - the
@@ -3816,8 +4043,8 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                                       "need_account", who=who or "", promo=promo_code or "")
                     return (f"'{target.get('title')}' is a paid listing (€{target.get('price')}).\n"
                             "You can pay right here in chat \u2014 wallet to escrow, one tap.\n"
-                            "One-time setup first: say 'signup' — or just paste your email — to create your account "
-                            "(the hub operator vouches you in \u2014 one-time human check, pilot)."
+                            "One-time setup first: say 'signup' — or just paste your email — to create your account. "
+                            "Confirming the email code also completes the one-time human check \u2014 no operator needed."
                             + _wpt)
                 _PAY_INTENTS[sender] = {"lid": str(target.get("id") or ""),
                                         "who": who or "", "ts": time.time(),
@@ -3843,7 +4070,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                               who=who or "")
             return (f"'{target.get('title')}' is FREE — I can book it for you right here.\n"
                     "I just need an account for you first — say 'signup' (or paste your email) and we'll set that "
-                    "up together (a one-time human check, the hub operator vouches for you).\n"
+                    "up together (confirming your email code also completes the one-time human check).\n"
                     "After that I'll hold your spot right away.")
         if not who:
             _pending_book_put(sender, lid, str(target.get("title") or ""), "need_name")
@@ -3893,10 +4120,10 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
         if "verified-human" in err:
             _pending_book_put(sender, lid, str(target.get("title") or ""), "need_vouch", who or "")
             _vouch_ping(sender, str(target.get("title") or ""))
-            return ("Almost there - the booking needs a one-time human check on your account "
-                    "(pilot: the hub operator vouches for you; production: Midnight zk-personhood, "
-                    "real human, identity stays private).\n"
-                    f"Your spot for '{target.get('title')}' stays saved - once you're verified, "
+            return ("Almost there - the booking needs a one-time human check on your account. "
+                    "Easiest way: just paste your email here (or 'email-bind <email>') and enter "
+                    "the 6-digit code we send - that completes the check, no operator needed.\n"
+                    f"Your spot for '{target.get('title')}' stays saved - once that's done, "
                     "say 'book it' and I'll finish it right away.")
         return f"Booking rejected: {err}"
 

@@ -15,6 +15,14 @@ new capability added later = one entry here (brain, chat, docs all read it).
 # ---------------------------------------------------------------- CAN ----
 # (id, trigger-keywords, standard answer)
 CAN = [
+    ("overview",
+     ("what can you do", "what do you do", "what is everlist",
+      "was kannst du", "was machst du", "wer bist du"),
+     "I find things to book (events, classes, services - anything with a date "
+     "where a human is needed) and I post your own listings. Just tell me what "
+     "you're after ('jazz tonight', 'free yoga this weekend') - or say 'list' "
+     "to post yours. Bookings pay through escrow: your money stays protected "
+     "until the event has ended."),
     ("search",
      ("find", "search", "looking for", "events", "gigs", "jobs", "shows"),
      "Search is what I do best: tell me what you're after ('jazz tonight', "
@@ -30,7 +38,8 @@ CAN = [
      "their code."),
     ("transfer_booking",
      ("transfer my booking", "transfer booking", "give my booking",
-      "change name on booking", "umbuchen"),
+      "change name on booking", "umbuchen", "transfers work",
+      "transfer work", "how do transfers"),
      "Transfers work right in chat: 'transfer <booking-id> <their-name>' "
      "hands the booking to them - the old key stops working, a new one is "
      "shown once. Everything else (payment protection, refund window) stays "

@@ -292,7 +292,7 @@ clientB.include(protoB)
 
 
 async def main():
-    bureau = Bureau()
+    bureau = Bureau(port=free_port())  # 2026-10-04: default 8000 collides with unrelated processes in the shared container
     bureau.add(w.hub_agent)
     bureau.add(clientA)
     bureau.add(clientB)
@@ -333,7 +333,7 @@ async def main():
     r_arch = RESULTS["archive"] or ""
     r_unarch = RESULTS["unarchive"] or ""
     chk("C1 whoami shows account + verification provenance + payout guidance",
-        RESULTS["account_id"] in r_who and "not human-verified yet" in r_who
+        RESULTS["account_id"] in r_who and "one-time human check pending" in r_who
         and "set-payout" in r_who, r_who[:100])  # M14: provenance wording
     chk("C1 archive via chat (account-owned, no code)",
         "archived" in r_arch and "hidden from search" in r_arch, r_arch[:80])

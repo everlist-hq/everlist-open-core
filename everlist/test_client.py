@@ -81,7 +81,12 @@ async def ask(ctx: Context):
 
 
 async def main():
-    bureau = Bureau()
+    # 2026-10-04: uagents default bureau port (8000) collides with unrelated
+    # processes in the shared container (same fix as test_chat_e2e.py) -
+    # bind a free ephemeral port instead.
+    import socket as _socket
+    _s = _socket.socket(); _s.bind(("127.0.0.1", 0)); _free = _s.getsockname()[1]; _s.close()
+    bureau = Bureau(port=_free)
     if not STANDALONE:
         bureau.add(w.hub_agent)
     bureau.add(client)

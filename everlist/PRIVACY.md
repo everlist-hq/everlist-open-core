@@ -40,7 +40,7 @@ This page is exact, not marketing. Every claim maps to code (app.py, SPEC §12a/
 
 ## Interim honesty (pilot stage)
 
-- Human-verification today = operator vouch or email code (documented interim); production target = Midnight zk-personhood (A2) — prove *one human*, reveal *nothing*
+- Human-verification today = email code (Tier-1, implemented 2026-10-03: confirming the 6-digit code sets human_verified with verified_by 'email-code') or operator vouch (fast-lane); Tier-2 buyer gating stays midnight-zk/admin-vouch only; production target = Midnight zk-personhood (A2) — prove *one human*, reveal *nothing*
 - Chat senders are identified by their agent address via the Agentverse relay; the wrapper keeps in-memory per-sender sessions only
 
 Questions or a deletion request without your account access? Run `recover <email>` or contact the hub operator directly.

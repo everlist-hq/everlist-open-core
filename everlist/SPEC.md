@@ -152,7 +152,7 @@ One entry per booking; the escrow field is updated on transitions (booking→HEL
 ## 12. Account email recovery (B3c-email)
 
 - `POST /accounts/email/bind` `{email, account_code | X-Hub-Token}` → 6-char verification code sent. Delivery via `HUB_EMAIL_MODE`: `off` (default: bind accepted + pending state stored, but `note` says NO code was delivered and verify cannot succeed until `log`/`smtp` is configured) | `log` (dev: code in hub log, chat labels it) | `smtp` (real send; Gmail requires an App Password — account password → SMTP 535).
-- `POST /accounts/email/verify` `{email, code}` → `email_verified=true`; recovery enabled. Codes: 6 chars, 15-min TTL, single-use, hashed at rest.
+- `POST /accounts/email/verify` `{email, code}` → `email_verified=true` AND `human_verified=true, verified_by='email-code'` (Tier-1 human proof, owner GO 2026-10-03); recovery enabled. Codes: 6 chars, 15-min TTL, single-use, hashed at rest.
 - `POST /accounts/email/recover` `{email}` → ALWAYS the same answer whether or not the email is bound (no account enumeration); rate-limited 5/h.
 - `POST /accounts/email/recover/confirm` `{email, code}` → NEW `account_code` shown ONCE; old code invalid immediately (recovery == rotation). All previously issued login tokens are revoked (B1 generation bump).
 - Email is optional; accounts without email can still rotate via `/accounts/rotate` with their current code.
@@ -406,9 +406,11 @@ anything else, `null` treated as unset). It is part of the public listing face
 ### 22b. Enforcement is server-side only
 
 `POST /book` on a gated listing checks the ALREADY-computed server-side
-`acct_verified` (account principal + `human_verified` from midnight-zk /
-admin-vouch). The client-asserted `human_verified` stub NEVER satisfies the
-gate. The 403 names the requirement and the fix (`/accounts/verify-midnight`).
+`acct_verified` (account principal + `human_verified`). Source law (owner GO
+2026-10-03): Tier-1 verified-human gate accepts midnight-zk / admin-vouch /
+email-code; the Tier-2 buyer gate (`require_verified_buyer`) accepts ONLY
+midnight-zk / admin-vouch — email-code NEVER satisfies it (fail-closed).
+The client-asserted `human_verified` stub NEVER satisfies either gate. The 403 names the requirement and the fix (`/accounts/verify-midnight`).
 Provenance flows through: the booking stores the server-derived `verified_by`.
 
 ### 22c. Owner control

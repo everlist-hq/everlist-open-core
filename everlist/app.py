@@ -2629,12 +2629,20 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(403, {"error": "invalid or expired verification code"})
                 ACCOUNTS[aid]["email"] = email
                 ACCOUNTS[aid]["email_verified"] = True
+                # owner GO 2026-10-03: a confirmed 6-digit email code IS the
+                # Tier-1 human proof (threat-model law: Tier 1 never harder;
+                # one email = one account + PoW + rate limits = the economics).
+                # Tier-2 (require_verified_buyer) still demands midnight-zk /
+                # admin-vouch — verified_by records the source honestly.
+                ACCOUNTS[aid]["human_verified"] = True
+                ACCOUNTS[aid]["verified_by"] = "email-code"
                 ACCOUNTS[aid]["pending_email"] = None
                 ACCOUNTS[aid]["pending_code_hash"] = None
                 ACCOUNTS[aid]["pending_exp"] = 0
                 _persist_locked()
             return self._json(200, {"ok": True, "account_id": aid, "email": email, "email_verified": True,
-                "note": "recovery enabled: POST /accounts/email/recover {email} if you ever lose the account code"})
+                "human_verified": True, "verified_by": "email-code",
+                "note": "recovery enabled: POST /accounts/email/recover {email} if you ever lose the account code; one-time human check complete (Tier-1 email proof)"})
         if path == "/accounts/email/recover":
             # request: ALWAYS answer the same way (no account enumeration)
             email = str(data.get("email", "")).strip().lower()
@@ -3203,7 +3211,16 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(404, {"error": f"no listing {lid}"})
             if listing.get("archived"):  # before any validation: the honest answer is 'archived', not field errors
                 return self._json(409, {"error": "listing archived - not bookable"})
-            if listing.get("require_verified_buyer") and not acct_verified:
+            # C11 Tier-2 split (owner GO 2026-10-03): email-code satisfies the
+            # Tier-1 verified-human gate above, but NEVER the Tier-2 buyer gate —
+            # only midnight-zk / admin-vouch count here (fail-closed).
+            acct_t2 = False
+            if acct_verified and principal.startswith("acct-"):
+                with LOCK:
+                    acct = ACCOUNTS.get(principal)
+                if acct and acct.get("verified_by") in ("midnight-zk", "admin-vouch"):
+                    acct_t2 = True
+            if listing.get("require_verified_buyer") and not acct_t2:
                 # C11 (SPEC section 22): the merchant demanded Tier-2-verified buyers.
                 # The client-asserted human_verified stub NEVER satisfies this gate —
                 # only server-side verification (midnight-zk / admin-vouch) counts.
