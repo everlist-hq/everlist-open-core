@@ -15,7 +15,8 @@ Action protocol (exactly one JSON object per turn):
    "say": "<short user-facing line>",
    "q": "<keywords for search/refine>",
    "filters": {"free": bool, "max_price": num, "min_price": num,
-               "from": "YYYY-MM-DD", "to": "YYYY-MM-DD", "sort": "price|date"},
+               "from": "YYYY-MM-DD", "to": "YYYY-MM-DD", "sort": "price|date",
+               "location": "city or place, lowercase"},
    "target": "home|dashboard|results", "refine": bool}
 
 Fail-open law (unchanged from C9): any brain failure (no key, timeout, bad
@@ -182,16 +183,21 @@ _SYS = (
     "explicitly free/no-cost; max_price/min_price numbers; from/to = "
     "YYYY-MM-DD resolved against TODAY=@TODAY@ (this weekend = coming "
     "Saturday, next weekend = Saturday of next week, next week = the Monday "
-    "after this Sunday through the following Sunday — never today). sort=\"price\" "
-    "when cheapest-first is wanted, \"date\" when soonest-first. Never invent "
-    "prices or dates the user did not give or imply.\n"
+    "after this Sunday through the following Sunday, this/next month = the "
+    "calendar month — never today). sort=\"price\" when cheapest-first is "
+    "wanted, \"date\" when soonest-first. A CITY OR PLACE ('in Vienna', "
+    "'near Berlin', 'anything outdoor in Vienna') goes to filters.location "
+    "(lowercase) — NEVER into q, and never dropped. Never invent prices, "
+    "places, or dates the user did not give or imply.\n"
     "- refine: user adjusts the previous search ('actually cheaper', 'only "
-    "free ones', 'what about tomorrow'). Set only the CHANGED fields and "
-    "refine=true. If no concrete filter changed (e.g. 'cheaper' with no "
-    "number), just set refine=true — the site handles it. If the previous "
-    "search found NOTHING, a wider ask ('what else is on next week?') is a "
-    "NEW search: q empty or fresh keywords, keep only the user's real "
-    "filters — never reuse the keywords that found nothing.\n"
+    "free ones', 'what about tomorrow', 'what about next month?', 'what else "
+    "is on next week?' while they are still browsing). Set only the CHANGED "
+    "fields and refine=true — everything else (topic q, location, prices) is "
+    "kept automatically; NEVER drop the location they searched. If no "
+    "concrete filter changed (e.g. 'cheaper' with no number), just set "
+    "refine=true — the site handles it. If the previous search found NOTHING, "
+    "a wider ask is a NEW search: q empty or fresh keywords, keep only the "
+    "user's real filters — never reuse the keywords that found nothing.\n"
     "- nav: user wants to move around the site ('go back', 'main page', "
     "'dashboard', 'show my results again'). target: home|dashboard|results.\n"
     "- show: user wants full details of one result ('tell me more about 2', "
@@ -234,8 +240,10 @@ _SYS = (
     "a listing was created or published — the site's own 'Listed!' answer is "
     "the only proof; until then the listing does NOT exist.\n"
     "Examples (message -> exactly one JSON object):\n"
-    '  "jazz tonight in berlin" -> {"action":"search","q":"jazz berlin","filters":{"sort":"date"}}\n'
-    '  "free yoga this weekend" -> {"action":"search","q":"yoga","filters":{"free":true,"from":"<coming-saturday>"}}\n'
+    '  "jazz tonight in berlin" -> {"action":"search","q":"jazz","filters":{"location":"berlin","sort":"date"}}\n'
+    '  "anything outdoor in vienna next week?" -> {"action":"search","q":"outdoor","filters":{"location":"vienna","from":"<next-monday>","to":"<next-sunday>"}}\n'
+    '  "what about next month?" -> {"action":"refine","filters":{"from":"<first-of-next-month>","to":"<end-of-next-month>"},"refine":true}\n'
+    '  "i asked for vienna not everywhere" -> {"action":"refine","refine":true,"say":"Back to Vienna only."}\n'
     '  "okay no go back to main page" -> {"action":"nav","target":"home","say":"Back to the main page — want to search something new?"}\n'
     '  "thanks!" -> {"action":"ack","say":"Anytime! Say the word when you want to book something."}\n'
     '  "yes book it!" -> {"action":"resume_booking","say":"On it - locking that in for you."}\n'
@@ -496,6 +504,9 @@ def _filters_of(act: dict) -> dict:
     d = _valid_date(f.get("to"))
     if d:
         out["to"] = d
+    loc = str(f.get("location") or "").strip().lower()
+    if re.fullmatch(r"[a-zäöüß][a-zäöüß\- ]{1,40}", loc):
+        out["location"] = loc
     if f.get("sort") in ("price", "date"):
         out["sort"] = f["sort"]
     return out
@@ -525,6 +536,31 @@ def _site_state(chatlib, sender: str) -> str:
                              (" - $" + str(price)) if price is not None else "",
                              (" - " + loc) if loc else ""))
             blocks.append("\n".join(rows))
+    except Exception:
+        pass
+    try:
+        spec = chatlib._LAST_SEARCH.get(sender) or {}
+        if spec:
+            fl = spec.get("filters") or {}
+            bits = []
+            if spec.get("q"):
+                bits.append('topic "%s"' % spec["q"])
+            if fl.get("location"):
+                bits.append('location "%s"' % fl["location"])
+            if fl.get("free"):
+                bits.append("free only")
+            for k in ("max_price", "min_price"):
+                if k in fl:
+                    bits.append("%s %g" % (k.replace("_", " "), fl[k]))
+            for k in ("from", "to"):
+                if k in fl:
+                    bits.append("%s %s" % (k, fl[k]))
+            if bits:
+                blocks.append(
+                    "ACTIVE SEARCH FILTERS (the current search is scoped to: "
+                    "%s). On refine=true KEEP every one of these unless the "
+                    "user explicitly changes that exact filter; never widen "
+                    "the scope and NEVER drop the location." % "; ".join(bits))
     except Exception:
         pass
     try:

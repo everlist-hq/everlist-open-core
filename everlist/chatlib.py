@@ -2362,6 +2362,59 @@ def board_nomatch_line(sender: str) -> str:
     return _voice_pick(_BOARD_NOMATCH_LINES, sender)
 
 
+_LOC_ALIAS = {"wien": "vienna"}
+_LOC_JUNK = frozenset((
+    "me", "us", "him", "her", "them", "the", "a", "an",
+    "front", "advance", "general", "detail", "person",
+    "touch", "line", "doubt", "case", "stock", "store",
+    "return", "addition", "total", "short", "future",
+    "past", "english", "german", "morning", "afternoon",
+    "evening", "night", "noon", "midnight", "week",
+    "weekend", "month", "today", "tomorrow", "this"))
+
+
+def _loc_ok(loc: str) -> bool:
+    """Guard: is the captured token a plausible PLACE, not an intent/topic
+    word? Rejects junk phrases, topic nouns (_CONCEPTS keys, singular forms)
+    AND sibling terms ('jazz' lives under 'concert' — 'in jazz' is an intent)."""
+    if not loc or len(loc.split()) > 3:
+        return False
+    if loc in _LOC_JUNK:
+        return False
+    if loc in _CONCEPTS:
+        return False
+    if loc.endswith("s") and loc[:-1] in _CONCEPTS:
+        return False
+    for _vals in _CONCEPTS.values():
+        if loc in _vals:
+            return False
+    return True
+
+
+# ONE source of truth for the 'in/near/around <place>' capture — shared by
+# _extract_location and _smart_search's _take. The lookahead stops before
+# window/price words AND trailing chatter ('soon?', 'please'): the space in
+# the char class would otherwise swallow the next word ('vienna soon') and
+# zero out REAL matches (C1.1 regression caught by test_conversation).
+_LOC_RX = re.compile(
+    r"\b(?:in|near|around)\s+([a-zäöüß][a-zäöüß\-' ]{1,30}?)"
+    r"(?=\s+(?:next|this|tomorrow|today|tonight|soon|soonest|later|now|please|bitte|under|over|from|until|till|by|cheapest|earliest|free|with|that|which|not|instead|actually|everywhere|anywhere|somewhere)\b|[,.!?;:]|$)")
+
+
+def _extract_location(text: str):
+    """Owner 2026-10-05 (chat continuity): parse 'in/near/around <place>' out
+    of raw text with the FULL guard set. Shared by brain_search (so an LLM
+    action that drops the place is repaired from the user's own words) and by
+    _smart_search's validation. Returns a lowercase place or None."""
+    low = re.sub(r"[?!.;:,]+", " ", (text or "").strip().lower()).strip()
+    m = _LOC_RX.search(low)
+    if not m:
+        return None
+    loc = re.sub(r"^(the|a|an)\s+", "", m.group(1).strip()).strip()
+    loc = _LOC_ALIAS.get(loc, loc)
+    return loc if _loc_ok(loc) else None
+
+
 def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
     """Natural-language search: 'find me a free yoga class' -> max_price=0 + word match.
     Multi-word queries union per-word matches (hub q is substring-AND by design)."""
@@ -2382,11 +2435,23 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
     _take(r"\bover\s+(\d+(?:[.,]\d+)?)", "min_price")
     _take(r"\bfrom\s+(\d{4}-\d{2}-\d{2})", "from")
     _take(r"\b(?:until|till|by)\s+(\d{4}-\d{2}-\d{2})", "to")
+    # Owner 2026-10-05 (chat continuity): 'in/near <city>' is a first-class
+    # qualifier — parsed OUT of the keyword text, sent as the hub location
+    # filter, stashed in the last-search spec, and restored on refinements.
+    # _LOC_RX is the ONE shared pattern (see its comment: 'vienna soon?' must
+    # never swallow the chatter word); guards live in _loc_ok.
+    _mloc = _LOC_RX.search(low)
+    if _mloc:
+        _lc_raw = re.sub(r"^(the|a|an)\s+", "", _mloc.group(1).strip()).strip()
+        low = (low[:_mloc.start()] + " " + low[_mloc.end():]).strip()
+        _lc = _LOC_ALIAS.get(_lc_raw, _lc_raw)
+        if _loc_ok(_lc):
+            qual["location"] = _lc
     # R5 battery 2026-09-24: relative time windows resolve instantly and
     # deterministically -- never a multi-second brain roundtrip, and never a
     # reason to drag a dead keyword along.
     _wm = re.search(
-        r"\b(next weekend|next week|this weekend|this week|tomorrow|today)\b", low)
+        r"\b(next weekend|next week|this weekend|this week|this month|next month|tomorrow|today)\b", low)
     if _wm and "from" not in qual and "to" not in qual:
         import datetime as _dtw
         _today = _dtw.date.today()
@@ -2401,6 +2466,14 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
             _t = _f + _dtw.timedelta(days=1 if _f.weekday() == 5 else 0)
         elif _w == "this week":
             _f, _t = _today, _today + _dtw.timedelta(days=6 - _dow)
+        elif _w == "this month":
+            # calendar month: today .. last day of this month
+            _t = (_today.replace(day=1) + _dtw.timedelta(days=32)).replace(day=1) - _dtw.timedelta(days=1)
+            _f = _today
+        elif _w == "next month":
+            _nm1 = (_today.replace(day=1) + _dtw.timedelta(days=32)).replace(day=1)
+            _f = _nm1
+            _t = (_nm1.replace(day=1) + _dtw.timedelta(days=32)).replace(day=1) - _dtw.timedelta(days=1)
         elif _w == "next weekend":
             # Saturday of NEXT week (this weekend is covered above)
             _sat_off = 5 - _dow if _dow <= 5 else 12 - _dow
@@ -2419,7 +2492,7 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
         qual["sort"] = "date"
         low = re.sub(r"\b(?:soonest|earliest)\b", " ", low)
     params = ([] + (["max_price=0"] if free else []))
-    for k in ("max_price", "min_price", "from", "to", "sort"):
+    for k in ("max_price", "min_price", "from", "to", "sort", "location"):
         if k in qual:
             params.append(k + "=" + urllib.parse.quote(qual[k]))
     words = [w for w in low.replace(",", " ").split()
@@ -2455,6 +2528,8 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
     except Exception:
         return "Sorry — the EverList hub is unreachable right now. Try again shortly."
     parts = ([] + (["free only"] if free else []))
+    if "location" in qual:
+        parts.append("in " + qual["location"])
     if "max_price" in qual:
         parts.append("under " + qual["max_price"])
     if "min_price" in qual:
@@ -2478,6 +2553,8 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
             _retry = "search"
             if free:
                 _retry += " free"
+            if "location" in qual:
+                _retry += " in " + qual["location"]
             if "max_price" in qual:
                 _retry += " under " + str(qual["max_price"])
             if "min_price" in qual:
@@ -2743,10 +2820,36 @@ def brain_search(hub_url: str, sender: str, act: dict, text: str = "") -> str:
                     spec["filters"][k] = v
                 except ValueError:
                     pass
+        _loc = str(f.get("location") or "").strip().lower()
+        if _loc:
+            _loc = _LOC_ALIAS.get(_loc, _loc)
+            if _loc_ok(_loc):
+                spec["filters"]["location"] = _loc
         if f.get("sort") in ("price", "date"):
             spec["filters"]["sort"] = f["sort"]
     except Exception:
         spec = {"q": q, "filters": {}}
+    # Owner 2026-10-05 (chat continuity): the model dropped the place the user
+    # typed ('anything outdoor in Vienna next week?' -> no location filter)?
+    # Repair it from the raw words — deterministic parse, full guard set —
+    # so the stash is NEVER born scopeless when the user named a city.
+    if "location" not in spec["filters"]:
+        _rl = _extract_location(text or "")
+        if _rl:
+            spec["filters"]["location"] = _rl
+            # if the model stuffed the place into q, drop it there too —
+            # q is substring-AND, 'q=vienna AND location=vienna' would hide
+            # listings whose title never mentions the city.
+            _qtoks = [t for t in (spec["q"] or "").split()
+                      if t not in (_rl, _rl + "s")]
+            spec["q"] = " ".join(_qtoks)[:40].strip()
+    # Owner 2026-10-05: when the user's OWN words carry a relative window
+    # ('next week', 'next month'), the deterministic resolver owns the dates —
+    # never the model's arithmetic ('next week' spoken on a Monday once
+    # resolved to yesterday+. One meaning on every code path.
+    _win = _resolve_window(text or "")
+    if _win:
+        spec["filters"]["from"], spec["filters"]["to"] = _win
     # refine: merge onto the last search spec (only provided fields override)
     if act.get("refine") and _LAST_SEARCH.get(sender):
         last = _LAST_SEARCH[sender]
@@ -2774,6 +2877,8 @@ def brain_search(hub_url: str, sender: str, act: dict, text: str = "") -> str:
         parts.append("from " + fl["from"])
     if fl.get("to"):
         parts.append("until " + fl["to"])
+    if fl.get("location"):
+        parts.append("in " + str(fl["location"]))
     if fl.get("sort") == "price":
         parts.append("cheapest")
     elif fl.get("sort") == "date":
@@ -3404,6 +3509,140 @@ def _brain_book_sentence(hub_url: str, sender: str, text: str) -> str:
     return brain_book(hub_url, sender, which, "")
 
 
+# Owner 2026-10-05 (chat continuity): qualifier-only turns must never pay an
+# LLM roundtrip that can silently WIDEN the search. 'What about next month?'
+# keeps the whole last spec (topic q, location, price filters) and swaps only
+# the window; 'I asked for Vienna not everywhere' restores it. Rebuilt through
+# brain_search's refine merge -> canonical command -> _smart_search, so the
+# stash, rendering and booking handles stay identical to a real refine.
+_PIVOT_WIN_RX = re.compile(
+    r"\b(next weekend|next week|this weekend|this week|this month|next month|tomorrow|today)\b")
+_PIVOT_CHATTER = frozenset(
+    ("what", "whats", "about", "how", "is", "are", "on", "in", "at", "near",
+     "around", "going", "happening", "else", "up", "there", "any", "anything",
+     "something", "more", "the", "a", "an", "and", "for", "me", "us", "then",
+     "next", "this", "week", "weekend", "month", "today", "tomorrow", "free",
+     "show", "find", "search", "listings", "events", "event", "stuff",
+     "things", "thing", "to", "do", "get", "give", "ok", "okay", "hey", "hi",
+     "available", "still", "again", "just", "only"))
+_COMPLAINT_RX = re.compile(
+    r"\bnot everywhere\b|\bdidn'?t i ask\b|\bi (?:asked|wanted|said|specified|meant)\b")
+_COMPLAINT_FRAME = _PIVOT_CHATTER | frozenset(
+    ("i", "asked", "wanted", "said", "specified", "meant", "for", "not",
+     "everywhere", "didn", "didn't", "t"))
+
+
+def _spec_words(spec: dict) -> frozenset:
+    """Topic/location/free tokens a complaint turn may repeat while still
+    counting as 'restore my search' instead of 'here is a NEW search'."""
+    w = set((spec.get("q") or "").split())
+    fl = spec.get("filters") or {}
+    w.update(str(fl.get("location") or "").split())
+    if fl.get("free"):
+        w.add("free")
+    return frozenset(w)
+
+
+def _pivot_only(text: str) -> bool:
+    """True when EVERY token is pivot chatter or part of a window phrase
+    ('what about next month?' yes; 'what about yoga next month?' no)."""
+    toks = [t for t in re.sub(r"[?!.;:,]+", " ", (text or "").lower()).split() if t]
+    return bool(toks) and all(t in _PIVOT_CHATTER for t in toks) and bool(
+        _PIVOT_WIN_RX.search(text or ""))
+
+
+def _resolve_window(text: str):
+    """Resolve a relative window phrase ('this weekend', 'next month', ...)
+    to an inclusive (from, to) ISO date pair, or None when the text carries
+    no window phrase. Single source of truth: _pivot_reply rebuilds last-spec
+    pivots with it and brain_search OVERRIDES model date math with it, so
+    'next week' means the same thing on every code path (_smart_search keeps
+    its inline consumer because it must also strip the phrase from keywords)."""
+    m = re.search(
+        r"\b(next weekend|next week|this weekend|this week|this month|next month|tomorrow|today)\b",
+        (text or "").lower())
+    if not m:
+        return None
+    import datetime as _dtp
+    _today = _dtp.date.today()
+    _dow = _today.weekday()
+    w = m.group(1)
+    if w == "today":
+        _f = _t = _today
+    elif w == "tomorrow":
+        _f = _t = _today + _dtp.timedelta(days=1)
+    elif w == "this weekend":
+        _f = _today if _dow in (5, 6) else _today + _dtp.timedelta(days=5 - _dow)
+        _t = _f + _dtp.timedelta(days=1 if _f.weekday() == 5 else 0)
+    elif w == "this week":
+        _f, _t = _today, _today + _dtp.timedelta(days=6 - _dow)
+    elif w == "this month":
+        _t = (_today.replace(day=1) + _dtp.timedelta(days=32)).replace(day=1) - _dtp.timedelta(days=1)
+        _f = _today
+    elif w == "next month":
+        _nm1 = (_today.replace(day=1) + _dtp.timedelta(days=32)).replace(day=1)
+        _f = _nm1
+        _t = (_nm1.replace(day=1) + _dtp.timedelta(days=32)).replace(day=1) - _dtp.timedelta(days=1)
+    elif w == "next weekend":
+        _sat_off = 5 - _dow if _dow <= 5 else 12 - _dow
+        _f = _today + _dtp.timedelta(days=_sat_off + 7)
+        _t = _f + _dtp.timedelta(days=1)
+    else:  # next week: coming Monday .. its Sunday
+        _f = _today + _dtp.timedelta(days=7 - _dow)
+        _t = _f + _dtp.timedelta(days=6)
+    return _f.isoformat(), _t.isoformat()
+
+
+def _pivot_reply(hub_url: str, sender: str, text: str) -> str | None:
+    """Deterministic refinement of the sender's LAST search. Returns None when
+    this turn is not a pure qualifier pivot or a scope complaint (then the
+    normal routing — including the LLM-first brain — applies unchanged)."""
+    text = (text or "").strip()
+    low = text.lower()
+    spec = _LAST_SEARCH.get(sender)
+    if not spec:
+        return None
+    override: dict = {}
+    if _pivot_only(text):
+        win = _resolve_window(low)
+        if not win:
+            return None
+        override["from"], override["to"] = win
+    elif _COMPLAINT_RX.search(low):
+        # The user names the MISSING scope in the complaint itself ('i asked
+        # for VIENNA not everywhere') — the stash may have lost exactly that
+        # place, so the named place is allowed IN ADDITION to the spec words.
+        _cl = _extract_location(low)
+        if not _cl:
+            # complaint phrasing without in/near/around ('I asked for
+            # Vienna...'): a capitalized proper noun after for/in/near is the
+            # place; _loc_ok rejects 'for me' / 'for free' style words.
+            _pn = re.search(r"\b(?:for|in|near|around)\s+([A-ZÄÖÜ][a-zäöüß][a-zäöüß-]*)", text)
+            if _pn and _loc_ok(_LOC_ALIAS.get(_pn.group(1).lower(), _pn.group(1).lower())):
+                _cl = _LOC_ALIAS.get(_pn.group(1).lower(), _pn.group(1).lower())
+        # A complaint must REPEAT the last search's own words and carry no
+        # NEW substantive content — otherwise it is a fresh search ('I wanted
+        # jazz in Salzburg') and belongs to normal routing.
+        allowed = _COMPLAINT_FRAME | (_spec_words(spec) - _COMPLAINT_FRAME)
+        if _cl:
+            allowed |= frozenset(_cl.split())
+        toks = re.findall(r"[a-z0-9äöüß']+(?:'[a-z]+)?", low)
+        if not toks or not all(t in allowed for t in toks):
+            return None
+        if not (_LAST_RESULTS.get(sender) or []):
+            return None
+        if _cl and not (spec.get("filters") or {}).get("location"):
+            override["location"] = _cl
+    else:
+        return None
+    # Complaint turns otherwise carry no overrides: the refine merge restores
+    # the ENTIRE last spec (topic, location, prices) as the user asked it.
+    act = {"action": "refine", "refine": True}
+    if override:
+        act["filters"] = override
+    return brain_search(hub_url, sender, act, text=text)
+
+
 def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     """Map one incoming chat text to one reply text (pure function, testable)."""
     low = (text or "").strip().lower()
@@ -3526,6 +3765,14 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     _irep = _social_instant_reply(low, hub_url, sender)
     if _irep is not None:
         return _irep
+
+    # Owner 2026-10-05 (chat continuity): deterministic refine of the LAST
+    # search — window pivots swap only the date window (topic+location+price
+    # filters survive); scope complaints restore the exact previous spec.
+    # Zero LLM latency, and the search can never silently WIDEN here.
+    _pv = _pivot_reply(hub_url, sender, text)
+    if _pv is not None:
+        return _pv
 
     # pure ordinal picks ('das erste bitte', 'the first one') book the stash pick
     _st_pick_fired = False
@@ -4258,7 +4505,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     # week?', 'anything tomorrow?') are deterministic searches -- instant, and
     # the window resolves in _smart_search, so dead keywords never tag along.
     _mwin = re.search(
-        r"\b(next weekend|next week|this weekend|this week|tomorrow|today)\b", _tl)
+        r"\b(next weekend|next week|this weekend|this week|this month|next month|tomorrow|today)\b", _tl)
     _mseek = re.search(
         r"\b(going on|what else|anything|something|events?|listings?|happening|find|search|show me"
         r"|concerts?|konzerte?|best|things? to do|in|at|near)\b", _tl)

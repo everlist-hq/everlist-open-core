@@ -474,7 +474,7 @@ class CardFormat(unittest.TestCase):
 
     def test_card_bad_data(self):
         c = chatlib._fmt_listing({"id": "x", "price": "abc"})
-        self.assertIn("$abc", c)  # bad price must still render safely
+        self.assertIn("€abc", c)  # bad price must still render safely
 
 
 class SearchPagination(unittest.TestCase):
@@ -601,6 +601,81 @@ class NaturalLanguageRouting(unittest.TestCase):
             chatlib.handle_text("http://hub", "book the first one", sender="t3")
         # fell through to the brain tail -> disabled -> fail-open keyword search
         ss.assert_called_once()
+
+
+class ChatContinuity(unittest.TestCase):
+    """Owner 2026-10-05 (chat continuity): a qualifier named ONCE ('in Vienna')
+    survives the whole conversation. 'What about next month?' keeps topic +
+    location + prices and swaps ONLY the window (deterministic, no LLM turn
+    that could silently widen the scope); 'I asked for Vienna not everywhere'
+    restores it. Location rides the hub's own location= filter."""
+
+    LS = [{"id": "even-1", "title": "Open Air Concert", "category": "concert",
+           "vertical": "events", "date": "2099-06-01", "price": 9,
+           "location": "Vienna", "description": "x"}]
+
+    def setUp(self):
+        chatlib._LAST_RESULTS.clear()
+        chatlib._LAST_SEARCH.clear()
+
+    def _say(self, text, sender):
+        cap = []
+        # hermetic like the rest of this suite: the module-level env pin above
+        # lands AFTER brain's import, so the early-LLM tier needs this patch
+        with mock.patch.object(brain, "_DISABLED", True), mock.patch.object(
+                chatlib, "_hub_get",
+                side_effect=lambda *a, **k:
+                (cap.append(a[1] if len(a) > 1 else ""),
+                 {"listings": self.LS})[1]):
+            r = chatlib.handle_text("http://hub", text, sender=sender)
+        return r, cap
+
+    def test_qualifier_parsed_and_stashed(self):
+        _, cap = self._say("anything outdoor in vienna next week?", "cc1")
+        self.assertTrue(any("location=vienna" in u for u in cap), cap[:2])
+        spec = chatlib._LAST_SEARCH.get("cc1") or {}
+        self.assertEqual((spec.get("filters") or {}).get("location"), "vienna")
+        self.assertEqual(spec.get("q"), "outdoor")  # place never becomes q
+
+    def test_pivot_keeps_scope_swaps_window(self):
+        import datetime as dt
+        self._say("anything outdoor in vienna next week?", "cc2")
+        self._say("What about next month?", "cc2")
+        fl = (chatlib._LAST_SEARCH.get("cc2") or {}).get("filters") or {}
+        self.assertEqual(fl.get("location"), "vienna")
+        nm1 = (dt.date.today().replace(day=1) + dt.timedelta(days=32)).replace(day=1)
+        end = (nm1.replace(day=1) + dt.timedelta(days=32)).replace(day=1) - dt.timedelta(days=1)
+        self.assertEqual((fl.get("from"), fl.get("to")),
+                         (nm1.isoformat(), end.isoformat()))
+
+    def test_complaint_restores_named_place(self):
+        self._say("anything outdoor in vienna next week?", "cc3")
+        self._say("I asked for Vienna not everywhere", "cc3")
+        fl = (chatlib._LAST_SEARCH.get("cc3") or {}).get("filters") or {}
+        self.assertEqual(fl.get("location"), "vienna")
+
+    def test_intent_words_are_not_places(self):
+        for t in ("search yoga near me", "something in advance please",
+                  "interested in jazz tonight"):
+            _, cap = self._say(t, "cc4")
+            self.assertFalse(any("location=" in u for u in cap), (t, cap[:1]))
+
+    def test_brain_drop_repaired_from_raw_words(self):
+        # the LLM action dropped the place AND the window -> repaired from the
+        # user's own words, deterministically (raw-text window beats model math)
+        import datetime as dt
+        with mock.patch.object(chatlib, "_hub_get",
+                               return_value={"listings": self.LS}):
+            chatlib.brain_search(
+                "http://hub", "cc5",
+                {"action": "search", "q": "outdoor", "filters": {}},
+                text="Anything outdoor in Vienna next week?")
+        spec = chatlib._LAST_SEARCH.get("cc5") or {}
+        fl = spec.get("filters") or {}
+        self.assertEqual(fl.get("location"), "vienna")
+        self.assertEqual(spec.get("q"), "outdoor")
+        monday = dt.date.today() + dt.timedelta(days=7 - dt.date.today().weekday())
+        self.assertEqual(fl.get("from"), monday.isoformat())
 
 
 if __name__ == "__main__":

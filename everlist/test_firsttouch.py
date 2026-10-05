@@ -106,6 +106,17 @@ def main():
     import webchat
     webchat.PORT = wc_port
     webchat.HUB_URL = f"http://127.0.0.1:{hub_port}"
+    # 2026-10-05 (chat-continuity A/B): the deterministic qualifier search
+    # path answers FASTER, so 38 first-touch POSTs at 0.2s pacing trip the
+    # production G4 flood bucket (ip burst 30) on the tail inputs --
+    # pre-change baseline ran 429-free, post-change 8x 429, same machine.
+    # This battery asserts ROUTING outcomes (same precedent as the brain pin
+    # above); flood limits have their own suite (test_write_limits). The
+    # knobs are env-tunable 'for load tests / CI' (webchat.py header).
+    webchat.RL_IP_BURST = 200
+    webchat.RL_IP_PER_MIN = 200
+    webchat.RL_S_BURST = 50
+    webchat.RL_S_PER_MIN = 200
     srv = webchat.ThreadingHTTPServer(("127.0.0.1", wc_port), webchat.Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     atexit.register(srv.shutdown)
