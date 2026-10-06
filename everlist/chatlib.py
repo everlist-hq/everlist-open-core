@@ -692,9 +692,14 @@ def _resolve_relative_date(text):
 
 
 def _loose_capacity(text):
-    """Headcount phrases: 'ehh 20 people', 'room for 30'."""
+    """Headcount phrases: 'ehh 20 people', 'room for 30', 'space for 25'."""
     m = re.search(r"(\d{1,4})\s*(?:people|persons?|spots?|seats?|guests?|pax\b)",
                   text or "", re.I)
+    if m:
+        return m.group(1)
+    # 'room/space/room for N' — number with NO unit word (docstring promised
+    # this shape; the pre-pass and the step fill both benefit)
+    m = re.search(r"\b(?:room|space)\s+for\s+(\d{1,4})\b", text or "", re.I)
     return m.group(1) if m else None
 
 
@@ -806,6 +811,48 @@ def _intake_reply(hub_url: str, sender: str, text: str) -> str | None:
     ed = _intake_edit_field(sender, t)
     if ed:
         return ed
+
+    # --- Owner GO 2026-10-06: one message may answer SEVERAL wizard steps
+    # ('20 euros, room for 30, on 2026-11-01') — fill every confident field
+    # deterministically, then ask the next OPEN question. Kills the 8-29s
+    # LLM tail on mechanically parseable answers (Oct-5 recap item 2).
+    # Title/description are NEVER auto-filled (they ARE the free text);
+    # fires only on >=2 confident hits — single hits keep the proven
+    # single-step flow below untouched.
+    if t and not _JAILBREAK_RX.search(t[:300]) and not _INTAKE_Q_RX.search(t):
+        _mf = {}
+        _dp = _loose_price(t)
+        _dd = _loose_date(t) or _resolve_relative_date(t.strip())
+        _dc = _loose_capacity(t)
+        if _dd:
+            import datetime as _dtm3
+            try:
+                if _dtm3.date(*map(int, _dd.split("-"))) < _dtm3.date.today():
+                    _dd = None  # parity: single-step rejects past dates too
+            except ValueError:
+                _dd = None
+        if _dp is not None:
+            _mf["price"] = _dp
+        if _dd:
+            _mf["date"] = _dd
+        if _dc:
+            _mf["capacity"] = _dc
+        cats0 = _valid_categories(hub_url) or _EVENT_CATS_FALLBACK
+        _chits = [c for c in cats0
+                  if c != "other" and re.search(r"\b%s\b" % re.escape(c), low)]
+        if len(_chits) == 1:
+            _mf["category"] = _chits[0]
+        _skipx = set(s["fields"].get("__skipped", []))
+        _mf = {k: v for k, v in _mf.items()
+               if not s["fields"].get(k) and k not in _skipx}
+        if len(_mf) >= 2:
+            fields = dict(s["fields"])
+            fields.update(_mf)
+            fields["__skipped"] = sorted(_skipx)
+            _intake_put(sender, fields)
+            q = _intake_next_question(fields)
+            return ("\u2713 " + ", ".join("%s: %s" % kv for kv in _mf.items())
+                    + ((chr(10) + q) if q else ""))
 
     # --- fill current step ---
     fields = dict(s["fields"])
@@ -2344,22 +2391,78 @@ _BOARD_NOMATCH_LINES = (
 )
 
 
+# per-sender one-shot reply notes (owner GO 2026-10-06): complaint restores
+# and fuzzy city corrections get a SHORT human acknowledgment, then clear.
+_SEARCH_NOTE: dict[str, str] = {}
+_NOTE_CAP = 600
+
+
+def _set_note(sender: str, note: str) -> None:
+    if len(_SEARCH_NOTE) >= _NOTE_CAP and sender not in _SEARCH_NOTE:
+        for k in list(_SEARCH_NOTE)[:len(_SEARCH_NOTE) - _NOTE_CAP + 10]:
+            _SEARCH_NOTE.pop(k, None)
+    _SEARCH_NOTE[sender] = note
+
+
+def _pop_note(sender: str) -> str:
+    return _SEARCH_NOTE.pop(sender, None) or ""
+
+
+def _consume_note(sender: str) -> str:
+    """One-shot ack for the ASCII reply. Webchat sessions ('web-' senders)
+    consume theirs in the board rewrite instead — their reply text is
+    replaced wholesale there, so popping here would lose the note."""
+    if sender.startswith("web-"):
+        return ""
+    return _pop_note(sender)
+
+
+def board_scope_note(sender: str) -> str:
+    """Owner GO 2026-10-06 (tone): the search's RESOLVED scope — city, dates,
+    exclusion, time of day — rendered as one honest line so the user can SEE
+    what the chat understood (self-policing: wrong scope becomes visible
+    instantly, e.g. 'in Vienna · 1–8 Nov' on a pivot turn). Webchat only:
+    the board replaced the ASCII frame, which used to carry this."""
+    spec = _LAST_SEARCH.get(sender) or {}
+    fl = spec.get("filters") or {}
+    bits = []
+    if fl.get("location"):
+        bits.append("in " + str(fl["location"]))
+    if fl.get("exclude"):
+        bits.append("no " + str(fl["exclude"]).replace(" ", " / "))
+    if fl.get("tod"):
+        bits.append(str(fl["tod"]))
+    if fl.get("from"):
+        bits.append(_human_date(str(fl["from"]))
+                    + ("–" + _human_date(str(fl["to"])) if fl.get("to") else ""))
+    if not bits:
+        return ""
+    return " (" + " · ".join(bits) + ")"
+
+
 def board_line(sender: str, n: int, listings: list = None) -> str:
-    """Webchat board rewrite of a search frame (S1 + S2).
-    bank[0] is byte-identical to the legacy line for fresh senders."""
+    """Webchat board rewrite of a search frame (S1 + S2 + owner GO 2026-10-06).
+    bank[0] is byte-identical to the legacy line for fresh senders. A one-shot
+    ack ('Got it — Vienna only.') and the resolved scope ('(in vienna · 1 Nov
+    – 30 Nov)') ride AFTER the booking line: the reply stays scannable while
+    the understood scope becomes visible and self-policing."""
     tick = _voice_tick(sender)
     base = _BOARD_LINES[tick % len(_BOARD_LINES)] % (n, "" if n == 1 else "es")
+    ack = _pop_note(sender)
+    scope = board_scope_note(sender)
+    extra = (ack + scope) if (ack or scope) else ""
     if tick and listings:
         ins = _search_insight(listings)
         if ins:
             return ("%s — %d match%s open on the board for you; tell me which "
-                    "one you'd like." % (ins, n, "" if n == 1 else "es"))
-    return base
+                    "one you'd like.%s" % (ins, n, "" if n == 1 else "es", extra))
+    return base + extra
 
 
 def board_nomatch_line(sender: str) -> str:
-    """Webchat board rewrite of a no-match reply ('Nothing matched' prefix kept)."""
-    return _voice_pick(_BOARD_NOMATCH_LINES, sender)
+    """Webchat board rewrite of a no-match reply ('Nothing matched' prefix kept;
+    one-shot ack + resolved scope ride after for parity with matches)."""
+    return _voice_pick(_BOARD_NOMATCH_LINES, sender) + _pop_note(sender) + board_scope_note(sender)
 
 
 _LOC_ALIAS = {"wien": "vienna"}
@@ -2415,9 +2518,141 @@ def _extract_location(text: str):
     return loc if _loc_ok(loc) else None
 
 
+# ---- owner GO 2026-10-06: three more deterministic qualifier families -----
+# (1) negation 'outdoor but not hiking' -> exclusion post-filter
+# (2) time of day 'in the morning / after work' -> listing-time filter
+# (3) fuzzy cities 'vieanna' -> corrected against the board's own locations
+
+_EXCLUDE_JUNK = frozenset((
+    "sure", "now", "yet", "again", "one", "more", "the", "a", "an",
+    "and", "or", "but", "idea", "charge", "thanks", "thank", "problem",
+    "worry", "rush", "hurry", "longer", "only", "just", "even", "still",
+    "everywhere", "anywhere", "somewhere", "today", "tomorrow", "tonight",
+    "me", "us", "it", "that", "this", "book", "free", "available",
+    "interested", "expert", "joke", "kidding", "need", "want", "really",
+    "much", "many", "way", "thing", "week", "weekend", "month", "day",
+    "too", "very", "good", "bad", "nice", "worried", "expensive",
+    "cheap", "pricey", "costly", "big", "small", "far", "close",
+    "account", "idea", "ahnung"))
+# 'not/no/without/ohne/keine <word>' — single word keeps false positives near
+# zero; 'not in berlin' captures the FOLLOWING place as the exclusion (the
+# honest inverted meaning; _LOC_RX would otherwise read it as location=berlin).
+_EXCLUDE_RX = re.compile(
+    r"\b(?:but\s+|except\s+)?(?:not|without|ohne|keine?)\s+"
+    r"(?:(?:in|near|around)\s+)?([a-zäöüß][a-zäöüß\-]{2,20})\b")
+
+_TOD_ALIASES = {
+    "morning": "morning", "mornings": "morning", "morgens": "morning",
+    "afternoon": "afternoon", "afternoons": "afternoon",
+    "nachmittags": "afternoon",
+    "evening": "evening", "evenings": "evening", "abends": "evening",
+    "night": "evening", "nights": "evening", "nachts": "evening",
+}
+_TOD_RX = re.compile(
+    r"\b(?:in\s+the\s+|am\s+)?(mornings?|afternoons?|evenings?|nights?"
+    r"|morgens?|nachmittags?|abends?|nachts?)\b"
+    r"|\bafter[-\s]work\b|\bnach\s+der\s+arbeit\b", re.I)
+
+
+def _parse_exclusions(low: str):
+    """Return (terms, cleaned_text). Terms pass the junk guard; the matched
+    span is removed from the keyword text so it never becomes q."""
+    terms: list = []
+
+    def _sub(m):
+        w = m.group(1)
+        if w not in _EXCLUDE_JUNK and w not in _CONCEPTS \
+                and not (w.endswith("s") and w[:-1] in _CONCEPTS):
+            terms.append(w)
+            return " "
+        # junk capture ('not too expensive'): strip the WHOLE negation span
+        # so 'not' never becomes a search keyword.
+        return " "
+
+    cleaned = _EXCLUDE_RX.sub(_sub, low)
+    return terms, re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _parse_tod(low: str):
+    """Return (tod|None, cleaned_text). 'after work' counts as evening."""
+    m = _TOD_RX.search(low)
+    if not m:
+        return None, low
+    tok = m.group(0).lower()
+    if "work" in tok or "arbeit" in tok:
+        tod = "evening"
+    else:
+        tod = _TOD_ALIASES.get(m.group(1) or "", None)
+    if not tod:
+        return None, low
+    cleaned = (low[:m.start()] + " " + low[m.end():]).strip()
+    return tod, re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _tod_ok(l, tod: str) -> bool:
+    """True when the listing's time is unknown (never silently shrink on
+    missing data) or falls inside the asked part of the day."""
+    tm = str(l.get("time") or "").strip()
+    m = re.match(r"^(\d{1,2}):(\d{2})", tm)
+    if not m:
+        return True
+    h = int(m.group(1))
+    if tod == "morning":
+        return h < 12
+    if tod == "afternoon":
+        return 12 <= h < 18
+    return h >= 18  # evening
+
+
+def _apply_exclusions(listings: list, terms) -> list:
+    """Word-boundary exclusion over the fields the user actually sees
+    (title/tags/category/location); plural-tolerant."""
+    if not terms:
+        return listings
+    out = []
+    for l in listings:
+        hay = " ".join((str(l.get("title") or ""), str(l.get("category") or ""),
+                        str(l.get("location") or ""),
+                        " ".join(str(t) for t in (l.get("tags") or [])))).lower()
+        if any(re.search(r"\b" + re.escape(t) + r"(?:s|es)?\b", hay)
+               for t in terms):
+            continue
+        out.append(l)
+    return out
+
+
+def _fuzzy_loc(hub_url: str, params: list, loc: str) -> str | None:
+    """Unknown place ('vieanna'): fuzzy-match it against the locations that
+    actually exist on the board (data-grounded, deterministic difflib).
+    Returns the corrected place, or None. A place already on the board in any
+    case ('vienna' vs 'Vienna') is KNOWN — never rewritten (stash contract:
+    locations stay lowercase; ChatContinuity tests pin location=vienna)."""
+    import difflib
+    try:
+        base_params = [p for p in params if not p.startswith("location=")]
+        d = _hub_get(hub_url, "/search" + (("?" + "&".join(base_params)) if base_params else ""))
+        places = sorted({str(l.get("location") or "").strip()
+                         for l in (d.get("listings") or [])
+                         if str(l.get("location") or "").strip()})
+    except Exception:
+        return None
+    if not places:
+        return None
+    if loc in (p.lower() for p in places):
+        return None  # already known (any case) — keep the canonical lowercase
+    # case-insensitive compare: 'vieanna' vs 'Vienna' scores ~0.77
+    # case-SENSITIVE and would miss the cutoff; lowered both sides it clears
+    # it. Correction returns lowercase (stash contract; hub matches
+    # case-insensitively — verified on prod 2026-10-05).
+    hit = difflib.get_close_matches(
+        loc.lower(), [p.lower() for p in places], n=1, cutoff=0.8)
+    return hit[0] if hit else None
+
 def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
     """Natural-language search: 'find me a free yoga class' -> max_price=0 + word match.
-    Multi-word queries union per-word matches (hub q is substring-AND by design)."""
+    Multi-word queries union per-word matches (hub q is substring-AND by design).
+    Owner GO 2026-10-06: 'but not hiking' excludes, 'in the morning/after work'
+    filters listing time, unknown-but-plausible cities fuzzy-match the board."""
     low = re.sub(r"[?!.;:]+", " ", text.strip().lower()).strip()
     free = "free" in low.split()
     # C2 structured qualifiers, parsed OUT of the keyword text (regex spans so
@@ -2431,6 +2666,10 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
             qual[key] = m.group(group).replace(",", ".") if key.endswith("_price") else m.group(group)
             low = (low[:m.start()] + " " + low[m.end():]).strip()
 
+    # Owner GO 2026-10-06: negation and time-of-day ride OUT of the keywords
+    # BEFORE everything else (their spans must not feed any other pattern).
+    _excl, low = _parse_exclusions(low)
+    _tod, low = _parse_tod(low)
     _take(r"\bunder\s+(\d+(?:[.,]\d+)?)", "max_price")
     _take(r"\bover\s+(\d+(?:[.,]\d+)?)", "min_price")
     _take(r"\bfrom\s+(\d{4}-\d{2}-\d{2})", "from")
@@ -2447,6 +2686,15 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
         _lc = _LOC_ALIAS.get(_lc_raw, _lc_raw)
         if _loc_ok(_lc):
             qual["location"] = _lc
+    # Owner GO 2026-10-06: unknown-but-plausible city ('vieanna') gets ONE
+    # deterministic fuzzy correction against locations that actually exist
+    # on the board — never invented, never a hub roundtrip when exact.
+    if "location" in qual:
+        _fl = _fuzzy_loc(hub_url, [], qual["location"])
+        if _fl:
+            _set_note(sender, "Did you mean %s? Searching there." % _fl.title())
+            qual["location_corrected"] = qual["location"]
+            qual["location"] = _fl
     # R5 battery 2026-09-24: relative time windows resolve instantly and
     # deterministically -- never a multi-second brain roundtrip, and never a
     # reason to drag a dead keyword along.
@@ -2527,6 +2775,12 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
         return f"Search rejected: {err or ('HTTP ' + str(ex.code))}"
     except Exception:
         return "Sorry — the EverList hub is unreachable right now. Try again shortly."
+    # Owner GO 2026-10-06: negation and time-of-day are POST-filters on the
+    # union result (the hub has no exclusion/time filter — chat-side keeps
+    # them deterministic and stashed).
+    listings = _apply_exclusions(listings, _excl)
+    if _tod:
+        listings = [l for l in listings if _tod_ok(l, _tod)]
     parts = ([] + (["free only"] if free else []))
     if "location" in qual:
         parts.append("in " + qual["location"])
@@ -2538,6 +2792,10 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
         parts.append("from " + _human_date(qual["from"]))
     if "to" in qual:
         parts.append("until " + _human_date(qual["to"]))
+    if _excl:
+        parts.append("no " + " / ".join(_excl[:2]))
+    if _tod:
+        parts.append(_tod)
     # R5 2026-09-24: sort never causes emptiness -- on an empty board a sort
     # nobody asked for is pure noise (the bare-refine heuristic injects one).
     if qual.get("sort") == "price" and listings:
@@ -2563,6 +2821,10 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
                 _retry += " from " + qual["from"]
             if "to" in qual:
                 _retry += " until " + qual["to"]
+            if _excl:
+                _retry += " but not " + " ".join(_excl[:2])
+            if _tod:
+                _retry += " in the " + _tod
             if qual.get("sort") == "price":
                 _retry += " cheapest"
             elif qual.get("sort") == "date":
@@ -2591,7 +2853,10 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
                     # never stash them (a later refine would resurrect them).
                     "q": "",
                     "filters": {**({"free": True} if free else {}),
-                                **{k: (float(v) if k.endswith("_price") else v) for k, v in qual.items()}}}
+                                **{k: (float(v) if k.endswith("_price") else v) for k, v in qual.items()
+                                   if k != "location_corrected"},
+                                **({"exclude": " ".join(_excl[:3])} if _excl else {}),
+                                **({"tod": _tod} if _tod else {})}}
                 rows = "\n".join(
                     "• %s — %s · say 'show %s'" % (
                         _mb(str(l.get("title") or "?")),
@@ -2604,24 +2869,28 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
             sug = ""
         if sug:
             tail = _voice_pick(_NOMATCH_SUG_TAILS, sender)
-            return f"Nothing matched{qualifier}" + tail.format(sug=sug)
-        return f"Nothing matched{qualifier}" + _voice_pick(_NOMATCH_TAILS, sender)
+            return f"Nothing matched{qualifier}" + tail.format(sug=sug) + _consume_note(sender)
+        return f"Nothing matched{qualifier}" + _voice_pick(_NOMATCH_TAILS, sender) + _consume_note(sender)
     if len(_LAST_RESULTS) > 500:
         # F8: evict the OLDEST sender's stash (insertion order) — never wipe
         # every user's follow-up state because the cap was hit
         for k in list(_LAST_RESULTS)[:len(_LAST_RESULTS) - 500]:
             _LAST_RESULTS.pop(k, None)
             _LAST_SEARCH.pop(k, None)
+    _stash_fl = {**({"free": True} if free else {}),
+                 **{k: (float(v) if k.endswith("_price") else v) for k, v in qual.items()
+                    if k != "location_corrected"}}
+    if _excl:
+        _stash_fl["exclude"] = " ".join(_excl[:3])
+    if _tod:
+        _stash_fl["tod"] = _tod
     _LAST_RESULTS[sender] = listings
-    _LAST_SEARCH[sender] = {
-        "q": " ".join(words) if words else "",
-        "filters": {**({"free": True} if free else {}),
-                    **{k: (float(v) if k.endswith("_price") else v) for k, v in qual.items()}}}
+    _LAST_SEARCH[sender] = {"q": " ".join(words) if words else "", "filters": _stash_fl}
     n = len(listings)
     head = "%s %s · %d found%s" % (_G_MARK, _mb("EverList"), n, qualifier)
     tail = _book_tail(sender, listings)
     if n <= _INLINE_LIMIT:
-        return _frame(head, [_listing_rows(l, i + 1) for i, l in enumerate(listings[:_HARD_CAP])]) + tail
+        return _frame(head, [_listing_rows(l, i + 1) for i, l in enumerate(listings[:_HARD_CAP])]) + tail + _consume_note(sender)
 
     def _idx_line(i: int, x: dict) -> str:
         title = str(x.get("title", "?")).strip() or "?"
@@ -2631,7 +2900,7 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
     if n > _INDEX_CAP:
         blocks.append(["… and %d more - refine: 'search <keyword> under <price>'" % (n - _INDEX_CAP)])
     blocks += [_listing_rows(x, i + 1) for i, x in enumerate(listings[:_PREVIEW_CARDS])]
-    return _frame(head, blocks) + tail
+    return _frame(head, blocks) + tail + _consume_note(sender)
 
 
 _HELP = (
@@ -2827,6 +3096,17 @@ def brain_search(hub_url: str, sender: str, act: dict, text: str = "") -> str:
                 spec["filters"]["location"] = _loc
         if f.get("sort") in ("price", "date"):
             spec["filters"]["sort"] = f["sort"]
+        # Owner GO 2026-10-06: exclusion + time-of-day survive LLM-path
+        # refines/pivots — validated, then re-rendered into the rebuild
+        # string below so _smart_search re-parses them deterministically.
+        _ex = str(f.get("exclude") or "").strip().lower()
+        if _ex:
+            _exw = [w for w in re.findall(r"[a-zäöüß-]{2,20}", _ex)
+                    if w not in _EXCLUDE_JUNK and w not in _CONCEPTS][:3]
+            if _exw:
+                spec["filters"]["exclude"] = " ".join(_exw)
+        if f.get("tod") in ("morning", "afternoon", "evening"):
+            spec["filters"]["tod"] = f["tod"]
     except Exception:
         spec = {"q": q, "filters": {}}
     # Owner 2026-10-05 (chat continuity): the model dropped the place the user
@@ -2879,6 +3159,12 @@ def brain_search(hub_url: str, sender: str, act: dict, text: str = "") -> str:
         parts.append("until " + fl["to"])
     if fl.get("location"):
         parts.append("in " + str(fl["location"]))
+    # Owner GO 2026-10-06: exclusion + time-of-day ride the rebuild string
+    # so _smart_search re-parses them deterministically on refine/pivot.
+    if fl.get("exclude"):
+        parts.append("but not " + str(fl["exclude"]))
+    if fl.get("tod"):
+        parts.append("in the " + str(fl["tod"]))
     if fl.get("sort") == "price":
         parts.append("cheapest")
     elif fl.get("sort") == "date":
@@ -3633,6 +3919,12 @@ def _pivot_reply(hub_url: str, sender: str, text: str) -> str | None:
             return None
         if _cl and not (spec.get("filters") or {}).get("location"):
             override["location"] = _cl
+        # Owner GO 2026-10-06 (tone): prove the complaint was HEARD — one
+        # short acknowledgment rides on the restored scope's reply.
+        if _cl:
+            _set_note(sender, "Got it — " + _cl.title() + " only.")
+        else:
+            _set_note(sender, "Got it — your search is back.")
     else:
         return None
     # Complaint turns otherwise carry no overrides: the refine merge restores

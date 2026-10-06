@@ -4,6 +4,7 @@ parse and hit its OWN intent — never the search-as-fallback path.
 Run: python test_chat_help.py
 """
 import atexit
+import datetime
 import json
 import os
 import socket
@@ -255,7 +256,8 @@ check("convo: loose 'should be free' sets price 0", "[3/7]" in _r, _r[:90])
 _r = chatlib.handle_text(HUB, "no sorry, 5 euros", _S3)
 check("convo: cross-step price correction noted",
       "Noted" in _r and "5" in _r and "[3/7]" in _r, _r[:90])
-_r = chatlib.handle_text(HUB, "hmm and when is it? lets say 2026-10-05", _S3)
+_r = chatlib.handle_text(HUB, "hmm and when is it? lets say %s" % (
+    (datetime.date.today() + datetime.timedelta(days=30)).isoformat()), _S3)
 check("convo: ISO date captured from a rambling sentence", "[4/7]" in _r, _r[:90])
 chatlib.handle_text(HUB, "any", _S3)
 _r = chatlib.handle_text(HUB, "its a yoga workshop thing", _S3)

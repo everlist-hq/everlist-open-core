@@ -678,5 +678,165 @@ class ChatContinuity(unittest.TestCase):
         self.assertEqual(fl.get("from"), monday.isoformat())
 
 
+class ChatQualifiers(unittest.TestCase):
+    """Owner GO 2026-10-06: three more deterministic qualifier families --
+    negation ('but not hiking'), time of day ('in the morning', 'after
+    work'), fuzzy cities ('vieanna' -> board's own 'vienna') -- plus the
+    tone layer: complaint acks and the resolved-scope note, and intake
+    multi-field fill ('20 euros, room for 30, on 2026-11-01')."""
+
+    LS = [{"id": "even-1", "title": "Morning Yoga", "category": "workshop",
+           "vertical": "events", "date": "2099-06-01", "time": "10:00",
+           "price": 0, "location": "Vienna", "description": "x",
+           "tags": ["open-air"]},
+          {"id": "even-2", "title": "Hiking Trip", "category": "other",
+           "vertical": "events", "date": "2099-06-02", "time": "19:30",
+           "price": 9, "location": "Vienna", "description": "x",
+           "tags": []}]
+
+    def setUp(self):
+        chatlib._LAST_RESULTS.clear()
+        chatlib._LAST_SEARCH.clear()
+        chatlib._SEARCH_NOTE.clear()
+        chatlib._INTAKE.clear()
+        # intake drafts persist to DISK (resume feature) — clear the senders
+        # this battery uses, or 'list' resumes last run's fields
+        for _s in ("q13", "q14"):
+            chatlib.storage.draft_del(_s)
+
+    def tearDown(self):
+        chatlib._LAST_RESULTS.clear()
+        chatlib._LAST_SEARCH.clear()
+        chatlib._SEARCH_NOTE.clear()
+        chatlib._INTAKE.clear()
+        for _s in ("q13", "q14"):
+            chatlib.storage.draft_del(_s)
+
+    def _say(self, text, sender):
+        with mock.patch.object(brain, "_DISABLED", True), mock.patch.object(
+                chatlib, "_hub_get", return_value={"listings": self.LS}):
+            return chatlib.handle_text("http://hub", text, sender=sender)
+
+    # --- negation ---
+
+    def test_negation_parsed_and_stashed(self):
+        self._say("outdoor but not hiking in vienna", "q1")
+        fl = (chatlib._LAST_SEARCH.get("q1") or {}).get("filters") or {}
+        self.assertEqual(fl.get("exclude"), "hiking")
+        self.assertEqual(fl.get("location"), "vienna")
+
+    def test_negation_junk_never_excludes(self):
+        # 'not too expensive' / 'no account needed' must exclude NOTHING and
+        # must never turn 'not' into a keyword
+        self._say("jazz but not too expensive", "q2")
+        spec = chatlib._LAST_SEARCH.get("q2") or {}
+        self.assertNotIn("exclude", spec.get("filters") or {})
+        self.assertNotIn("not", (spec.get("q") or "").split())
+
+    def test_negation_filters_results(self):
+        # grep the STASH (bold-unicode titles make reply greps brittle)
+        self._say("something outdoors but not hiking in vienna", "q3")
+        got = chatlib._LAST_RESULTS.get("q3") or []
+        self.assertEqual([l.get("id") for l in got], ["even-1"])
+        self.assertEqual((chatlib._LAST_SEARCH.get("q3") or {}).get("filters", {}).get("exclude"), "hiking")
+
+    # --- time of day ---
+
+    def test_tod_parsed_and_stashed(self):
+        self._say("yoga in the morning in vienna", "q4")
+        fl = (chatlib._LAST_SEARCH.get("q4") or {}).get("filters") or {}
+        self.assertEqual(fl.get("tod"), "morning")
+
+    def test_tod_after_work_is_evening(self):
+        self._say("something after work in vienna", "q5")
+        fl = (chatlib._LAST_SEARCH.get("q5") or {}).get("filters") or {}
+        self.assertEqual(fl.get("tod"), "evening")
+
+    def test_tod_filters_results(self):
+        # 19:30 is outside 'morning' -> the evening listing vanishes;
+        # unknown time NEVER shrinks silently (honesty law)
+        self._say("something in the morning in vienna", "q6")
+        got = chatlib._LAST_RESULTS.get("q6") or []
+        self.assertEqual([l.get("id") for l in got], ["even-1"])
+        self.assertTrue(chatlib._tod_ok({"time": ""}, "morning"))
+
+    # --- fuzzy cities ---
+
+    def test_fuzzy_loc_corrects_typo(self):
+        r = self._say("anything outdoor in vieanna tomorrow?", "q7")
+        fl = (chatlib._LAST_SEARCH.get("q7") or {}).get("filters") or {}
+        self.assertEqual(fl.get("location"), "vienna")
+        self.assertNotIn("location_corrected", fl)  # internal flag never stashes
+        self.assertIn("Did you mean Vienna?", r)
+
+    def test_fuzzy_loc_known_place_untouched(self):
+        self._say("anything outdoor in vienna tomorrow?", "q8")
+        r = self._say("anything outdoor in Vienna tomorrow?", "q8")
+        self.assertNotIn("Did you mean", r)
+        fl = (chatlib._LAST_SEARCH.get("q8") or {}).get("filters") or {}
+        self.assertEqual(fl.get("location"), "vienna")
+
+    # --- continuity with the new filters ---
+
+    def test_pivot_keeps_exclusion_and_tod(self):
+        import datetime as dt
+        self._say("outdoor but not hiking in the evening in vienna next week", "q9")
+        self._say("What about next month?", "q9")
+        fl = (chatlib._LAST_SEARCH.get("q9") or {}).get("filters") or {}
+        self.assertEqual(fl.get("exclude"), "hiking")
+        self.assertEqual(fl.get("tod"), "evening")
+        self.assertEqual(fl.get("location"), "vienna")
+        nm1 = (dt.date.today().replace(day=1) + dt.timedelta(days=32)).replace(day=1)
+        end = (nm1.replace(day=1) + dt.timedelta(days=32)).replace(day=1) - dt.timedelta(days=1)
+        self.assertEqual((fl.get("from"), fl.get("to")),
+                         (nm1.isoformat(), end.isoformat()))
+
+    def test_complaint_ack_rides_reply(self):
+        self._say("anything outdoor in vienna next week", "q10")
+        r = self._say("I asked for Vienna not everywhere", "q10")
+        self.assertIn("Got it — Vienna only.", r)
+
+    # --- tone: resolved scope on the board surface ---
+
+    def test_board_scope_note_renders_filters(self):
+        chatlib._LAST_SEARCH["q11"] = {
+            "q": "outdoor",
+            "filters": {"location": "vienna", "from": "2026-11-01",
+                        "to": "2026-11-08", "exclude": "hiking",
+                        "tod": "evening"}}
+        note = chatlib.board_scope_note("q11")
+        for bit in ("in vienna", "no hiking", "evening", "1 Nov", "8 Nov"):
+            self.assertIn(bit, note)
+
+    def test_board_line_carries_ack_once(self):
+        chatlib._set_note("q12", "Got it — Vienna only.")
+        line = chatlib.board_line("q12", 2, self.LS)
+        self.assertIn("Got it — Vienna only.", line)
+        self.assertNotIn("Got it", chatlib.board_line("q12", 2, self.LS))
+
+    # --- intake multi-field fill ---
+
+    def test_intake_multi_field_fill(self):
+        self._say("list", "q13")
+        r = self._say("20 euros, room for 30, on 2026-11-01", "q13")
+        f = chatlib._intake_get("q13")["fields"]
+        self.assertEqual(f.get("price"), "20")
+        self.assertEqual(f.get("capacity"), "30")
+        self.assertEqual(f.get("date"), "2026-11-01")
+        self.assertIn("price: 20", r)
+        # title is NEVER auto-filled (it IS the free text)
+        self.assertIsNone(f.get("title"))
+
+    def test_intake_single_hit_keeps_wizard(self):
+        self._say("list", "q14")
+        r = self._say("a workshop maybe", "q14")
+        # canonical title law: free text at the title step IS the title --
+        # no auto-categorization; wizard advances to the price step
+        f = chatlib._intake_get("q14")["fields"]
+        self.assertEqual(f.get("title"), "a workshop maybe")
+        self.assertIsNone(f.get("category"))
+        self.assertIn("EUR", r)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
