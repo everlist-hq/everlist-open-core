@@ -4786,6 +4786,18 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
             _fixed = _brain_mod._screen(" ".join(_kws))
             if _fixed is not None:
                 return _fixed          # e.g. 'translate hello to french'
+            # P1c 2026-10-11: the fast path strips filler words — including
+            # the preposition 'in', which DESTROYED the location phrase
+            # ('jazz in vienna' -> 'jazz vienna' -> keyword union WITHOUT
+            # the location filter; owner report: Berlin cards for a Vienna
+            # search, live-reproduced). Extract the place from the original
+            # text, drop it from the keywords, and re-attach it as a proper
+            # 'in <place>' phrase so _smart_search's own _LOC_RX parse (the
+            # ONE source of truth) fires again.
+            _loc_pre = _extract_location(low)
+            if _loc_pre:
+                _kws = [w for w in _kws if w not in (_loc_pre, _loc_pre + "s")]
+                return _smart_search(hub_url, "search " + " ".join(_kws) + " in " + _loc_pre, sender)
             return _smart_search(hub_url, " ".join(_kws), sender)
 
     # --- fallback: Brain v2 (owner call 2026-09-16) --------------------------
