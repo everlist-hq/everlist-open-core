@@ -2482,6 +2482,11 @@ def _loc_ok(loc: str) -> bool:
     AND sibling terms ('jazz' lives under 'concert' — 'in jazz' is an intent)."""
     if not loc or len(loc.split()) > 3:
         return False
+    # P1b 2026-10-11: a place never STARTS with a preposition — 'in vienna'
+    # captured whole (double-preposition rebuild) is a parse artifact, not a
+    # place. Reject before any other check.
+    if loc.split()[0] in ("in", "near", "around", "at", "im", "the", "a", "an"):
+        return False
     if loc in _LOC_JUNK:
         return False
     if loc in _CONCEPTS:
@@ -2501,7 +2506,12 @@ def _loc_ok(loc: str) -> bool:
 # zero out REAL matches (C1.1 regression caught by test_conversation).
 _LOC_RX = re.compile(
     r"\b(?:in|near|around)\s+([a-zäöüß][a-zäöüß\-' ]{1,30}?)"
-    r"(?=\s+(?:next|this|tomorrow|today|tonight|soon|soonest|later|now|please|bitte|under|over|from|until|till|by|cheapest|earliest|free|with|that|which|not|instead|actually|everywhere|anywhere|somewhere)\b|[,.!?;:]|$)")
+    r"(?=\s+(?:next|this|tomorrow|today|tonight|soon|soonest|later|now|please|bitte|under|over|from|until|till|by|cheapest|earliest|free|with|that|which|not|instead|actually|everywhere|anywhere|somewhere"
+    r"|in|am|im"
+    r"|january|february|march|april|may|june|july|august|september|october|november|december"
+    r"|januar|februar|m(?:ä|ae|a)rz|mai|juni|juli|oktober|dezember"
+    r"|monday|tuesday|wednesday|thursday|friday|saturday|sunday"
+    r"|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag)\b|[,.!?;:]|$)")
 
 
 def _extract_location(text: str):
@@ -2833,11 +2843,19 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
         sug = ""
         try:
             import datetime as _dt
+            import urllib.parse as _uparse
             up = None
+            # P0 2026-10-11: a location-scoped search must NEVER suggest
+            # other cities as if they matched. When the user named a place,
+            # suggestions keep the filter; if that place has nothing at all,
+            # we suggest nothing and the honest 'Nothing matched — in <place>'
+            # reply stands alone (owner report: 'searches Vienna, gets
+            # different cities').
+            _locq = ("&location=" + _uparse.quote(str(qual["location"]))) if "location" in qual else ""
             try:
-                up = _hub_get(hub_url, "/search?sort=date&from=" + _dt.date.today().isoformat()).get("listings")
+                up = _hub_get(hub_url, "/search?sort=date&from=" + _dt.date.today().isoformat() + _locq).get("listings")
             except Exception:
-                up = _hub_get(hub_url, "/search?sort=date").get("listings")
+                up = _hub_get(hub_url, "/search?sort=date" + _locq).get("listings")
             up = [l for l in (up or []) if l.get("id")][:3]
             if up:
                 # Owner battery 2026-09-22: suggested listings must be
@@ -3119,9 +3137,12 @@ def brain_search(hub_url: str, sender: str, act: dict, text: str = "") -> str:
             spec["filters"]["location"] = _rl
             # if the model stuffed the place into q, drop it there too —
             # q is substring-AND, 'q=vienna AND location=vienna' would hide
-            # listings whose title never mentions the city.
+            # listings whose title never mentions the city. P1b 2026-10-11:
+            # also strip the preposition token — leaving it rebuilt
+            # 'search jazz in in vienna' and the regex captured 'in vienna'
+            # as a place (probe-verified), zeroing out real matches.
             _qtoks = [t for t in (spec["q"] or "").split()
-                      if t not in (_rl, _rl + "s")]
+                      if t not in (_rl, _rl + "s") and t not in ("in", "near", "around", "at", "im")]
             spec["q"] = " ".join(_qtoks)[:40].strip()
     # Owner 2026-10-05: when the user's OWN words carry a relative window
     # ('next week', 'next month'), the deterministic resolver owns the dates —
@@ -4015,7 +4036,17 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                 _uname = re.sub(r"\s+(?:please|bitte)[!., ]*$", "", _underm.group(1).strip()).strip()
                 _pending_book_pop(sender)
                 return handle_text(hub_url, "book " + _pbq["lid"] + " " + _uname, sender=sender)
-            if _NAME_RX.match(low) and not re.match(
+            # P2 2026-10-11: search-shaped input must BREAK THROUGH the
+            # name capture, never become an attendee name (owner report:
+            # 'telescope' booked under name 'telescope'). A message with a
+            # location phrase, a window word, or >2 words is a search —
+            # only short name-shaped input (1-2 words, no topic nouns, no
+            # verbs) still binds as the booking name.
+            _searchy = (bool(_LOC_RX.search(low))
+                        or _TOPIC_NOUN_RX.search(low)
+                        or re.search(r"\b(find|search|looking|show|what|anything|something|any)\b", low)
+                        or len(low.split()) > 2)
+            if _NAME_RX.match(low) and not _searchy and not re.match(
                     r"^(search|book|help|show|list|my|cancel|whoami|signup|login)\b", low):
                 _pending_book_pop(sender)
                 return handle_text(hub_url, "book " + _pbq["lid"] + " " + low, sender=sender)

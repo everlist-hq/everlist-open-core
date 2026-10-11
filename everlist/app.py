@@ -215,6 +215,19 @@ def _s6_recompute_aggregates():
             l["rating_avg"] = round(l["rating_wsum"] / l["rating_wtot"], 2)
 
 
+# P1 2026-10-11: location alias normalization — 'wien' and 'vienna' (and
+# future bilingual city pairs) must match each other in /search no matter
+# which language the listing or the query used (owner report: searches for
+# Vienna missed German-stored listings and suggested other cities).
+_LOC_ALIASES = {"wien": "vienna"}
+
+
+def _loc_norm(s):
+    """Lowercase + alias-normalize a location string for filter matching."""
+    n = (s or "").strip().lower()
+    return _LOC_ALIASES.get(n, n)
+
+
 def _pub_listing(l):
     """H9: server-only fields must NEVER reach a public response.
     manage_code_hash = sha256 of the owner's manage code; with it an attacker
@@ -1893,6 +1906,7 @@ class Handler(BaseHTTPRequestHandler):
             fcat = q.get("category", [""])[0].strip().lower()
             ftag = q.get("tag", [""])[0].strip().lower()
             floc = q.get("location", [""])[0].strip().lower()
+            floc = _LOC_ALIASES.get(floc, floc)  # P1: query side of the alias pair
             fmax = q.get("max_price", [""])[0]
             fmin = q.get("min_price", [""])[0]
             ffrom = q.get("from", [""])[0].strip()
@@ -1941,7 +1955,7 @@ class Handler(BaseHTTPRequestHandler):
                            and (not fcat or l.get("category") == fcat)
                            and (not ftag or ftag in (l.get("tags") or []))
                            and (not ftags or any(t in (l.get("tags") or []) for t in ftags))
-                           and (not floc or floc in str(l.get("location", "")).lower())
+                           and (not floc or floc in _loc_norm(str(l.get("location", ""))))
                            # C2 date range: a listing without a date cannot satisfy it
                            and (not ffrom or str(l.get("date", "")) >= ffrom)
                            and (not fto or bool(l.get("date")) and str(l.get("date")) <= fto)]
