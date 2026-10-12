@@ -2176,7 +2176,11 @@ _FILLER_WORDS = {"find", "me", "a", "an", "the", "for", "please", "show", "us", 
                  # R5 2026-09-24: pivot/time chatter is never search material
                  "then", "else", "what", "whats", "going", "happening", "?", "is", "are",
                  # R6: generic nouns/verbs alone are never search material
-                 "event", "listing", "thing", "things", "stuff", "am", "get", "give"}
+                 "event", "listing", "thing", "things", "stuff", "am", "get", "give",
+                 # R8 recap 2026-10-12: German question/search particles — dead
+                 # keywords after the gate consumed the real intent ('was ist
+                 # los in wien…' used to mush 'ist los' into keyword tags).
+                 "was", "ist", "los", "wasn", "wasnt"}
 
 
 def _show_results(hub_url: str, sender: str, arg: str) -> str:
@@ -2707,42 +2711,16 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
             qual["location"] = _fl
     # R5 battery 2026-09-24: relative time windows resolve instantly and
     # deterministically -- never a multi-second brain roundtrip, and never a
-    # reason to drag a dead keyword along.
-    _wm = re.search(
-        r"\b(next weekend|next week|this weekend|this week|this month|next month|tomorrow|today)\b", low)
+    # reason to drag a dead keyword along. R8 recap 2026-10-12: one shared
+    # regex/canonicalizer/date-math (_WIN_RX/_canon_window/_win_dates) with
+    # _resolve_window -- adds German relatives and explicit 'im/in <month>'
+    # windows (prod: 'was ist los in wien im november?', 'dieses wochenende').
+    _wm = _WIN_RX.search(low)
     if _wm and "from" not in qual and "to" not in qual:
-        import datetime as _dtw
-        _today = _dtw.date.today()
-        _dow = _today.weekday()  # Mon=0 .. Sun=6
-        _w = _wm.group(1)
-        if _w == "today":
-            _f = _t = _today
-        elif _w == "tomorrow":
-            _f = _t = _today + _dtw.timedelta(days=1)
-        elif _w == "this weekend":
-            _f = _today if _dow in (5, 6) else _today + _dtw.timedelta(days=5 - _dow)
-            _t = _f + _dtw.timedelta(days=1 if _f.weekday() == 5 else 0)
-        elif _w == "this week":
-            _f, _t = _today, _today + _dtw.timedelta(days=6 - _dow)
-        elif _w == "this month":
-            # calendar month: today .. last day of this month
-            _t = (_today.replace(day=1) + _dtw.timedelta(days=32)).replace(day=1) - _dtw.timedelta(days=1)
-            _f = _today
-        elif _w == "next month":
-            _nm1 = (_today.replace(day=1) + _dtw.timedelta(days=32)).replace(day=1)
-            _f = _nm1
-            _t = (_nm1.replace(day=1) + _dtw.timedelta(days=32)).replace(day=1) - _dtw.timedelta(days=1)
-        elif _w == "next weekend":
-            # Saturday of NEXT week (this weekend is covered above)
-            _sat_off = 5 - _dow if _dow <= 5 else 12 - _dow
-            _f = _today + _dtw.timedelta(days=_sat_off + 7)
-            _t = _f + _dtw.timedelta(days=1)
-        else:  # next week: coming Monday .. its Sunday
-            _f = _today + _dtw.timedelta(days=7 - _dow)
-            _t = _f + _dtw.timedelta(days=6)
-        qual["from"] = _f.isoformat()
-        qual["to"] = _t.isoformat()
-        low = (low[:_wm.start()] + " " + low[_wm.end():]).strip()
+        _key = _canon_window(_wm.group(1))
+        if _key:
+            qual["from"], qual["to"] = _win_dates(_key)
+            low = (low[:_wm.start()] + " " + low[_wm.end():]).strip()
     if re.search(r"\bcheapest\b", low):
         qual["sort"] = "price"
         low = re.sub(r"\bcheapest\b", " ", low)
@@ -3335,7 +3313,16 @@ def _resolve_listing(sender: str, which: str):
             if score > best_score:
                 best, best_score = (i, l), score
         if best:
-            return best
+            # R8 recap 2026-10-12 (real prod misbook): 'book Vinyl & Coffee
+            # Market' held a spot for 'Chess & Coffee Open Play' on a 1-token
+            # coincidence ('coffee'). A multi-token NAMED reference must earn
+            # its stash match (>=2 overlapping title tokens) — a weak one
+            # declines here so brain_book falls through to _resolve_live,
+            # the authoritative union+score match over the whole hub. Money
+            # moments never ride a coincidence.
+            if best_score >= 2 or len(toks) < 2:
+                return best
+            return None
     if len(results) == 1:
         return 1, results[0]
     return None
@@ -3858,46 +3845,104 @@ def _pivot_only(text: str) -> bool:
         _PIVOT_WIN_RX.search(text or ""))
 
 
-def _resolve_window(text: str):
-    """Resolve a relative window phrase ('this weekend', 'next month', ...)
-    to an inclusive (from, to) ISO date pair, or None when the text carries
-    no window phrase. Single source of truth: _pivot_reply rebuilds last-spec
-    pivots with it and brain_search OVERRIDES model date math with it, so
-    'next week' means the same thing on every code path (_smart_search keeps
-    its inline consumer because it must also strip the phrase from keywords)."""
-    m = re.search(
-        r"\b(next weekend|next week|this weekend|this week|this month|next month|tomorrow|today)\b",
-        (text or "").lower())
-    if not m:
-        return None
+_WIN_MONTHS = {
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
+    "januar": 1, "februar": 2, "märz": 3, "maerz": 3, "mai": 5, "juni": 6,
+    "juli": 7, "oktober": 10, "november": 11, "dezember": 12,
+}
+# R8 recap 2026-10-12: ONE window regex + canonicalizer + date math for every
+# consumer (_resolve_window, _smart_search inline strip, dispatch gate).
+# Adds German relatives and explicit 'im/in <month>' windows — real prod turns
+# ('was ist los in wien im november?', 'dieses wochenende') previously fell
+# into keyword mush + brain retry ladders (one catastrophic 136 s turn).
+_WIN_RX = re.compile(
+    r"\b(next weekend|next week|this weekend|this week|this month|next month"
+    r"|nächstes wochenende|naechstes wochenende|nächste woche|naechste woche"
+    r"|kommende woche|kommendes wochenende|dieses wochenende|diese woche"
+    r"|nächsten monat|naechsten monat"
+    r"|(?<!guten )morgen|heute"
+    r"|(?:im|in)\s+(?:januar|februar|märz|maerz|märz|april|mai|juni|juli|august"
+    r"|september|oktober|november|dezember|january|february|march|may|june"
+    r"|july|october|december))\b", re.I)
+_WIN_CANON = {
+    "next weekend": "next_weekend", "next week": "next_week",
+    "this weekend": "this_weekend", "this week": "this_week",
+    "this month": "this_month", "next month": "next_month",
+    "tomorrow": "tomorrow", "today": "today",
+    "nächstes wochenende": "next_weekend", "naechstes wochenende": "next_weekend",
+    "kommendes wochenende": "next_weekend",
+    "nächste woche": "next_week", "naechste woche": "next_week",
+    "kommende woche": "next_week",
+    "dieses wochenende": "this_weekend", "diese woche": "this_week",
+    "nächsten monat": "next_month", "naechsten monat": "next_month",
+    "morgen": "tomorrow", "heute": "today",
+}
+
+
+def _canon_window(phrase):
+    p = (phrase or "").strip().lower()
+    key = _WIN_CANON.get(p)
+    if key:
+        return key
+    toks = p.split(None, 1)  # 'im november' / 'in november' -> month name
+    if len(toks) == 2 and toks[0] in ("im", "in") and toks[1] in _WIN_MONTHS:
+        return "month:%d" % _WIN_MONTHS[toks[1]]
+    return None
+
+
+def _win_dates(key):
+    """Inclusive (from, to) ISO date pair for a canonical window key."""
     import datetime as _dtp
     _today = _dtp.date.today()
     _dow = _today.weekday()
-    w = m.group(1)
-    if w == "today":
+    if key.startswith("month:"):
+        mm = int(key.split(":", 1)[1])
+        y = _today.year if mm >= _today.month else _today.year + 1
+        _f = _dtp.date(y, mm, 1)
+        _t = (_dtp.date(y, mm, 28) + _dtp.timedelta(days=4)).replace(day=1) - _dtp.timedelta(days=1)
+        return _f.isoformat(), _t.isoformat()
+    if key == "today":
         _f = _t = _today
-    elif w == "tomorrow":
+    elif key == "tomorrow":
         _f = _t = _today + _dtp.timedelta(days=1)
-    elif w == "this weekend":
+    elif key == "this_weekend":
         _f = _today if _dow in (5, 6) else _today + _dtp.timedelta(days=5 - _dow)
         _t = _f + _dtp.timedelta(days=1 if _f.weekday() == 5 else 0)
-    elif w == "this week":
+    elif key == "this_week":
         _f, _t = _today, _today + _dtp.timedelta(days=6 - _dow)
-    elif w == "this month":
+    elif key == "this_month":
         _t = (_today.replace(day=1) + _dtp.timedelta(days=32)).replace(day=1) - _dtp.timedelta(days=1)
         _f = _today
-    elif w == "next month":
+    elif key == "next_month":
         _nm1 = (_today.replace(day=1) + _dtp.timedelta(days=32)).replace(day=1)
         _f = _nm1
         _t = (_nm1.replace(day=1) + _dtp.timedelta(days=32)).replace(day=1) - _dtp.timedelta(days=1)
-    elif w == "next weekend":
+    elif key == "next_weekend":
         _sat_off = 5 - _dow if _dow <= 5 else 12 - _dow
         _f = _today + _dtp.timedelta(days=_sat_off + 7)
         _t = _f + _dtp.timedelta(days=1)
-    else:  # next week: coming Monday .. its Sunday
+    else:  # next_week: coming Monday .. its Sunday
         _f = _today + _dtp.timedelta(days=7 - _dow)
         _t = _f + _dtp.timedelta(days=6)
     return _f.isoformat(), _t.isoformat()
+
+
+def _resolve_window(text: str):
+    """Resolve a relative window phrase ('this weekend', 'next month',
+    'im november', 'dieses wochenende', ...) to an inclusive (from, to) ISO
+    date pair, or None when the text carries no window phrase. Single source
+    of truth: _pivot_reply rebuilds last-spec pivots with it and brain_search
+    OVERRIDES model date math with it, so 'next week' means the same thing on
+    every code path (_smart_search keeps its inline consumer because it must
+    also strip the phrase from keywords)."""
+    m = _WIN_RX.search((text or ""))
+    if not m:
+        return None
+    key = _canon_window(m.group(1))
+    if not key:
+        return None
+    return _win_dates(key)
 
 
 def _pivot_reply(hub_url: str, sender: str, text: str) -> str | None:
@@ -3910,7 +3955,16 @@ def _pivot_reply(hub_url: str, sender: str, text: str) -> str | None:
     if not spec:
         return None
     override: dict = {}
-    if _pivot_only(text):
+    if re.fullmatch(
+            r"(?:only|just|nur)(?:\s+(?:the|die))?\s+"
+            r"(?:free|gratis|kostenlos(?:e[nr]?|en)?)(?:\s+"
+            r"(?:one|ones|things|stuff|dinge|sachen))?\s*[!.]?",
+            low):
+        # R8 recap 2026-10-12 (real prod turn, 16 s): 'only the free ones' is
+        # a pure qualifier pivot on the last search -- deterministic merge,
+        # never an LLM-authored ack ('Only free ones it.'). German too.
+        override["free"] = True
+    elif _pivot_only(text):
         win = _resolve_window(low)
         if not win:
             return None
@@ -4839,19 +4893,23 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     # R5 battery 2026-09-24: time-window pivots ('what else is going on next
     # week?', 'anything tomorrow?') are deterministic searches -- instant, and
     # the window resolves in _smart_search, so dead keywords never tag along.
-    _mwin = re.search(
-        r"\b(next weekend|next week|this weekend|this week|this month|next month|tomorrow|today)\b", _tl)
+    # R8 recap 2026-10-12: one shared window regex (adds German relatives and
+    # explicit 'im/in <month>' windows), and German search questions route too
+    # ('was ist los in wien im november?' paid a 136 s brain+retry ladder and
+    # fail-opened into keyword mush: the English-reflection guard saw 'was').
+    _mwin = _WIN_RX.search(_tl)
     _mseek = re.search(
         r"\b(going on|what else|anything|something|events?|listings?|happening|find|search|show me"
         r"|concerts?|konzerte?|best|things? to do|in|at|near)\b", _tl)
     # R6 2026-09-24 (chatlog latency law): question-shaped searches
     # ('whats the best concert to go ti?', "What's in Vienna?") are mechanically
     # parseable -> instant deterministic search, never a 7-11s mercury turn.
-    _mwhat = re.search(r"\bwhat(?:'s| is|s)\b", _tl)
+    _mwhat = re.search(r"\bwhat(?:'s| is|s)\b|\bwas (?:ist|geht|gibt)\b", _tl)
     _msocial = re.search(r"\b(see you|until|talk to|catch you|bye|leaving)\b", _tl)
     _mreflect = re.search(r"\b(was|were|been|felt|feel|hope|glad|sad|tired)\b", _tl)
+    _mde_search = re.search(r"\bwas ist los\b", _tl)
     if (((_mseek or _mwin) and (_mwin or _mwhat)) and _fb_early is None \
-            and not _msocial and not _mreflect \
+            and not _msocial and not (_mreflect and not _mde_search) \
             and not re.match(r"^(book|cancel|list|deal|show|edit|delete|archive|unarchive|help|signup|login|my-)\b", _tl) \
             and not _WEATHER_RX.search(_tl) \
             and not re.search(r"\b(mean|you|2\s*\+\s*2)\b", _tl)):

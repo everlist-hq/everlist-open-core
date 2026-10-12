@@ -411,6 +411,33 @@ chatlib.handle_text(HUB, "events outdoors", "r7-pay2")
 _r = chatlib.handle_text(HUB, "i want to pay", "r7-pay2")
 check("r7 pay-intent honest with-stash", ("escrow" in _r.lower()) and ("book 1" not in _r), _r[:90])
 
+# R8 recap 2026-10-12 (real prod turns): named bookings must never ride a
+# 1-token stash coincidence ('book Vinyl & Coffee Market' once held a spot
+# for 'Chess & Coffee Open Play'); German windows resolve deterministically;
+# 'only the free ones' is a deterministic qualifier pivot.
+chatlib._LAST_RESULTS["r8-a"] = [
+    {"id": "even-a", "title": "Chess & Coffee Open Play"},
+    {"id": "even-b", "title": "Vinyl & Coffee Market"},
+]
+_got = chatlib._resolve_listing("r8-a", "Vinyl & Coffee Market")
+check("r8 stash match earns multi-token named ref",
+      _got and _got[1].get("id") == "even-b", str(_got))
+chatlib._LAST_RESULTS["r8-b"] = [{"id": "even-c", "title": "Chess & Coffee Open Play"}]
+_got = chatlib._resolve_listing("r8-b", "Vinyl & Coffee Market")
+check("r8 weak 1-token stash match declines (falls to hub-wide)", _got is None, str(_got))
+_w = chatlib._resolve_window("was ist los in wien im november?")
+check("r8 german explicit month window resolves",
+      bool(_w) and _w[0].endswith("-11-01") and _w[1].endswith("-11-30"), str(_w))
+_w = chatlib._resolve_window("was ist los in wien dieses wochenende?")
+check("r8 german this-weekend resolves", _w is not None, str(_w))
+_r = chatlib.handle_text(HUB, "was ist los in wien im november?", "r8-de1")
+check("r8 german month search deterministic",
+      ("im november" not in _r) and ("ist los" not in _r), _r[:90])
+chatlib.handle_text(HUB, "events outdoors", "r8-f1")
+_r = chatlib.handle_text(HUB, "only the free ones", "r8-f1")
+check("r8 free qualifier pivot deterministic",
+      (not _r.startswith("Only free ones it")) and ("free" in _r.lower()), _r[:90])
+
 fails = [n for n, ok in RESULTS if not ok]
 print(f"\n=== chat-help: {len(RESULTS) - len(fails)}/{len(RESULTS)} passed ===")
 if fails:
