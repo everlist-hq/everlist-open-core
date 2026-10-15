@@ -2454,6 +2454,29 @@ def board_line(sender: str, n: int, listings: list = None) -> str:
     ack = _pop_note(sender)
     scope = board_scope_note(sender)
     extra = (ack + scope) if (ack or scope) else ""
+    # Single-match offer (owner 2026-10-15 video review): name the event,
+    # say what it costs, offer to book. 'Which one would you like?' with
+    # one option on the board is a wasted turn; the webchat layer stages
+    # the matching pending booking so a plain 'yes' books it.
+    if n == 1 and listings:
+        try:
+            l = listings[0] if len(listings) else None
+        except TypeError:
+            l = None
+        if l and str(l.get("title") or "").strip():
+            title = str(l["title"]).strip()
+            try:
+                price = float(l.get("price", 0) or 0)
+            except (TypeError, ValueError):
+                price = 0.0
+            cost = "it's free" if price == 0 else "it's €%g" % price
+            when = _human_date(str(l.get("date") or ""))
+            parts = ["'%s'" % title]
+            if when:
+                parts.append(when)
+            parts.append(cost)
+            return ("Found exactly one that fits — %s. Want me to book it?%s"
+                    % (", ".join(parts), extra))
     if tick and listings:
         ins = _search_insight(listings)
         if ins:

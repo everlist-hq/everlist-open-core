@@ -85,6 +85,27 @@ class VoiceBanks(unittest.TestCase):
         r = chatlib.board_line("vb3", 1)
         self.assertIn("I found 1 match —", r)
 
+    def test_board_line_single_match_offer(self):
+        # owner 2026-10-15: name the event, say the cost, offer to book
+        ls = [{"id": "even-31", "title": "Chess & Coffee Open Play",
+               "date": "2026-11-22", "price": 0, "category": "games"}]
+        r = chatlib.board_line("vb4", 1, ls)
+        self.assertIn("Found exactly one that fits", r)
+        self.assertIn("Chess & Coffee Open Play", r)
+        self.assertIn("it's free", r)
+        self.assertTrue(r.rstrip().endswith("Want me to book it?"), r)
+
+    def test_board_line_single_match_paid(self):
+        ls = [{"id": "x", "title": "Vinyl Market", "date": "2026-10-18", "price": 5}]
+        r = chatlib.board_line("vb5", 1, ls)
+        self.assertIn("€5", r)
+        self.assertIn("Want me to book it?", r)
+
+    def test_board_line_single_match_no_title_falls_back(self):
+        ls = [{"id": "x", "price": 0}]
+        r = chatlib.board_line("vb6", 1, ls)
+        self.assertNotIn("Want me to book it?", r)  # no invented event name
+
     def test_say_price_guard_drops_invented_price(self):
         act = {"action": "search", "q": "concert", "say": "Tickets from $99!"}
         with mock.patch.object(chatlib, "_hub_get", return_value={"listings": _ls(2, price=5)}):
