@@ -57,7 +57,7 @@ class VoiceBanks(unittest.TestCase):
             chatlib._VOICE_TURN["vins"] = 2  # even tick -> insight path
             r = chatlib.handle_text("http://hub", "search concert", sender="vins")
         self.assertNotIn("free", r)     # nothing is free -> no free claim, ever
-        self.assertIn("cheapest €5", r)  # but the true cheapest price is stated
+        self.assertIn("the cheapest is €5", r)  # but the true cheapest price is stated
 
     def test_insight_free_count(self):
         ls = _ls(4)
@@ -67,8 +67,8 @@ class VoiceBanks(unittest.TestCase):
             chatlib.handle_text("http://hub", "search concert", sender="vfree")
             chatlib._VOICE_TURN["vfree"] = 2  # even tick -> insight path
             r = chatlib.handle_text("http://hub", "search concert", sender="vfree")
-        self.assertIn("2 free", r)
-        self.assertIn("cheapest €8", r)
+        self.assertIn("2 of them are free", r)
+        self.assertIn("the cheapest is €8", r)
 
     def test_board_line_canonical_first(self):
         r = chatlib.board_line("vb1", 3)

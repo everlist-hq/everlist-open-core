@@ -2324,16 +2324,15 @@ def _search_insight(listings: list) -> str:
                 continue
         if not prices:
             return ""
-        bits = []
         free = sum(1 for p in prices if p == 0)
-        if free == len(prices):
-            bits.append("all free")
-        elif free:
-            bits.append("%d free" % free)
         paid = [p for p in prices if p > 0]
+        if free == len(prices):
+            return "all of them are free"
+        if free and paid:
+            return "%d of them are free, and the cheapest is €%g" % (free, min(paid))
         if paid:
-            bits.append("cheapest €%g" % min(paid))
-        return " · ".join(bits[:2])
+            return "the cheapest is €%g" % min(paid)
+        return ""
     except Exception:
         return ""
 
@@ -2458,8 +2457,9 @@ def board_line(sender: str, n: int, listings: list = None) -> str:
     if tick and listings:
         ins = _search_insight(listings)
         if ins:
-            return ("%s — %d match%s open on the board for you; tell me which "
-                    "one you'd like.%s" % (ins, n, "" if n == 1 else "es", extra))
+            return ("Found %d match%s open on the board for you — %s. "
+                    "Which one would you like?%s"
+                    % (n, "" if n == 1 else "es", ins, extra))
     return base + extra
 
 
