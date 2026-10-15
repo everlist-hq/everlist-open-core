@@ -769,11 +769,12 @@ VERTICAL_SCHEMAS = {
     # settable booking fields; booking.identity = the ONE field whose real value
     # goes to the secret store (public copy gets an unlinkable anon-ref).
     "events": {"required": ["title", "date", "location", "price", "capacity"],
-               "optional": ["description", "category", "tags", "url", "time"],
+               "optional": ["description", "category", "tags", "url", "time", "lat", "lon"],
                "categories": ["meetup", "concert", "workshop", "conference", "market",
                                "sports", "community", "party", "exhibition", "other"],
                "tracks_capacity": True,
-               "field_types": {"capacity": "positive_int", "date": "nonempty", "time": "time_hhmm"},
+               "field_types": {"capacity": "positive_int", "date": "nonempty", "time": "time_hhmm",
+                                "lat": "float_latlon", "lon": "float_latlon"},
                "booking": {"required": ["attendee"], "fields": ["attendee", "quantity"],
                             "identity": "attendee", "action": "register+pay"}},
     "food":   {"required": ["title", "merchant", "price"],
@@ -897,7 +898,7 @@ def _load_community_schemas():
                           os.path.join(os.path.dirname(os.path.abspath(__file__)), "schemas"))
     if not os.path.isdir(sdir):
         return
-    _types = {"positive_int", "nonempty"}  # the only validators the hub implements
+    _types = {"positive_int", "nonempty", "float_latlon"}  # + float_latlon (D1 2026-10-15): lat/lon for client-side distance
     _top = {"name", "required", "optional", "categories", "tracks_capacity",
             "field_types", "booking", "description"}
     # price/capacity are NOT in this wall: they are structurally governed
@@ -2789,6 +2790,15 @@ class Handler(BaseHTTPRequestHandler):
                         if not _tm:
                             return self._json(400, {"error": f"invalid field: {_f} must be HH:MM (24h)"})
                         data[_f] = str(data[_f]).strip()
+                    elif _t == "float_latlon":
+                        # D1 2026-10-15: lat/lon floats for client-side distance
+                        try:
+                            _fv = float(data[_f])
+                        except (TypeError, ValueError):
+                            return self._json(400, {"error": f"invalid field: {_f} must be a number"})
+                        if not (-90.0 <= _fv <= 90.0 if _f == "lat" else -180.0 <= _fv <= 180.0):
+                            return self._json(400, {"error": f"invalid field: {_f} out of range"})
+                        data[_f] = round(_fv, 6)
             except (TypeError, ValueError) as ex:
                 return self._json(400, {"error": f"invalid field: {ex}"})
             # C12: payment terms (SPEC §19) — validated object or per-vertical
@@ -3148,6 +3158,15 @@ class Handler(BaseHTTPRequestHandler):
                         if _iv <= 0:
                             return self._json(400, {"error": f"{_f} must be positive"})
                         changes[_f] = _iv
+                    elif _t == "float_latlon":
+                        # D1 2026-10-15: lat/lon floats for client-side distance
+                        try:
+                            _fv = float(changes[_f])
+                        except (TypeError, ValueError):
+                            return self._json(400, {"error": f"{_f} must be a number"})
+                        if not (-90.0 <= _fv <= 90.0 if _f == "lat" else -180.0 <= _fv <= 180.0):
+                            return self._json(400, {"error": f"{_f} out of range"})
+                        changes[_f] = round(_fv, 6)
                 for _k in ("provider", "merchant"):
                     if _k in changes:
                         _pv = str(changes[_k]).strip()
