@@ -17,9 +17,23 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-COSTS_JSON = os.path.join(HERE, "..", "midnight-escrow", "contract", "circuit-costs-20260913.json")
+
+
+def _contract_dir():
+    """Canonical dev tree keeps the contract at ../midnight-escrow/contract;
+    the published layout ships it as ./midnight-contract inside the hub dir.
+    Same files, both gates run everywhere."""
+    for cand in (os.path.join(HERE, "..", "midnight-escrow", "contract"),
+                 os.path.join(HERE, "midnight-contract")):
+        if os.path.isdir(cand):
+            return os.path.normpath(cand)
+    return os.path.normpath(os.path.join(HERE, "..", "midnight-escrow", "contract"))
+
+
+CONTRACT = _contract_dir()
+COSTS_JSON = os.path.join(CONTRACT, "circuit-costs-20260913.json")
 FIXTURES = os.path.join(HERE, "fixtures")
-MEASURE = os.path.join(HERE, "..", "midnight-escrow", "contract", "measure-costs.mjs")
+MEASURE = os.path.join(CONTRACT, "measure-costs.mjs")
 
 LIFECYCLE = [
     ("createEscrow", "HELD", "create (funds locked)"),

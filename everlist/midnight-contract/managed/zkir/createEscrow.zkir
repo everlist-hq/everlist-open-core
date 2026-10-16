@@ -107,7 +107,7 @@
     { "op": "private_input", "guard": null },
     { "op": "constrain_bits", "var": 42, "bits": 248 },
     { "op": "load_imm", "imm": "657665726C6973743A6167656E743A" },
-    { "op": "persistent_hash", "alignment": [{ "tag": "atom", "value": { "length": 32, "tag": "bytes" } }, { "tag": "atom", "value": { "length": 32, "tag": "bytes" } }], "inputs": [17, 43, 41, 42] },
+    { "op": "persistent_hash", "alignment": [{ "tag": "atom", "value": { "length": 32, "tag": "bytes" } }, { "tag": "atom", "value": { "length": 32, "tag": "bytes" } }, { "tag": "atom", "value": { "length": 32, "tag": "bytes" } }], "inputs": [17, 43, 41, 42, 3, 4] },
     { "op": "declare_pub_input", "var": 34 },
     { "op": "declare_pub_input", "var": 16 },
     { "op": "declare_pub_input", "var": 16 },

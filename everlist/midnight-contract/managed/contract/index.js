@@ -126,7 +126,7 @@ const _descriptor_11 = new _Either_0();
 
 const _descriptor_12 = __compactRuntime.CompactTypeField;
 
-const _descriptor_13 = new __compactRuntime.CompactTypeVector(2, _descriptor_2);
+const _descriptor_13 = new __compactRuntime.CompactTypeVector(3, _descriptor_2);
 
 const _descriptor_14 = new __compactRuntime.CompactTypeBytes(21);
 
@@ -245,63 +245,63 @@ export class Contract {
         if (!(typeof(contextOrig_0) === 'object' && contextOrig_0.callContext.currentQueryContext != undefined)) {
           __compactRuntime.typeError('createEscrow',
                                      'argument 1 (as invoked from Typescript)',
-                                     'escrow.compact line 77 char 1',
+                                     'escrow.compact line 86 char 1',
                                      'CircuitContext',
                                      contextOrig_0)
         }
         if (!(typeof(amount_0) === 'bigint' && amount_0 >= 0n && amount_0 <= 340282366920938463463374607431768211455n)) {
           __compactRuntime.typeError('createEscrow',
                                      'argument 1 (argument 2 as invoked from Typescript)',
-                                     'escrow.compact line 77 char 1',
+                                     'escrow.compact line 86 char 1',
                                      'Uint<0..340282366920938463463374607431768211456>',
                                      amount_0)
         }
         if (!(organizerCommitmentInput_0.buffer instanceof ArrayBuffer && organizerCommitmentInput_0.BYTES_PER_ELEMENT === 1 && organizerCommitmentInput_0.length === 32)) {
           __compactRuntime.typeError('createEscrow',
                                      'argument 2 (argument 3 as invoked from Typescript)',
-                                     'escrow.compact line 77 char 1',
+                                     'escrow.compact line 86 char 1',
                                      'Bytes<32>',
                                      organizerCommitmentInput_0)
         }
         if (!(bookingRef_0.buffer instanceof ArrayBuffer && bookingRef_0.BYTES_PER_ELEMENT === 1 && bookingRef_0.length === 32)) {
           __compactRuntime.typeError('createEscrow',
                                      'argument 3 (argument 4 as invoked from Typescript)',
-                                     'escrow.compact line 77 char 1',
+                                     'escrow.compact line 86 char 1',
                                      'Bytes<32>',
                                      bookingRef_0)
         }
         if (!(typeof(deadline_0) === 'bigint' && deadline_0 >= 0n && deadline_0 <= 18446744073709551615n)) {
           __compactRuntime.typeError('createEscrow',
                                      'argument 4 (argument 5 as invoked from Typescript)',
-                                     'escrow.compact line 77 char 1',
+                                     'escrow.compact line 86 char 1',
                                      'Uint<0..18446744073709551616>',
                                      deadline_0)
         }
         if (!(typeof(claimDeadline_0) === 'bigint' && claimDeadline_0 >= 0n && claimDeadline_0 <= 18446744073709551615n)) {
           __compactRuntime.typeError('createEscrow',
                                      'argument 5 (argument 6 as invoked from Typescript)',
-                                     'escrow.compact line 77 char 1',
+                                     'escrow.compact line 86 char 1',
                                      'Uint<0..18446744073709551616>',
                                      claimDeadline_0)
         }
         if (!(typeof(deposit_0) === 'object' && deposit_0.nonce.buffer instanceof ArrayBuffer && deposit_0.nonce.BYTES_PER_ELEMENT === 1 && deposit_0.nonce.length === 32 && deposit_0.color.buffer instanceof ArrayBuffer && deposit_0.color.BYTES_PER_ELEMENT === 1 && deposit_0.color.length === 32 && typeof(deposit_0.value) === 'bigint' && deposit_0.value >= 0n && deposit_0.value <= 340282366920938463463374607431768211455n)) {
           __compactRuntime.typeError('createEscrow',
                                      'argument 6 (argument 7 as invoked from Typescript)',
-                                     'escrow.compact line 77 char 1',
+                                     'escrow.compact line 86 char 1',
                                      'struct ShieldedCoinInfo<nonce: Bytes<32>, color: Bytes<32>, value: Uint<0..340282366920938463463374607431768211456>>',
                                      deposit_0)
         }
         if (!(typeof(agentPk_0) === 'object' && agentPk_0.bytes.buffer instanceof ArrayBuffer && agentPk_0.bytes.BYTES_PER_ELEMENT === 1 && agentPk_0.bytes.length === 32)) {
           __compactRuntime.typeError('createEscrow',
                                      'argument 7 (argument 8 as invoked from Typescript)',
-                                     'escrow.compact line 77 char 1',
+                                     'escrow.compact line 86 char 1',
                                      'struct ZswapCoinPublicKey<bytes: Bytes<32>>',
                                      agentPk_0)
         }
         if (!(typeof(organizerPk_0) === 'object' && organizerPk_0.bytes.buffer instanceof ArrayBuffer && organizerPk_0.bytes.BYTES_PER_ELEMENT === 1 && organizerPk_0.bytes.length === 32)) {
           __compactRuntime.typeError('createEscrow',
                                      'argument 8 (argument 9 as invoked from Typescript)',
-                                     'escrow.compact line 77 char 1',
+                                     'escrow.compact line 86 char 1',
                                      'struct ZswapCoinPublicKey<bytes: Bytes<32>>',
                                      organizerPk_0)
         }
@@ -339,21 +339,21 @@ export class Contract {
         if (!(typeof(contextOrig_0) === 'object' && contextOrig_0.callContext.currentQueryContext != undefined)) {
           __compactRuntime.typeError('releaseEscrow',
                                      'argument 1 (as invoked from Typescript)',
-                                     'escrow.compact line 116 char 1',
+                                     'escrow.compact line 125 char 1',
                                      'CircuitContext',
                                      contextOrig_0)
         }
         if (!(typeof(escrowId_0) === 'bigint' && escrowId_0 >= 0n && escrowId_0 <= 18446744073709551615n)) {
           __compactRuntime.typeError('releaseEscrow',
                                      'argument 1 (argument 2 as invoked from Typescript)',
-                                     'escrow.compact line 116 char 1',
+                                     'escrow.compact line 125 char 1',
                                      'Uint<0..18446744073709551616>',
                                      escrowId_0)
         }
         if (!(typeof(spendCoin_0) === 'object' && spendCoin_0.nonce.buffer instanceof ArrayBuffer && spendCoin_0.nonce.BYTES_PER_ELEMENT === 1 && spendCoin_0.nonce.length === 32 && spendCoin_0.color.buffer instanceof ArrayBuffer && spendCoin_0.color.BYTES_PER_ELEMENT === 1 && spendCoin_0.color.length === 32 && typeof(spendCoin_0.value) === 'bigint' && spendCoin_0.value >= 0n && spendCoin_0.value <= 340282366920938463463374607431768211455n && typeof(spendCoin_0.mt_index) === 'bigint' && spendCoin_0.mt_index >= 0n && spendCoin_0.mt_index <= 18446744073709551615n)) {
           __compactRuntime.typeError('releaseEscrow',
                                      'argument 2 (argument 3 as invoked from Typescript)',
-                                     'escrow.compact line 116 char 1',
+                                     'escrow.compact line 125 char 1',
                                      'struct QualifiedShieldedCoinInfo<nonce: Bytes<32>, color: Bytes<32>, value: Uint<0..340282366920938463463374607431768211456>, mt_index: Uint<0..18446744073709551616>>',
                                      spendCoin_0)
         }
@@ -385,21 +385,21 @@ export class Contract {
         if (!(typeof(contextOrig_0) === 'object' && contextOrig_0.callContext.currentQueryContext != undefined)) {
           __compactRuntime.typeError('refundEscrow',
                                      'argument 1 (as invoked from Typescript)',
-                                     'escrow.compact line 151 char 1',
+                                     'escrow.compact line 160 char 1',
                                      'CircuitContext',
                                      contextOrig_0)
         }
         if (!(typeof(escrowId_0) === 'bigint' && escrowId_0 >= 0n && escrowId_0 <= 18446744073709551615n)) {
           __compactRuntime.typeError('refundEscrow',
                                      'argument 1 (argument 2 as invoked from Typescript)',
-                                     'escrow.compact line 151 char 1',
+                                     'escrow.compact line 160 char 1',
                                      'Uint<0..18446744073709551616>',
                                      escrowId_0)
         }
         if (!(typeof(spendCoin_0) === 'object' && spendCoin_0.nonce.buffer instanceof ArrayBuffer && spendCoin_0.nonce.BYTES_PER_ELEMENT === 1 && spendCoin_0.nonce.length === 32 && spendCoin_0.color.buffer instanceof ArrayBuffer && spendCoin_0.color.BYTES_PER_ELEMENT === 1 && spendCoin_0.color.length === 32 && typeof(spendCoin_0.value) === 'bigint' && spendCoin_0.value >= 0n && spendCoin_0.value <= 340282366920938463463374607431768211455n && typeof(spendCoin_0.mt_index) === 'bigint' && spendCoin_0.mt_index >= 0n && spendCoin_0.mt_index <= 18446744073709551615n)) {
           __compactRuntime.typeError('refundEscrow',
                                      'argument 2 (argument 3 as invoked from Typescript)',
-                                     'escrow.compact line 151 char 1',
+                                     'escrow.compact line 160 char 1',
                                      'struct QualifiedShieldedCoinInfo<nonce: Bytes<32>, color: Bytes<32>, value: Uint<0..340282366920938463463374607431768211456>, mt_index: Uint<0..18446744073709551616>>',
                                      spendCoin_0)
         }
@@ -431,21 +431,21 @@ export class Contract {
         if (!(typeof(contextOrig_0) === 'object' && contextOrig_0.callContext.currentQueryContext != undefined)) {
           __compactRuntime.typeError('timeoutRefund',
                                      'argument 1 (as invoked from Typescript)',
-                                     'escrow.compact line 187 char 1',
+                                     'escrow.compact line 196 char 1',
                                      'CircuitContext',
                                      contextOrig_0)
         }
         if (!(typeof(escrowId_0) === 'bigint' && escrowId_0 >= 0n && escrowId_0 <= 18446744073709551615n)) {
           __compactRuntime.typeError('timeoutRefund',
                                      'argument 1 (argument 2 as invoked from Typescript)',
-                                     'escrow.compact line 187 char 1',
+                                     'escrow.compact line 196 char 1',
                                      'Uint<0..18446744073709551616>',
                                      escrowId_0)
         }
         if (!(typeof(spendCoin_0) === 'object' && spendCoin_0.nonce.buffer instanceof ArrayBuffer && spendCoin_0.nonce.BYTES_PER_ELEMENT === 1 && spendCoin_0.nonce.length === 32 && spendCoin_0.color.buffer instanceof ArrayBuffer && spendCoin_0.color.BYTES_PER_ELEMENT === 1 && spendCoin_0.color.length === 32 && typeof(spendCoin_0.value) === 'bigint' && spendCoin_0.value >= 0n && spendCoin_0.value <= 340282366920938463463374607431768211455n && typeof(spendCoin_0.mt_index) === 'bigint' && spendCoin_0.mt_index >= 0n && spendCoin_0.mt_index <= 18446744073709551615n)) {
           __compactRuntime.typeError('timeoutRefund',
                                      'argument 2 (argument 3 as invoked from Typescript)',
-                                     'escrow.compact line 187 char 1',
+                                     'escrow.compact line 196 char 1',
                                      'struct QualifiedShieldedCoinInfo<nonce: Bytes<32>, color: Bytes<32>, value: Uint<0..340282366920938463463374607431768211456>, mt_index: Uint<0..18446744073709551616>>',
                                      spendCoin_0)
         }
@@ -477,21 +477,21 @@ export class Contract {
         if (!(typeof(contextOrig_0) === 'object' && contextOrig_0.callContext.currentQueryContext != undefined)) {
           __compactRuntime.typeError('mutualRefund',
                                      'argument 1 (as invoked from Typescript)',
-                                     'escrow.compact line 232 char 1',
+                                     'escrow.compact line 241 char 1',
                                      'CircuitContext',
                                      contextOrig_0)
         }
         if (!(typeof(escrowId_0) === 'bigint' && escrowId_0 >= 0n && escrowId_0 <= 18446744073709551615n)) {
           __compactRuntime.typeError('mutualRefund',
                                      'argument 1 (argument 2 as invoked from Typescript)',
-                                     'escrow.compact line 232 char 1',
+                                     'escrow.compact line 241 char 1',
                                      'Uint<0..18446744073709551616>',
                                      escrowId_0)
         }
         if (!(typeof(returnCoin_0) === 'object' && returnCoin_0.nonce.buffer instanceof ArrayBuffer && returnCoin_0.nonce.BYTES_PER_ELEMENT === 1 && returnCoin_0.nonce.length === 32 && returnCoin_0.color.buffer instanceof ArrayBuffer && returnCoin_0.color.BYTES_PER_ELEMENT === 1 && returnCoin_0.color.length === 32 && typeof(returnCoin_0.value) === 'bigint' && returnCoin_0.value >= 0n && returnCoin_0.value <= 340282366920938463463374607431768211455n && typeof(returnCoin_0.mt_index) === 'bigint' && returnCoin_0.mt_index >= 0n && returnCoin_0.mt_index <= 18446744073709551615n)) {
           __compactRuntime.typeError('mutualRefund',
                                      'argument 2 (argument 3 as invoked from Typescript)',
-                                     'escrow.compact line 232 char 1',
+                                     'escrow.compact line 241 char 1',
                                      'struct QualifiedShieldedCoinInfo<nonce: Bytes<32>, color: Bytes<32>, value: Uint<0..340282366920938463463374607431768211456>, mt_index: Uint<0..18446744073709551616>>',
                                      returnCoin_0)
         }
@@ -523,21 +523,21 @@ export class Contract {
         if (!(typeof(contextOrig_0) === 'object' && contextOrig_0.callContext.currentQueryContext != undefined)) {
           __compactRuntime.typeError('autoRelease',
                                      'argument 1 (as invoked from Typescript)',
-                                     'escrow.compact line 277 char 1',
+                                     'escrow.compact line 286 char 1',
                                      'CircuitContext',
                                      contextOrig_0)
         }
         if (!(typeof(escrowId_0) === 'bigint' && escrowId_0 >= 0n && escrowId_0 <= 18446744073709551615n)) {
           __compactRuntime.typeError('autoRelease',
                                      'argument 1 (argument 2 as invoked from Typescript)',
-                                     'escrow.compact line 277 char 1',
+                                     'escrow.compact line 286 char 1',
                                      'Uint<0..18446744073709551616>',
                                      escrowId_0)
         }
         if (!(typeof(spendCoin_0) === 'object' && spendCoin_0.nonce.buffer instanceof ArrayBuffer && spendCoin_0.nonce.BYTES_PER_ELEMENT === 1 && spendCoin_0.nonce.length === 32 && spendCoin_0.color.buffer instanceof ArrayBuffer && spendCoin_0.color.BYTES_PER_ELEMENT === 1 && spendCoin_0.color.length === 32 && typeof(spendCoin_0.value) === 'bigint' && spendCoin_0.value >= 0n && spendCoin_0.value <= 340282366920938463463374607431768211455n && typeof(spendCoin_0.mt_index) === 'bigint' && spendCoin_0.mt_index >= 0n && spendCoin_0.mt_index <= 18446744073709551615n)) {
           __compactRuntime.typeError('autoRelease',
                                      'argument 2 (argument 3 as invoked from Typescript)',
-                                     'escrow.compact line 277 char 1',
+                                     'escrow.compact line 286 char 1',
                                      'struct QualifiedShieldedCoinInfo<nonce: Bytes<32>, color: Bytes<32>, value: Uint<0..340282366920938463463374607431768211456>, mt_index: Uint<0..18446744073709551616>>',
                                      spendCoin_0)
         }
@@ -568,14 +568,14 @@ export class Contract {
         if (!(typeof(contextOrig_0) === 'object' && contextOrig_0.callContext.currentQueryContext != undefined)) {
           __compactRuntime.typeError('isHeld',
                                      'argument 1 (as invoked from Typescript)',
-                                     'escrow.compact line 310 char 1',
+                                     'escrow.compact line 319 char 1',
                                      'CircuitContext',
                                      contextOrig_0)
         }
         if (!(typeof(escrowId_0) === 'bigint' && escrowId_0 >= 0n && escrowId_0 <= 18446744073709551615n)) {
           __compactRuntime.typeError('isHeld',
                                      'argument 1 (argument 2 as invoked from Typescript)',
-                                     'escrow.compact line 310 char 1',
+                                     'escrow.compact line 319 char 1',
                                      'Uint<0..18446744073709551616>',
                                      escrowId_0)
         }
@@ -1008,13 +1008,15 @@ export class Contract {
     });
     return result_0;
   }
-  _agentCommitment_0(sk_0) {
+  _agentCommitment_0(sk_0, bookingRef_0) {
     return this._persistentHash_0([new Uint8Array([101, 118, 101, 114, 108, 105, 115, 116, 58, 97, 103, 101, 110, 116, 58, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-                                   sk_0]);
+                                   sk_0,
+                                   bookingRef_0]);
   }
-  _organizerCommitment_0(sk_0) {
+  _organizerCommitment_0(sk_0, bookingRef_0) {
     return this._persistentHash_0([new Uint8Array([101, 118, 101, 114, 108, 105, 115, 116, 58, 111, 114, 103, 97, 110, 105, 122, 101, 114, 58, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-                                   sk_0]);
+                                   sk_0,
+                                   bookingRef_0]);
   }
   async _createEscrow_0(context,
                         partialProofData,
@@ -1062,7 +1064,8 @@ export class Contract {
                                                                             { popeq: { cached: true,
                                                                                        result: undefined } }]).value);
     const aComm_0 = this._agentCommitment_0(this._agentSecretKey_0(context,
-                                                                   partialProofData));
+                                                                   partialProofData),
+                                            bookingRef_0);
     const tmp_1 = { amount: amount_0,
                     agentCommitment: aComm_0,
                     organizerCommitment: organizerCommitmentInput_0,
@@ -1164,7 +1167,8 @@ export class Contract {
                                                                                       result: undefined } }]).value);
     __compactRuntime.assert(e_0.state === 1n, 'escrow not in HELD state');
     const caller_0 = this._organizerCommitment_0(this._organizerSecretKey_0(context,
-                                                                            partialProofData));
+                                                                            partialProofData),
+                                                 e_0.bookingRef);
     __compactRuntime.assert(this._equal_1(caller_0, e_0.organizerCommitment),
                             'only organizer can release');
     __compactRuntime.assert(this._equal_2(spendCoin_0.nonce, e_0.coinNonce),
@@ -1262,7 +1266,8 @@ export class Contract {
                                                                                       result: undefined } }]).value);
     __compactRuntime.assert(e_0.state === 1n, 'escrow not in HELD state');
     const caller_0 = this._agentCommitment_0(this._agentSecretKey_0(context,
-                                                                    partialProofData));
+                                                                    partialProofData),
+                                             e_0.bookingRef);
     __compactRuntime.assert(this._equal_4(caller_0, e_0.agentCommitment),
                             'only agent can refund');
     __compactRuntime.assert(!await this._blockTimeGte_0(context,
@@ -1466,11 +1471,13 @@ export class Contract {
                                                                                       result: undefined } }]).value);
     __compactRuntime.assert(e_0.state === 2n, 'escrow not in RELEASED state');
     const callerAgent_0 = this._agentCommitment_0(this._agentSecretKey_0(context,
-                                                                         partialProofData));
+                                                                         partialProofData),
+                                                  e_0.bookingRef);
     __compactRuntime.assert(this._equal_9(callerAgent_0, e_0.agentCommitment),
                             'agent consent missing');
     const callerOrg_0 = this._organizerCommitment_0(this._organizerSecretKey_0(context,
-                                                                               partialProofData));
+                                                                               partialProofData),
+                                                    e_0.bookingRef);
     __compactRuntime.assert(this._equal_10(callerOrg_0, e_0.organizerCommitment),
                             'organizer consent missing');
     __compactRuntime.assert(this._equal_11(returnCoin_0.color, e_0.coinColor),
@@ -2092,43 +2099,59 @@ const _dummyContract = new Contract({
 });
 export const pureCircuits = {
   agentCommitment: (...args_0) => {
-    if (args_0.length !== 1) {
-      throw new __compactRuntime.CompactError(`agentCommitment: expected 1 argument (as invoked from Typescript), received ${args_0.length}`);
+    if (args_0.length !== 2) {
+      throw new __compactRuntime.CompactError(`agentCommitment: expected 2 arguments (as invoked from Typescript), received ${args_0.length}`);
     }
     const sk_0 = args_0[0];
+    const bookingRef_0 = args_0[1];
     if (!(sk_0.buffer instanceof ArrayBuffer && sk_0.BYTES_PER_ELEMENT === 1 && sk_0.length === 32)) {
       __compactRuntime.typeError('agentCommitment',
                                  'argument 1',
-                                 'escrow.compact line 64 char 1',
+                                 'escrow.compact line 70 char 1',
                                  'Bytes<32>',
                                  sk_0)
     }
-    return _dummyContract._agentCommitment_0(sk_0);
+    if (!(bookingRef_0.buffer instanceof ArrayBuffer && bookingRef_0.BYTES_PER_ELEMENT === 1 && bookingRef_0.length === 32)) {
+      __compactRuntime.typeError('agentCommitment',
+                                 'argument 2',
+                                 'escrow.compact line 70 char 1',
+                                 'Bytes<32>',
+                                 bookingRef_0)
+    }
+    return _dummyContract._agentCommitment_0(sk_0, bookingRef_0);
   },
   organizerCommitment: (...args_0) => {
-    if (args_0.length !== 1) {
-      throw new __compactRuntime.CompactError(`organizerCommitment: expected 1 argument (as invoked from Typescript), received ${args_0.length}`);
+    if (args_0.length !== 2) {
+      throw new __compactRuntime.CompactError(`organizerCommitment: expected 2 arguments (as invoked from Typescript), received ${args_0.length}`);
     }
     const sk_0 = args_0[0];
+    const bookingRef_0 = args_0[1];
     if (!(sk_0.buffer instanceof ArrayBuffer && sk_0.BYTES_PER_ELEMENT === 1 && sk_0.length === 32)) {
       __compactRuntime.typeError('organizerCommitment',
                                  'argument 1',
-                                 'escrow.compact line 69 char 1',
+                                 'escrow.compact line 78 char 1',
                                  'Bytes<32>',
                                  sk_0)
     }
-    return _dummyContract._organizerCommitment_0(sk_0);
+    if (!(bookingRef_0.buffer instanceof ArrayBuffer && bookingRef_0.BYTES_PER_ELEMENT === 1 && bookingRef_0.length === 32)) {
+      __compactRuntime.typeError('organizerCommitment',
+                                 'argument 2',
+                                 'escrow.compact line 78 char 1',
+                                 'Bytes<32>',
+                                 bookingRef_0)
+    }
+    return _dummyContract._organizerCommitment_0(sk_0, bookingRef_0);
   }
 };
 export const contractReferenceLocations =
   { tag: 'publicLedgerArray', indices: { } };
 export const expectedVk = {
   'autoRelease': 'f842a867731250008b358daa00f07fda34be4c621641317d1901d07d23be05e7',
-  'createEscrow': 'a6435732f0997a749d3956cbf557474a562ef2612b4b98b0c82b48810688e351',
+  'createEscrow': 'c2c3292ef2437fe8114e5f0302bf53370c5550e8202b450b624d44dc37457042',
   'isHeld': '5c0969dc67c8de2bb4f179e70c9f30b2b54a53b8a8260a4c58ea637ae9e0f0d5',
-  'mutualRefund': 'af19abb2aafda6f6199f5f25ce3fdb05c7b61be447be481155e8f6e8b236fb83',
-  'refundEscrow': 'a476191469b4ff75631ef2b49bc95d54e7d858c05882cd766f49a89a058e9d28',
-  'releaseEscrow': 'b3546f683e23099fd53ad19b3ad01222683a8e00178948e0ccbdc5d095f54c98',
+  'mutualRefund': '56c33ae5d959d418c44fd64eef7daa319ee6b2f3ddd5a83d6ac23daa22e7d5ec',
+  'refundEscrow': '2605150520b3783703a660e09e58c4f3745f3689902370b53a1753434227a693',
+  'releaseEscrow': '2feb2f6971f1a50eaccc2c79bb5089663b28d123d8f174a7dca6a7a22841dc86',
   'timeoutRefund': '9e4cf3d298a7955ccd1399529557fbbb4bd3c5989f892ee87c8f577a68e98af4',
 };
 

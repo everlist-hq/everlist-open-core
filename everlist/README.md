@@ -106,5 +106,18 @@ npx tsx --test test/escrow.test.ts        # 40/40
 npx tsx --test test/credential.test.ts    # 16/16
 ```
 
+**Privacy audit (Tell, 2026-10-16):** both contracts scanned with the
+[Tell](https://github.com/RohanGlitched/tell) Compact privacy scanner —
+`credential.compact` Grade A; `escrow.compact` was Grade C (one medium
+finding: per-holder commitments made an organizer's escrows publicly
+linkable), fixed by binding commitments to the booking reference,
+recompiled, regression-tested and re-scanned to Grade A.
+
+**5-minute judge path (no wallet, live):** discover → listings → agent token
+→ book (escrow HELD/WAIVED) → cancel (REFUNDED) → public ledger — the exact
+curl commands, plus evidence & receipts and the honest-limits statement, are
+in [`midnight-contract/README.md`](midnight-contract/README.md). Every step
+was verified end-to-end against production on 2026-10-16.
+
 Licensing for the Wave-2 Midnight code: Apache License 2.0 — see `NOTICE` and
 `LICENSE-APACHE-2.0.txt` in the repo root; the pre-existing core stays MIT.

@@ -102,7 +102,7 @@
     { "op": "private_input", "guard": null },
     { "op": "constrain_bits", "var": 35, "bits": 248 },
     { "op": "load_imm", "imm": "657665726C6973743A6F7267616E697A65723A" },
-    { "op": "persistent_hash", "alignment": [{ "tag": "atom", "value": { "length": 32, "tag": "bytes" } }, { "tag": "atom", "value": { "length": 32, "tag": "bytes" } }], "inputs": [10, 36, 34, 35] },
+    { "op": "persistent_hash", "alignment": [{ "tag": "atom", "value": { "length": 32, "tag": "bytes" } }, { "tag": "atom", "value": { "length": 32, "tag": "bytes" } }, { "tag": "atom", "value": { "length": 32, "tag": "bytes" } }], "inputs": [10, 36, 34, 35, 22, 23] },
     { "op": "test_eq", "a": 37, "b": 19 },
     { "op": "test_eq", "a": 38, "b": 20 },
     { "op": "cond_select", "bit": 39, "a": 40, "b": 10 },

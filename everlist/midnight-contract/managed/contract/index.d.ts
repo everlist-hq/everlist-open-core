@@ -104,14 +104,17 @@ export type ProvableCircuits<PS> = {
 }
 
 export type PureCircuits = {
-  agentCommitment(sk_0: Uint8Array): Uint8Array;
-  organizerCommitment(sk_0: Uint8Array): Uint8Array;
+  agentCommitment(sk_0: Uint8Array, bookingRef_0: Uint8Array): Uint8Array;
+  organizerCommitment(sk_0: Uint8Array, bookingRef_0: Uint8Array): Uint8Array;
 }
 
 export type Circuits<PS> = {
-  agentCommitment(context: __compactRuntime.CircuitContext<PS>, sk_0: Uint8Array): Promise<__compactRuntime.CircuitResults<PS, Uint8Array>>;
+  agentCommitment(context: __compactRuntime.CircuitContext<PS>,
+                  sk_0: Uint8Array,
+                  bookingRef_0: Uint8Array): Promise<__compactRuntime.CircuitResults<PS, Uint8Array>>;
   organizerCommitment(context: __compactRuntime.CircuitContext<PS>,
-                      sk_0: Uint8Array): Promise<__compactRuntime.CircuitResults<PS, Uint8Array>>;
+                      sk_0: Uint8Array,
+                      bookingRef_0: Uint8Array): Promise<__compactRuntime.CircuitResults<PS, Uint8Array>>;
   createEscrow(context: __compactRuntime.CircuitContext<PS>,
                amount_0: bigint,
                organizerCommitmentInput_0: Uint8Array,

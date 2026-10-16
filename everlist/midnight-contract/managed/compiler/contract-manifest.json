@@ -7,26 +7,26 @@
     "type": "directory",
     "contract-info.json": {
       "type": "file",
-      "size": 13659,
-      "hash": "dfbab084fca14949c6dfdb151a49c965628a84c6d23f9217ccafd971fd73fcb8"
+      "size": 13947,
+      "hash": "67abc9a7ebdaf0674015073e4e23ffccafd3e5b86b8b499d439692997c72e537"
     }
   },
   "contract": {
     "type": "directory",
     "index.d.ts": {
       "type": "file",
-      "size": 10415,
-      "hash": "3011f3cd804a7dda5ab458f45cb4f3565331502242c00ce55272daaf4cccd72a"
+      "size": 10577,
+      "hash": "57905f32455f958ec9635aee2d30a1d01f6935a1a2759a491086139c3fa83f1a"
     },
     "index.js": {
       "type": "file",
-      "size": 155504,
-      "hash": "1f451443b6e6d0ea26e9aa790029045e55da8a3b563cc1d039b1d39bb36664a2"
+      "size": 156836,
+      "hash": "728549ba5f8257e6f7d928b3adf13ba0d0eb0fc7cc551c3ea8d0d4e7d3a2dcb1"
     },
     "index.js.map": {
       "type": "file",
-      "size": 6933,
-      "hash": "0758864de1300e987c12ce22778b1fdfe15659da7063b7c220a67f415a50caff"
+      "size": 7084,
+      "hash": "2c8b0e76c15a7b55a9179bf1ddd8ffa0f34809edb3444a914970080b41d6a809"
     }
   },
   "zkir": {
@@ -43,13 +43,13 @@
     },
     "createEscrow.bzkir": {
       "type": "file",
-      "size": 587,
-      "hash": "b40c0ce9e0ec474810d1ec4bab2444e3636542006859877405eef1f5a4404c33"
+      "size": 591,
+      "hash": "7eb0fae2e0bfdb0d420fffeed18e5f8a41b24721e7bf9d70cba0f48b6c22cf9c"
     },
     "createEscrow.zkir": {
       "type": "file",
-      "size": 9871,
-      "hash": "a03dfd7180df501e49e99d988c5dea6668abd6cb45305abdb1b824b96bc2fdab"
+      "size": 9939,
+      "hash": "65325e9b8706590e35ed3097b01e7971fc7e37f302c5488affddad85264f7100"
     },
     "isHeld.bzkir": {
       "type": "file",
@@ -63,33 +63,33 @@
     },
     "mutualRefund.bzkir": {
       "type": "file",
-      "size": 1350,
-      "hash": "53df36909defd7253be4b4c26b821894822718d780f6b981380968066b2f8c2a"
+      "size": 1358,
+      "hash": "de669b9a5d31494096bac1552fae98cf88a6d00bbfd6362b6733176b0843bed3"
     },
     "mutualRefund.zkir": {
       "type": "file",
-      "size": 19704,
-      "hash": "3938ce3157f787cb6b0171b905ee2d06d54fc8fe00f17740dea0267fec9978e3"
+      "size": 19844,
+      "hash": "831976d3076d454f92b94d7cb3a700b523fdf132c6849a9e708c936fee9b35e7"
     },
     "refundEscrow.bzkir": {
       "type": "file",
-      "size": 1208,
-      "hash": "868e6b385f3b27285af263d70b7788aba46d16b516806ef2e3b332e60777d295"
+      "size": 1212,
+      "hash": "39a2e4a2dc5ce116fa0236ca13eed8edb3a533df67f4db957d05a788af4c5fdb"
     },
     "refundEscrow.zkir": {
       "type": "file",
-      "size": 18010,
-      "hash": "4e40478b51af6317b5f7dc9068dcbd586e3a6251036fb76ea577f7722585bb99"
+      "size": 18080,
+      "hash": "db7c572ab0d38d753fa11bca8293a76c425a997856878cd7a259ec03c0e067ab"
     },
     "releaseEscrow.bzkir": {
       "type": "file",
-      "size": 1159,
-      "hash": "9dddd847b57748ecb576338cf6b19925a9d49e796d032549fb0bb8ca2a232e63"
+      "size": 1163,
+      "hash": "ec308a76051e58e138c8d84b8a475b05378242c918ecb1755c78b844de54afbd"
     },
     "releaseEscrow.zkir": {
       "type": "file",
-      "size": 17008,
-      "hash": "e56bad7ec3145321a05f676884ecd2f9ae07b6fe04aa5d6b31a41add41235668"
+      "size": 17078,
+      "hash": "5ed8ce9c936a5a73999a958d3f9b8d1a0801a1c6d853a85df2370f2bdb3f1148"
     },
     "timeoutRefund.bzkir": {
       "type": "file",
@@ -116,13 +116,13 @@
     },
     "createEscrow.prover": {
       "type": "file",
-      "size": 5212173,
-      "hash": "d1717e96647970c420c3929e7260427ecb6ae637bbaa9f0693013a43c865b470"
+      "size": 5212215,
+      "hash": "fe747442556d586dc21fd7105295ee483102426f93d073ebedfc19533a505e26"
     },
     "createEscrow.verifier": {
       "type": "file",
       "size": 2119,
-      "hash": "a6435732f0997a749d3956cbf557474a562ef2612b4b98b0c82b48810688e351"
+      "hash": "c2c3292ef2437fe8114e5f0302bf53370c5550e8202b450b624d44dc37457042"
     },
     "isHeld.prover": {
       "type": "file",
@@ -136,33 +136,33 @@
     },
     "mutualRefund.prover": {
       "type": "file",
-      "size": 19498183,
-      "hash": "3ce167cb4baa4234695afc259506fff6e0d6ff4c58e1222c8be3efebcb8dab99"
+      "size": 19498283,
+      "hash": "d51ceafbd4bc83a5469b2ad0a0e4dd2cc291b50d31ac5858e6398a197a5d06a0"
     },
     "mutualRefund.verifier": {
       "type": "file",
       "size": 2119,
-      "hash": "af19abb2aafda6f6199f5f25ce3fdb05c7b61be447be481155e8f6e8b236fb83"
+      "hash": "56c33ae5d959d418c44fd64eef7daa319ee6b2f3ddd5a83d6ac23daa22e7d5ec"
     },
     "refundEscrow.prover": {
       "type": "file",
-      "size": 10000286,
-      "hash": "104fb2e3d04f33c7fe24bd0939f9a7d7826cfe844eff9c98637dc5593f520f99"
+      "size": 10000325,
+      "hash": "e34734c1d685c67316b6b96589ad910ba1446978a9303497bff024bce2fe27c2"
     },
     "refundEscrow.verifier": {
       "type": "file",
       "size": 2119,
-      "hash": "a476191469b4ff75631ef2b49bc95d54e7d858c05882cd766f49a89a058e9d28"
+      "hash": "2605150520b3783703a660e09e58c4f3745f3689902370b53a1753434227a693"
     },
     "releaseEscrow.prover": {
       "type": "file",
-      "size": 10000244,
-      "hash": "ea48f2058730856e33082625a13fcdc3bc668d760490996ec910bf27685e8d4f"
+      "size": 10000278,
+      "hash": "f02cd13595f70bfeb32e3c3519490f4c9175ae1776d893cba8a5176808b7aa1c"
     },
     "releaseEscrow.verifier": {
       "type": "file",
       "size": 2119,
-      "hash": "b3546f683e23099fd53ad19b3ad01222683a8e00178948e0ccbdc5d095f54c98"
+      "hash": "2feb2f6971f1a50eaccc2c79bb5089663b28d123d8f174a7dca6a7a22841dc86"
     },
     "timeoutRefund.prover": {
       "type": "file",

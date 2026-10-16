@@ -60,14 +60,23 @@ export ledger organizerPks: Map<Uint<64>, ZswapCoinPublicKey>;
 witness agentSecretKey(): Bytes<32>;
 witness organizerSecretKey(): Bytes<32>;
 
-/** Commitment of an agent (buyer). sk never leaves the agent's machine. */
-export circuit agentCommitment(sk: Bytes<32>): Bytes<32> {
-  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "everlist:agent:"), sk]);
+/**
+ * Commitment of an agent (buyer). sk never leaves the agent's machine.
+ * W2 privacy fix (Tell scan 2026-10-16, medium finding): the tag is now
+ * bound to the bookingRef, so one holder's escrows no longer line up on
+ * the public ledger — identifying one booking does not identify the
+ * holder's other bookings (per-booking tag, Tell's suggested fix).
+ */
+export circuit agentCommitment(sk: Bytes<32>, bookingRef: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<3, Bytes<32>>>([pad(32, "everlist:agent:"), sk, bookingRef]);
 }
 
-/** Commitment of an organizer (seller). sk never leaves their machine. */
-export circuit organizerCommitment(sk: Bytes<32>): Bytes<32> {
-  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "everlist:organizer:"), sk]);
+/**
+ * Commitment of an organizer (seller). sk never leaves their machine.
+ * W2 privacy fix: same per-booking binding as the agent tag.
+ */
+export circuit organizerCommitment(sk: Bytes<32>, bookingRef: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<3, Bytes<32>>>([pad(32, "everlist:organizer:"), sk, bookingRef]);
 }
 
 /**
@@ -91,7 +100,7 @@ export circuit createEscrow(
 
   nextId.increment(1);
   const id = disclose(nextId.read() as Uint<64>);
-  const aComm = agentCommitment(agentSecretKey());
+  const aComm = agentCommitment(agentSecretKey(), bookingRef);
 
   escrows.insert(id, Escrow {
     amount: disclose(amount),
@@ -118,7 +127,7 @@ export circuit releaseEscrow(escrowId: Uint<64>, spendCoin: QualifiedShieldedCoi
   assert(escrows.member(id), "escrow not found");
   const e = escrows.lookup(id);
   assert(e.state == 1, "escrow not in HELD state"); // HELD
-  const caller = organizerCommitment(organizerSecretKey());
+  const caller = organizerCommitment(organizerSecretKey(), e.bookingRef);
   assert(caller == e.organizerCommitment, "only organizer can release");
   assert(spendCoin.nonce == e.coinNonce, "coin does not match escrow custody");
   assert(spendCoin.color == e.coinColor, "coin does not match escrow custody");
@@ -153,7 +162,7 @@ export circuit refundEscrow(escrowId: Uint<64>, spendCoin: QualifiedShieldedCoin
   assert(escrows.member(id), "escrow not found");
   const e = escrows.lookup(id);
   assert(e.state == 1, "escrow not in HELD state"); // HELD
-  const caller = agentCommitment(agentSecretKey());
+  const caller = agentCommitment(agentSecretKey(), e.bookingRef);
   assert(caller == e.agentCommitment, "only agent can refund");
   assert(!(blockTimeGte(e.claimDeadline)), "claim deadline passed - merchant auto-release applies");
   assert(spendCoin.nonce == e.coinNonce, "coin does not match escrow custody");
@@ -234,9 +243,9 @@ export circuit mutualRefund(escrowId: Uint<64>, returnCoin: QualifiedShieldedCoi
   assert(escrows.member(id), "escrow not found");
   const e = escrows.lookup(id);
   assert(e.state == 2, "escrow not in RELEASED state"); // RELEASED
-  const callerAgent = agentCommitment(agentSecretKey());
+  const callerAgent = agentCommitment(agentSecretKey(), e.bookingRef);
   assert(callerAgent == e.agentCommitment, "agent consent missing");
-  const callerOrg = organizerCommitment(organizerSecretKey());
+  const callerOrg = organizerCommitment(organizerSecretKey(), e.bookingRef);
   assert(callerOrg == e.organizerCommitment, "organizer consent missing");
   assert(returnCoin.color == e.coinColor, "return coin wrong asset");
   assert(returnCoin.value == e.amount, "return coin wrong amount");

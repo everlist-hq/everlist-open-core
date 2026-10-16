@@ -87,7 +87,7 @@ const readLedger = () => ledger(ctx.callContext.currentQueryContext.state);
 const zswapOutputs = () => ctx.callContext.currentZswapLocalState.outputs;
 
 const newEscrow = async (amount, bookingRef, deadline = DEADLINE_FAR, claimDeadline = DEADLINE_FAR + 1n) => {
-  const orgComm = pureCircuits.organizerCommitment(ORG_SK);
+  const orgComm = pureCircuits.organizerCommitment(ORG_SK, bookingRef);
   const deposit = mkCoin(amount);
   // the deposit's commitment occupies the next free merkle index
   const mt = BigInt(ctx.callContext.currentQueryContext.comIndices.size);
@@ -114,19 +114,23 @@ describe('EverList escrow state machine (offline, real compiled circuits)', () =
   });
 
   describe('pure commitments', () => {
-    test('commitments are deterministic and prefix-separated', () => {
-      const a1 = pureCircuits.agentCommitment(AGENT_SK);
-      const a2 = pureCircuits.agentCommitment(AGENT_SK);
-      const o1 = pureCircuits.organizerCommitment(AGENT_SK);
+    test('commitments are deterministic, prefix-separated and per-booking (W2 Tell fix)', () => {
+      const refA = b32('even-13');
+      const refB = b32('even-31');
+      const a1 = pureCircuits.agentCommitment(AGENT_SK, refA);
+      const a2 = pureCircuits.agentCommitment(AGENT_SK, refA);
+      const o1 = pureCircuits.organizerCommitment(AGENT_SK, refA);
+      const aB = pureCircuits.agentCommitment(AGENT_SK, refB);
       assert.deepEqual(a1, a2);
       assert.notDeepEqual(a1, o1, 'same secret must give different commitments per role');
+      assert.notDeepEqual(a1, aB, 'same secret on a different booking must NOT give the same tag (cross-escrow linkability, Tell 2026-10-16)');
       assert.equal(a1.length, 32);
     });
   });
 
   describe('createEscrow', () => {
     test('creates FUNDED escrow #1 in HELD state with custody + payout keys', async () => {
-      const orgComm = pureCircuits.organizerCommitment(ORG_SK);
+      const orgComm = pureCircuits.organizerCommitment(ORG_SK, b32('even-13'));
       const deposit = mkCoin(250n);
       await call(honest, 'createEscrow', 250n, orgComm, b32('even-13'), DEADLINE_FAR, DEADLINE_FAR + 1n, deposit, AGENT_PK, ORG_PK);
       const l = readLedger();
@@ -139,12 +143,12 @@ describe('EverList escrow state machine (offline, real compiled circuits)', () =
       assert.deepEqual(e.coinColor, COLOR);
       assert.deepEqual(l.agentPks.lookup(1n), AGENT_PK); // payout destinations fixed
       assert.deepEqual(l.organizerPks.lookup(1n), ORG_PK);
-      const aComm = pureCircuits.agentCommitment(AGENT_SK);
+      const aComm = pureCircuits.agentCommitment(AGENT_SK, b32('even-13'));
       assert.deepEqual(e.agentCommitment, aComm);
     });
 
     test('rejects amount 0', async () => {
-      const orgComm = pureCircuits.organizerCommitment(ORG_SK);
+      const orgComm = pureCircuits.organizerCommitment(ORG_SK, b32('x'));
       await assert.rejects(
         () => call(honest, 'createEscrow', 0n, orgComm, b32('x'), DEADLINE_FAR, DEADLINE_FAR + 1n, mkCoin(250n), AGENT_PK, ORG_PK),
         /amount must be positive/
@@ -154,7 +158,7 @@ describe('EverList escrow state machine (offline, real compiled circuits)', () =
 
   describe('funded flows (M3: coin balances move)', () => {
     test('deposit value must equal escrow amount', async () => {
-      const orgComm = pureCircuits.organizerCommitment(ORG_SK);
+      const orgComm = pureCircuits.organizerCommitment(ORG_SK, b32('even-31'));
       await assert.rejects(
         () => call(honest, 'createEscrow', 9n, orgComm, b32('even-31'), DEADLINE_FAR, DEADLINE_FAR + 1n, mkCoin(8n), AGENT_PK, ORG_PK),
         /deposit must equal escrow amount/
@@ -432,7 +436,7 @@ describe('EverList escrow state machine (offline, real compiled circuits)', () =
     });
 
     test('create rejects claimDeadline <= refund deadline', async () => {
-      const orgComm = pureCircuits.organizerCommitment(ORG_SK);
+      const orgComm = pureCircuits.organizerCommitment(ORG_SK, b32('m17-bad'));
       await assert.rejects(
         () => call(honest, 'createEscrow', 1n, orgComm, b32('m17-bad'), DEADLINE_FAR, DEADLINE_FAR, mkCoin(1n), AGENT_PK, ORG_PK),
         /claim deadline must be after refund deadline/
