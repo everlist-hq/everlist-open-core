@@ -25,6 +25,12 @@ jobs:
         with:
           python-version: "3.13"
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: everlist/midnight-contract/package-lock.json
+
       - name: Install dependencies (into ./venv so Makefile VPY default works)
         run: |
           python3 -m venv venv
@@ -110,6 +116,13 @@ jobs:
 
       - name: "x402 settlement suite (C3b)"
         run: venv/bin/python test_x402_settle.py
+
+      - name: "Midnight Compact contract tests (escrow + credential, offline)"
+        working-directory: everlist/midnight-contract
+        run: |
+          npm ci
+          npx tsx --test test/escrow.test.ts
+          npx tsx --test test/credential.test.ts
 
       - name: "Dependency audit (H6 - waivers reasoned in SPEC 17)"
         continue-on-error: true
