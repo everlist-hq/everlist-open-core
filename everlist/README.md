@@ -80,3 +80,31 @@ make test                    # full suite (unit + E2E + security)
 
 See `SPEC.md` for the protocol contract and `../registry/` for the hub-of-hubs
 registry + conformance checker.
+
+## Midnight integration (ZK escrow, live)
+
+**Live deployment:** [everlist.network](https://everlist.network) — chat-first booking
+board; ask in plain language, book, and payment is provably held in escrow until
+the event has happened (auto-refund included).
+
+| Piece | Where | What it does |
+| --- | --- | --- |
+| `midnight-contract/src/escrow.compact` | Compact | Escrow state machine: funded create (exact-value shielded coin), conditional release, refund, timeout refund, auto-release, mutual refund |
+| `midnight-contract/src/credential.compact` | Compact | ZK personhood credential (one-human-one-account) on commitments: issue / proveHolder / revoke |
+| `midnight-contract/managed*/` | compiled | Artifacts from `compactc` 0.34.0 incl. ZK prover/verifier keys + ZKIR |
+| `midnight-contract/test/` | offline tests | State-machine tests running the REAL compiled circuits against a simulated ledger — no network, no proof server |
+| `sponsorship.py` | Wave-2 delta | Abuse-resistant DUST sponsorship: per-organizer window limits, pool budget cap, stake threshold — zero-DUST organizers and workers can transact |
+| `app.py` escrow events + `GET /escrow/{id}/proof` | Wave-2 delta | Real-time escrow state events (released/refunded/timed-out) + fail-closed proof endpoint |
+| `tools/cost_matrix.py` | Wave-2 delta | One-command cost matrix (recorded + live) for per-operation escrow costs |
+
+**Test the contracts offline (no network, ~10s):**
+
+```bash
+cd midnight-contract
+npm ci
+npx tsx --test test/escrow.test.ts        # 40/40
+npx tsx --test test/credential.test.ts    # 16/16
+```
+
+Licensing for the Wave-2 Midnight code: Apache License 2.0 — see `NOTICE` and
+`LICENSE-APACHE-2.0.txt` in the repo root; the pre-existing core stays MIT.

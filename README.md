@@ -18,6 +18,7 @@ licensing model, and it is stated plainly in every hub manifest
 | --- | --- |
 | `everlist/` | The hub core: `app.py` (REST API, escrow accounting, ledger), `mcp.py` (MCP face), `wrapper.py` (uAgents/A2A face), `chatlib.py` (chat command layer), `sdk/`, `schemas/`, `SPEC.md`, and the full test battery (60+ suites) |
 | `registry/` | The authoritative registry service: ownership-proof self-registration into the open tier, operator-gated promote/revoke into the **verified partner tier**, Ed25519-signed `registry.json` (partners only), and `check_hub.py` conformance checks |
+| `everlist/midnight-contract/` | **Midnight (Compact) contracts**: ZK escrow state machine + personhood credential, compiled artifacts (`compactc` 0.34.0), and offline tests running the real circuits against a simulated ledger — `cd everlist/midnight-contract && npx tsx --test test/escrow.test.ts` (40/40) and `test/credential.test.ts` (16/16). Wave-2 Midnight code is Apache-2.0 (`NOTICE`); the pre-existing core stays MIT. Live: [everlist.network](https://everlist.network) |
 
 ## Quickstart
 
