@@ -64,7 +64,7 @@ on two different bookings yields two unlinkable tags
 
 | Claim | Evidence |
 | --- | --- |
-| Compiled circuits execute the full escrow lifecycle | 40/40 + 16/16 offline tests against `managed*/` artifacts (command above, ~10s) |
+| Compiled circuits execute the full lifecycle of all five contracts | 148 offline tests across 6 suites against `managed*/` artifacts (command above, ~30s): escrow 40/40 + credential 16/16 + mandate 18/18 + indistinguishability 7/7 + reputation 22/22 + milestone 45/45 |
 | Per-circuit costs measured, not estimated | `circuit-costs-20260913.json` recorded from the native proof server; replay: `tools/cost_matrix.py` in the hub repo |
 | Hub integration tested end-to-end | hub gate `make test` ALL PASSED (2,000+ checks incl. M5 escrow_ref, M6 indexer client, M7 escrow mirror sync, M8 chain-booking E2E, M9 payout keys, M10 secret hygiene) |
 | Live marketplace with real booking flows | [everlist.network](https://everlist.network) — judge path below |

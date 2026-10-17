@@ -9,8 +9,8 @@
 [![Live](https://img.shields.io/badge/live-everlist.network-2ea44f?logo=firefox)](https://everlist.network)
 [![CI](https://github.com/everlist-hq/everlist-open-core/actions/workflows/tests.yml/badge.svg)](https://github.com/everlist-hq/everlist-open-core/actions/workflows/tests.yml)
 [![Hub gate](https://img.shields.io/badge/hub%20gate-2%2C351%20checks-2ea44f)](everlist/README.md)
-[![Escrow circuits](https://img.shields.io/badge/escrow%20circuits-40%2F40-2ea44f)](everlist/midnight-contract/README.md)
-[![Personhood circuits](https://img.shields.io/badge/personhood%20circuits-16%2F16-2ea44f)](everlist/midnight-contract/README.md)
+[![Contract circuits](https://img.shields.io/badge/contract%20circuits-148%2F148-2ea44f)](everlist/midnight-contract/README.md)
+[![Tell privacy](https://img.shields.io/badge/Tell%20privacy%20audit-5%2F5%20Grade%20A-2ea44f)](everlist/midnight-contract/README.md)
 
 A **listing = something with a date where a human is needed** — a workshop seat,
 a market table, a local guide. Agents search in plain language, get
@@ -74,7 +74,7 @@ Agents reach the same flows through three faces: **REST**, an **MCP server**
 | Path | What |
 | --- | --- |
 | [`everlist/`](everlist/README.md) | **The hub core** — `app.py` (REST API, escrow accounting, public ledger), `mcp.py` (MCP face), `wrapper.py` (uAgents/A2A face), `chatlib.py` (chat command layer), `sdk/`, versioned community `schemas/`, `SPEC.md`, and the full test battery (60+ suites) |
-| [`everlist/midnight-contract/`](everlist/midnight-contract/README.md) | **Midnight (Compact) contracts** — ZK escrow state machine + personhood credential, compiled artifacts (`compactc` 0.34.0), offline tests running the **real compiled circuits** against a simulated ledger: escrow 40/40, credential 16/16 |
+| [`everlist/midnight-contract/`](everlist/midnight-contract/README.md) | **Midnight (Compact) contracts** — five ZK contracts, all Tell Grade A: escrow state machine, personhood credential, delegated spending mandate, reputation-from-settled-escrows, and milestone escrow with dispute path; compiled artifacts (`compactc` 0.34.0), 148 offline tests running the **real compiled circuits** against a simulated ledger |
 | [`registry/`](registry/README.md) | **The authoritative registry** — ownership-proof self-registration into the open tier, operator-gated promote/revoke into the **verified partner tier**, Ed25519-signed `registry.json`, and `check_hub.py` conformance checks |
 
 ## Evidence & receipts
@@ -86,13 +86,16 @@ Highlights:
 
 - **Full hub gate: 2,351 checks** across 60+ suites, including an A2A E2E test
   that books a real listing with escrow `HELD` — run locally with `make test`.
-- **Compact circuits: 40/40 escrow + 16/16 credential** — offline, running the
-  real compiled circuits (no mocks), also enforced in CI on every push.
-- **Privacy audit (Tell, 2026-10-16):** both contracts scanned with the
-  [Tell](https://github.com/RohanGlitched/tell) Compact privacy scanner — both
-  **Grade A**. The escrow contract's original medium finding (per-holder
+- **Compact circuits: 148/148 across six suites** — escrow 40/40, credential
+  16/16, mandate 18/18, indistinguishability 7/7, reputation 22/22, milestone
+  45/45 — offline, running the real compiled circuits (no mocks), also
+  enforced in CI on every push.
+- **Privacy audit (Tell, 2026-10-16/17):** all five contracts scanned with the
+  [Tell](https://github.com/RohanGlitched/tell) Compact privacy scanner —
+  all **Grade A**. The escrow contract's original medium finding (per-holder
   commitment linkability) was found, fixed by binding commitments to the booking
-  reference, regression-tested and re-scanned.
+  reference, regression-tested and re-scanned. Every contract added since is
+  scanned at birth: clean before first ship, by policy.
 - **Honest limits, stated plainly:** what the hub sees vs. what Midnight shields,
   what is simulated vs. real, and what is not yet deployed on-chain — all
   documented, nothing hidden.

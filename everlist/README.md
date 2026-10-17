@@ -102,16 +102,22 @@ the event has happened (auto-refund included).
 ```bash
 cd midnight-contract
 npm ci
-npx tsx --test test/escrow.test.ts        # 40/40
-npx tsx --test test/credential.test.ts    # 16/16
+npx tsx --test test/escrow.test.ts              # escrow state machine: 40/40
+npx tsx --test test/credential.test.ts          # personhood credential: 16/16
+npx tsx --test test/mandate.test.ts             # delegated spending mandate: 18/18
+npx tsx --test test/indistinguishability.test.ts # privacy indistinguishability: 7/7
+npx tsx --test test/reputation.test.ts          # reputation from settled escrows: 22/22
+npx tsx --test test/milestone.test.ts           # milestone escrow + dispute path: 45/45
 ```
 
-**Privacy audit (Tell, 2026-10-16):** both contracts scanned with the
-[Tell](https://github.com/RohanGlitched/tell) Compact privacy scanner —
-`credential.compact` Grade A; `escrow.compact` was Grade C (one medium
-finding: per-holder commitments made an organizer's escrows publicly
-linkable), fixed by binding commitments to the booking reference,
-recompiled, regression-tested and re-scanned to Grade A.
+**Privacy audit (Tell, 2026-10-16/17):** all five contracts scanned with the
+[Tell](https://github.com/RohanGlitched/tell) Compact privacy scanner — all
+**Grade A, 0 findings above info**. `escrow.compact` was originally Grade C
+(one medium finding: per-holder commitments made an organizer's escrows
+publicly linkable), fixed by binding commitments to the booking reference,
+recompiled, regression-tested and re-scanned. Since then, `credential`, and
+the three new contracts (`mandate`, `reputation`, `milestone`), have been
+scanned **at birth** — clean before first ship, by policy.
 
 **5-minute judge path (no wallet, live):** discover → listings → agent token
 → book (escrow HELD/WAIVED) → cancel (REFUNDED) → public ledger — the exact
