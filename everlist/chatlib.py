@@ -339,12 +339,40 @@ _PREVIEW_CARDS = 3  # full cards attached under a long index
 _LAST_RESULTS: dict[str, list] = {}  # per-sender stash for '3' / '2-6' / 'all' follow-ups
 _PAY_INTENTS: dict[str, dict] = {}  # P0: per-sender pay intent {lid, who, ts} for /api/pay/submit
 _PENDING_BOOK: dict[str, dict] = {}  # owner 2026-09-29: booking the user wanted before signup gate interrupted it {lid, title, stage, ts}
+# owner 2026-10-17 (unbreakable booking thread): the one-shot stash above is
+# consumed by the first resume attempt; any consumer loss (board rewrite,
+# email turn, LLM path anomaly) used to leave follow-ups ('now book',
+    # 'what i said before') degrading into name-steer or a literal fresh
+    # search — the exact owner transcript break. The WANT ledger records the
+# same intent DURABLY: never consumed, TTL 30min, overwritten only by a NEW
+# explicit booking attempt, cleared on booking success. Recovery is gated on
+# want-ts >= last-search-ts so a later search (changed mind) never rebooks.
+_LAST_BOOK_WANT: dict[str, dict] = {}
+_BOOK_WANT_TTL = 30 * 60
+_BOOK_WANT_CAP = 5_000  # M-C cap law: every client-keyed dict gets a cap
+# owner 2026-10-17: stamp of the last SUCCESSFUL booking per sender — an
+# affirmation after success must never re-book from a stale search stash.
+_LAST_BOOK_DONE: dict[str, dict] = {}  # {lid, title, ts}
+_BOOK_DONE_CAP = 5_000  # M-C cap law
+
+
+def _book_want_get(sender: str) -> dict | None:
+    it = _LAST_BOOK_WANT.get(sender)
+    if not it or time.time() - it.get("ts", 0) > _BOOK_WANT_TTL:
+        _LAST_BOOK_WANT.pop(sender, None)
+        return None
+    return it
 
 
 def _pending_book_put(sender: str, lid: str, title: str = "", stage: str = "gate", who: str = "", promo: str = "") -> None:
-    _PENDING_BOOK[sender] = {"lid": str(lid), "title": str(title), "stage": stage,
-                             "who": str(who or ""), "promo": str(promo or ""),
-                             "ts": time.time()}
+    _rec = {"lid": str(lid), "title": str(title), "stage": stage,
+            "who": str(who or ""), "promo": str(promo or ""),
+            "ts": time.time()}
+    _PENDING_BOOK[sender] = _rec
+    _LAST_BOOK_WANT[sender] = dict(_rec)  # durable thread (see block above)
+    if len(_LAST_BOOK_WANT) > _BOOK_WANT_CAP:  # drop oldest by ts
+        _oldest = min(_LAST_BOOK_WANT, key=lambda k: _LAST_BOOK_WANT[k].get("ts", 0))
+        _LAST_BOOK_WANT.pop(_oldest, None)
 
 
 def _pending_book_get(sender: str) -> dict | None:
@@ -368,12 +396,15 @@ _BOOK_AFFIRM_RX = re.compile(
     r"|yep+|yup|sure|ok(?:ay)?|do it|let'?s do it"
     r"|please(?: do| book(?: it)?)?"
     r"|book(?: it| that| this)?(?: for me)?[!?.]*"
+    r"|book now[!?.]*|now[!?.]*|now(?:[, ]+)(?:book(?: it| that| this)?(?: for me)?|do it|please)[!?.]*"
+    r"|go ahead[!?.]*|go for it[!?.]*|do it now[!?.]*|just (?:book|do) it[!?.]*"
     r"|my pick[ !.]*|the chosen one[ !.]*"
     # German
     r"|ja[ ,.!]*(?:please|bitte|gern(?:e)?|buchen|buch es|das|dieses)?[!?.]*"
     r"|(?:sehr )?gerne?[ !.]*"
     r"|bitte[ !.!]*"
     r"|auf jeden fall[ !.]*|los geht'?s[ !.]*"
+    r"|jetzt[!?.]*|jetzt (?:bitte|buchen|buch|los)[!?.]*"
     r"|ich (?:moe?chte|will)(?: es| das| ihn)?(?: jetzt)? buchen[ !.]*"
     r"|buch(?:e|en)?(?: sie)?(?: es| das| ihn)?(?: f(?:ü|ue)r)? ?(?: mich)?[ !.]*"
     r"|buchen sie es(?: bitte)?[ !.]*"
@@ -383,9 +414,12 @@ _NAME_RX = re.compile(r"^[a-zA-ZÄäÖöÜüß' .\-]{2,60}$")
 _BOOK_REFERENTIAL_RX = re.compile(
     r"^(?:the )?(?:one|ones) (?:i|we|you) (?:chose|picked|chosen|choosen|meant|wanted)"
     r"|^(?:that|this|the same) one[ !.]*$|^my pick[ !.]*$|^the chosen one[ !.]*$"
+    r"|^what i said(?: before| earlier)?[!?.]*$"
+    r"|^what i (?:meant|asked for|wanted|booked)(?: before| earlier)?[!?.]*$"
+    r"|^as i said(?: before| earlier)?[!?.]*$"
+    r"|^wie gesagt[!?.]*$|^das(?: eben)? (?:genannte|gesagte|besprochene)[!?.]*$"
+    r"|^das,? was ich (?:gesagt|gemeint) habe[!?.]*$"
     r"|^das eine[ !.]*$|^dieses[ !.]*$|^selbiges[ !.]*$", re.I)
-
-
 def pay_intent_get(sender: str, lid: str = "") -> dict | None:
     """P0: consume the pending pay intent for this sender (optionally for a
     specific listing). TTL-bounded like sessions; returns None when absent."""
@@ -2871,6 +2905,7 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
                     # R5 2026-09-24: keywords that found NOTHING are dead --
                     # never stash them (a later refine would resurrect them).
                     "q": "",
+                    "ts": time.time(),  # owner 2026-10-17: recovery guard — search newer than the booking WANT = changed mind
                     "filters": {**({"free": True} if free else {}),
                                 **{k: (float(v) if k.endswith("_price") else v) for k, v in qual.items()
                                    if k != "location_corrected"},
@@ -2904,7 +2939,8 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
     if _tod:
         _stash_fl["tod"] = _tod
     _LAST_RESULTS[sender] = listings
-    _LAST_SEARCH[sender] = {"q": " ".join(words) if words else "", "filters": _stash_fl}
+    _LAST_SEARCH[sender] = {"q": " ".join(words) if words else "", "filters": _stash_fl,
+                            "ts": time.time()}  # owner 2026-10-17: recovery guard ts
     n = len(listings)
     head = "%s %s · %d found%s" % (_G_MARK, _mb("EverList"), n, qualifier)
     tail = _book_tail(sender, listings)
@@ -3561,8 +3597,10 @@ def brain_resume_booking(hub_url: str, sender: str, who: str = ""):
     """Owner 2026-09-29 (LLM-first): deterministic executor for the brain
     resume_booking action. Truth stays here: the pending booking id comes
     from chat state, never from the LLM. Returns None when nothing is
-    pending (hallucinated action -> brain fail-opens)."""
-    pb = _pending_book_get(sender)
+    pending (hallucinated action -> brain fail-opens).
+    owner 2026-10-17: falls back to the durable WANT ledger when the one-shot
+    stash was already consumed — the LLM still gets the exact listing id."""
+    pb = _pending_book_get(sender) or _book_want_get(sender)
     if not pb:
         return None
     if who and pb.get("stage") == "need_name" and _NAME_RX.match(who):
@@ -4124,9 +4162,36 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                         or re.search(r"\b(find|search|looking|show|what|anything|something|any)\b", low)
                         or len(low.split()) > 2)
             if _NAME_RX.match(low) and not _searchy and not re.match(
-                    r"^(search|book|help|show|list|my|cancel|whoami|signup|login)\b", low):
+                    r"^(search|book|help|show|list|my|cancel|whoami|signup|login)\b", low) \
+                    and not _BOOK_AFFIRM_RX.match(low) \
+                    and not _BOOK_REFERENTIAL_RX.match(low):  # owner 2026-10-17: go-aheads never become names ('lol ok' still steers)
                 _pending_book_pop(sender)
                 return handle_text(hub_url, "book " + _pbq["lid"] + " " + low, sender=sender)
+
+    # owner 2026-10-17 (unbreakable booking thread): the one-shot stash above
+    # can be EMPTY while the durable WANT still records the exact listing the
+    # human asked for (consumed by an earlier resume, a board rewrite, or an
+    # LLM-path anomaly — the exact owner-transcript break). A booking-shaped
+    # or referential follow-up ('now book', 'go ahead', 'what i said before',
+    # 'wie gesagt') RE-RUNS that booking through the normal typed path; it
+    # must never fall through to the name-steer or a fresh literal search.
+    # Guards: the want is newer than (or equal to) the last search — a later
+    # search means the human moved on; typed commands keep their own turns;
+    # re-running 'book <lid>' is idempotent (gates re-render honestly).
+    if not _pbq:
+        _bw = _book_want_get(sender)
+        if (_bw and (_BOOK_AFFIRM_RX.match(low) or _BOOK_REFERENTIAL_RX.match(low))
+                and not re.match(r"^(book|search|show|cancel|help|my-bookings|bookings|whoami|logout"
+                                 r"|fee|more|next|all|list|signup|login|dashboard|edit|delete|archive"
+                                 r"|unarchive|notify|recover|lang|email-|verify-|set-payout)\b", low)):
+            _ls = _LAST_SEARCH.get(sender) or {}
+            if float(_bw.get("ts") or 0) >= float(_ls.get("ts") or 0) - 0.001:
+                _cmd = "book " + str(_bw.get("lid") or "")
+                if _bw.get("who"):
+                    _cmd += " " + str(_bw.get("who"))
+                if _bw.get("promo"):
+                    _cmd += " promo " + str(_bw.get("promo"))
+                return handle_text(hub_url, _cmd, sender=sender)
 
     # Owner 2026-09-29: human booking sentences from the UI CTAs — 'Please
     # book "Rooftop Jazz Night" for me' / 'Bitte "…" für mich buchen'. The
@@ -4208,6 +4273,17 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                 return _smart_search(hub_url, "search " + _restq, sender)
             return ("Nothing to book yet - tell me what you're after "
                     "('jazz tonight', 'free yoga') and I'll find it first.")
+        # owner 2026-10-17 (post-success guard): a bare affirmation after a
+        # SUCCESSFUL booking newer than the search stash must never re-book
+        # the stash top (a different event!). Explicit picks ('the free
+        # one', 'book jazz night') still pass — only pure go-aheads guard.
+        _bdone = _LAST_BOOK_DONE.get(sender)
+        if (_bdone and _BOOK_AFFIRM_RX.match(low)
+                and float(_bdone.get("ts") or 0)
+                >= float((_LAST_SEARCH.get(sender) or {}).get("ts") or 0)):
+            return (f"You're already booked for '{_bdone.get('title')}' — see your "
+                    "Bookings tab (/?view=dash). Want another spot? Say "
+                    "'book <nr>' after a fresh search.")
         # trailing 'under Maria' / 'for Maria' carries the booking name
         _mwho = re.search(r"\b(?:under|for|f(?:ü|ue)r)\s+(?!me\b|mich\b|him\b|her\b|us\b)([a-zA-Z\u00c4\u00e4\u00d6\u00f6\u00dc\u00fc\u00df' .\-]{2,40})", low)
         _who = _mwho.group(1).strip() if _mwho else ""
@@ -4292,6 +4368,8 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     if (_ns_full and _NAME_RX.match(_ns_full)
             and len(_ns_full.split()) <= 2
             and not _TOPIC_NOUN_RX.search(_ns_full)
+            and not _BOOK_AFFIRM_RX.match(_ns_full)
+            and not _BOOK_REFERENTIAL_RX.match(_ns_full)  # owner 2026-10-17: go-aheads never become names ('lol ok' still steers)
             and not re.match(r"^(search|find|show|book|cancel|help|my-bookings|bookings|more|next|all|edit|delete|archive|list|fee|whoami|dashboard|signup|login|logout|notify|recover)\b", _ns_full)  # r4 gate 2026-10-04: typed commands are not names — 'search pizza' re-run must search, not steer
             and (_LAST_RESULTS.get(sender) or [])):
         return ("Which one would you like? Say 'the first one', 'the free one', "
@@ -4361,10 +4439,12 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     # down / rate-capped / EVERLIST_LLM_FIRST=0 -> byte-identical old chat).
     # Typed commands and plain keyword searches stay instant, no LLM.
     _w0 = low.split()
+    _thread_live = bool(_pending_book_get(sender) or _book_want_get(sender))  # owner 2026-10-17
     _skip_brain = (
         "|" in text
         or re.match(r"^(book|search|show|help|cancel|signup|login|logout|login-seed|whoami|list|listings|more|next|all|fee|my-bookings|bookings|my-listings|dashboard|edit|delete|archive|unarchive|verify-|set-payout|notify|lang|email-|recover|delete-account)\b", low)
         or re.match(r"^\d[\d\s,\-]*$", low)
+        or (_thread_live and (_BOOK_AFFIRM_RX.match(low) or _BOOK_REFERENTIAL_RX.match(low)))
         or (len(_w0) <= 3
             and re.match(r"^[a-z0-9äöüß][a-z0-9äöüß \-]*$", low)
             and not re.search(r"\b(yes|no|yeah|nope|ok|okay|please|bitte|danke|dank|thanks|thx|gern|book|buchen)\b", low))
@@ -4736,6 +4816,12 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
         if status == 201:
             # W1: keep the cancel token server-side so the web dashboard can
             # offer one-click cancel without exposing tokens to the browser.
+            _LAST_BOOK_WANT.pop(sender, None)  # owner 2026-10-17: booking landed — the durable want dies with it
+            _LAST_BOOK_DONE[sender] = {"lid": str(lid), "title": str(target.get("title") or ""),
+                                       "ts": time.time()}  # …and success is stamped
+            if len(_LAST_BOOK_DONE) > _BOOK_DONE_CAP:
+                _oldest_d = min(_LAST_BOOK_DONE, key=lambda k: _LAST_BOOK_DONE[k].get("ts", 0))
+                _LAST_BOOK_DONE.pop(_oldest_d, None)
             try:
                 _s = _SESSIONS.get(sender)
                 if _s is not None and res.get("cancel_token") and res.get("id"):

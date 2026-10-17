@@ -578,6 +578,23 @@ def _site_state(chatlib, sender: str) -> str:
             "never invent one."
             % (str(pb.get("title") or "?"), str(pb.get("lid") or "?"),
                str(pb.get("stage") or "pending")))
+    else:
+        # owner 2026-10-17: the one-shot stash may be consumed while the
+        # durable WANT still holds the exact listing — surface it so an
+        # LLM 'resume_booking' action still resolves to the true id.
+        try:
+            bw = chatlib._book_want_get(sender)
+        except Exception:
+            bw = None
+        if bw:
+            blocks.append(
+                "PENDING BOOKING (chat state): the user already chose '%s' "
+                "(listing id %s); it is waiting because: %s. If the user "
+                "affirms, confirms, or refers to the thing they chose, use "
+                "action resume_booking - the listing id comes from this "
+                "block only, never invent one."
+                % (str(bw.get("title") or "?"), str(bw.get("lid") or "?"),
+                   "awaiting completion"))
     return "\n".join(blocks)
 
 
