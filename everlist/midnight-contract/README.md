@@ -14,7 +14,9 @@ Live marketplace: [everlist.network](https://everlist.network)
 | `src/escrow.compact` | Escrow contract: create (funded, exact-value shielded coin), release, refund, timeout refund, auto-release, mutual refund |
 | `src/credential.compact` | ZK personhood credential: issue / proveHolder / revoke on commitments (one-human-one-account) |
 | `src/mandate.compact` | Delegated spending mandate (2026-10-17): a human principal sets a private spending cap + allowed category (hidden commitments), agent authorizes actions by proving them inside the terms in ZK; principal-only permanent revocation | 
-| `managed/`, `managed-credential/`, `managed-mandate/` | Compiled artifacts produced by `compactc` 0.34.0 (LFDT-Minokawa/compact) incl. ZK prover/verifier keys and ZKIR |
+| `src/reputation.compact` | Agent reputation anchored to settled escrows (2026-10-17): pseudonymous commitments, issuer-walled settlement recording (hub verifies on-chain RELEASED first), ZK threshold proofs (settlements / volume / avg rating) without revealing the secret |
+| `src/milestone.compact` | Milestone escrow + dispute path (2026-10-17): deals of up to 12 milestones with a sequential funding gate (one milestone of capital locked at a time), per-deal arbiter commitment, dispute states, arbiter rulings, and permissionless liveness hatches incl. arbiter timeout |
+| `managed/`, `managed-credential/`, `managed-mandate/`, `managed-reputation/`, `managed-milestone/` | Compiled artifacts produced by `compactc` 0.34.0 (LFDT-Minokawa/compact) incl. ZK prover/verifier keys and ZKIR |
 | `test/` | Offline state-machine tests running the REAL compiled circuits against a simulated ledger (`@midnight-ntwrk/compact-runtime`) — no network, no proof server |
 | `circuit-costs-20260913.json` | Recorded per-circuit cost matrix from the native proof-server run (2026-09-13); replayed by the hub's `tools/cost_matrix.py` |
 
@@ -27,6 +29,8 @@ npx tsx --test test/escrow.test.ts              # escrow state machine: 40/40
 npx tsx --test test/credential.test.ts          # credential lifecycle: 16/16
 npx tsx --test test/mandate.test.ts             # delegated spending mandate: 18/18
 npx tsx --test test/indistinguishability.test.ts # privacy indistinguishability: 7/7
+npx tsx --test test/reputation.test.ts            # reputation from settled escrows: 22/22
+npx tsx --test test/milestone.test.ts             # milestone escrow + dispute path: 45/45
 ```
 
 The circuits executed by these tests are the same compiled artifacts in
@@ -45,6 +49,8 @@ toolchain (`compactc` 0.34.0, language 0.26):
 | `credential.compact` | Grade A | — | Grade A (clean) |
 | `escrow.compact` | **Grade C** | 1 medium: one commitment tag per holder meant all of an organizer's escrows were publicly linkable — identifying one booking identified all of them | **Grade A — 0 findings** |
 | `mandate.compact` (new, 2026-10-17) | — | — | **Grade A — 0 findings above info at birth** (scanned before first ship) |
+| `reputation.compact` (new, 2026-10-17) | — | — | **Grade A — 0 findings above info at birth** (scanned before first ship) |
+| `milestone.compact` (new, 2026-10-17) | — | — | **Grade A — 0 findings above info at birth** (scanned before first ship) |
 
 **The fix (Tell's own suggested remediation):** organizer commitments are now
 bound to the `bookingRef` — a per-booking tag instead of a per-holder tag.
@@ -124,6 +130,15 @@ cancel -> `REFUNDED`).
   and since the Tell fix, per-booking commitments: two bookings by the same
   organizer cannot be linked from public data.
 - No admin key, no upgrade path: the contract is immutable by design.
+- Reputation is deliberately PSEUDONYMOUS, not anonymous: the same tag
+  accumulates history (that is the product), but the tag is a hash of a
+  secret and cannot be tied to an address or identity. Proofs reveal
+  threshold satisfaction, never the underlying deals.
+- Milestone deals cap buyer exposure: the sequential funding gate means
+  only ONE milestone of capital is ever locked, and a dispute freezes
+  the deal instead of escalating it. The arbiter is a new trust role
+  (pilot: the hub), and arbiterTimeoutRefund bounds that trust — a
+  vanished arbiter can never freeze buyer funds forever.
 
 ## License
 

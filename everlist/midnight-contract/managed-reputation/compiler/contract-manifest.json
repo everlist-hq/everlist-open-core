@@ -1,0 +1,138 @@
+{
+  "manifest-version": "1",
+  "compiler-version": "0.34.0",
+  "language-version": "0.26.0",
+  "runtime-version": "0.19.0",
+  "compiler": {
+    "type": "directory",
+    "contract-info.json": {
+      "type": "file",
+      "size": 5621,
+      "hash": "4e2fcda50224d4a87e00c2185b531663d243fb727f6a35f142cb4b2685af23d8"
+    }
+  },
+  "contract": {
+    "type": "directory",
+    "index.d.ts": {
+      "type": "file",
+      "size": 6751,
+      "hash": "f2f68b5d3c81b1a90589071257d7964fed2fd8ff6eb1558dfb79849d85df7e41"
+    },
+    "index.js": {
+      "type": "file",
+      "size": 77660,
+      "hash": "61bb1cd45c6d9c883caa9f1a0906dbc5f6d74bda4715bc81f03474b3caa2d8b6"
+    },
+    "index.js.map": {
+      "type": "file",
+      "size": 3112,
+      "hash": "22cd814f0b3c8cdb540384e71ebeede958ab3663500dccc612dffe7b3e5c3e5b"
+    }
+  },
+  "zkir": {
+    "type": "directory",
+    "getStats.bzkir": {
+      "type": "file",
+      "size": 183,
+      "hash": "6174da185242ad34019d211dc607d6a79f7eae8ec5c4cc749c6974ec3d753f3f"
+    },
+    "getStats.zkir": {
+      "type": "file",
+      "size": 3096,
+      "hash": "5892a79a85f1c58e8316a7ae481fb70b58274addc09e78dd2d2410b9f19f3879"
+    },
+    "initializeIssuer.bzkir": {
+      "type": "file",
+      "size": 220,
+      "hash": "478108ad5c3bb5ef6486bed67c8b0bb1a11996c3e354fd5b15b598b27461a47e"
+    },
+    "initializeIssuer.zkir": {
+      "type": "file",
+      "size": 3198,
+      "hash": "291501390db22246aa8497c6c535c39d93600c38eb4757a2dbe8a5160ac9520e"
+    },
+    "proveReputation.bzkir": {
+      "type": "file",
+      "size": 284,
+      "hash": "f1761f2e46dcdf4c49a65bbbf143aa053045937d7dd2d0bbeff019e998c714a9"
+    },
+    "proveReputation.zkir": {
+      "type": "file",
+      "size": 4260,
+      "hash": "5483b97fd0ea68ae02f2f95cb375b4225b2da5f7b9f52adf92c7707e182f9bbe"
+    },
+    "recordSettlement.bzkir": {
+      "type": "file",
+      "size": 513,
+      "hash": "ab5658db292ea3d2126eff92260d4dedbb7a4bf734876cfea3efd2de9fdb973e"
+    },
+    "recordSettlement.zkir": {
+      "type": "file",
+      "size": 8489,
+      "hash": "588fdba79b89c6f5c476d8913f6f84830f8da4aebe5f98f5224eec4cbc32b3d0"
+    },
+    "registerAgent.bzkir": {
+      "type": "file",
+      "size": 254,
+      "hash": "aedb6ae925b1fbb00902adac4a84e466af88351206f69cf9b64e7b182adf393f"
+    },
+    "registerAgent.zkir": {
+      "type": "file",
+      "size": 3841,
+      "hash": "f3438fdd2918905734cc9a2606cd7bb2173888c632e06aace88ee619d693be25"
+    }
+  },
+  "keys": {
+    "type": "directory",
+    "getStats.prover": {
+      "type": "file",
+      "size": 146991,
+      "hash": "57ef99cd234b8e226ea4da25497cd52a25eadd25fb80b0dab92179e7b1530c60"
+    },
+    "getStats.verifier": {
+      "type": "file",
+      "size": 1351,
+      "hash": "3e38abd31417cc2b58ee4f594ff088e2119e605444bc15f9a46684017a74a898"
+    },
+    "initializeIssuer.prover": {
+      "type": "file",
+      "size": 2820210,
+      "hash": "74c3b940bc8604e147dc8c3167f877e40568ee561f171957f0c88d0b5c20e643"
+    },
+    "initializeIssuer.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "3f8e5f964e509e148ddb43558bdf5b271ef14273b2b68f14e43e9a8818b3feb7"
+    },
+    "proveReputation.prover": {
+      "type": "file",
+      "size": 2820959,
+      "hash": "c57c97aee4dc59000025fa2a79aa25f1a94cf279e74b274c26fdf55292748efb"
+    },
+    "proveReputation.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "e88cd51ce7df8ca2d6ab64cbeedf212ab09bc4775b0f31fd5323c053aebce799"
+    },
+    "recordSettlement.prover": {
+      "type": "file",
+      "size": 2824045,
+      "hash": "ed02aad3c090e1be7cda34b6e772b9e5223d285303e679d72d686dd7cc5687c1"
+    },
+    "recordSettlement.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "02a0c2938b9d50651997e391cec6c7ce5603daadcdf805956c3a8ddeeeafa97c"
+    },
+    "registerAgent.prover": {
+      "type": "file",
+      "size": 2820486,
+      "hash": "02c92e37b23ed1561509ac1ed897273f6917bab90874fa624ae55463d7e7bff5"
+    },
+    "registerAgent.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "b265e166844d770ccb061aaf6b087e22746cb72aad6145566b8e26c633a18e51"
+    }
+  }
+}

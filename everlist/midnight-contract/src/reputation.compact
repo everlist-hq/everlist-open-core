@@ -1,0 +1,173 @@
+/**
+ * EverList Agent Reputation — anchored to settled escrows (techmining
+ * P1 #2, NightJar pattern, 2026-10-17).
+ *
+ * Agents earn reputation ONLY through real settled escrows (no
+ * self-report). The hub records settlements after verifying on-chain
+ * RELEASED state (M6/M7 indexer + M7 sync). Agents prove thresholds
+ * ("50+ settlements, EUR 10k+ volume, 4.5+ average rating") in ZK
+ * without revealing the secret behind their pseudonym.
+ *
+ * Design:
+ *   initializeIssuer()  — the hub (first caller) becomes THE settlement
+ *                         recorder, singleton at map key 0, permanent
+ *   registerAgent()     — agent anchors their pseudonym commitment;
+ *                         witness-walled (only the secret holder can
+ *                         register it — no front-running griefing)
+ *   recordSettlement()  — hub records: count +1, volume +=, rating
+ *                         recorded; the hub has ALREADY verified the
+ *                         escrow was RELEASED before calling
+ *   proveReputation()   — the agent's ZK ACT: proves their pseudonym's
+ *                         stats meet public thresholds (count, volume,
+ *                         avg rating) via witness -> hash -> assert
+ *   getStats()          — public read helper (stats per pseudonym)
+ *
+ * Privacy model (honest):
+ *   - The commitment is a PSEUDONYM: linkable across settlements but not
+ *     to a real-world identity (it is H(prefix || sk) — per-AGENT, not
+ *     per-booking, because the POINT is cumulative reputation).
+ *   - Stats (count, volume, ratingSum/ratingCount) are PUBLIC per
+ *     pseudonym — that IS the product: verifiable reputation.
+ *   - The agent's IDENTITY stays private: proveReputation reveals only
+ *     that the thresholds are met, never the secret.
+ *   - Honest bound: the hub is the settlement recorder in the pilot (one
+ *     trusted oracle — the same pilot pattern as the credential issuer);
+ *     future work anchors recording to the escrow contract itself
+ *     (cross-contract calls when Compact supports them).
+ *   - Vacuous-threshold note: a zero-history agent passes any RATING
+ *     threshold vacuously (0*10 >= X*0); demand minSettlements >= 1 to
+ *     make the rating check meaningful — enforced below.
+ *
+ * Language: Compact 0.26 (compiler 0.34.0)
+ */
+
+pragma language_version 0.26;
+
+import CompactStandardLibrary;
+
+struct Reputation {
+  settledCount: Uint<64>,
+  totalVolume: Uint<128>,
+  ratingSum: Uint<64>,
+  ratingCount: Uint<64>
+}
+
+export ledger issuer: Map<Uint<64>, Bytes<32>>;      // key 0 = issuer commitment (singleton)
+export ledger reputation: Map<Bytes<32>, Reputation>; // agent pseudonym -> stats
+export ledger settlementCount: Counter;              // global settlement counter (audit)
+
+witness agentSecretKey(): Bytes<32>;   // the agent's pseudonym secret
+witness issuerSecretKey(): Bytes<32>;  // the hub's recording authority
+
+/** Agent pseudonym commitment. sk never leaves the agent's machine. */
+export circuit agentReputationCommitment(sk: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "everlist:reputation:agent:"), sk]);
+}
+
+/** Hub issuer commitment. sk never leaves the hub. */
+export circuit issuerCommitment(sk: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "everlist:reputation:issuer:"), sk]);
+}
+
+/**
+ * First caller becomes THE settlement recorder. Singleton at key 0:
+ * a second call (by anyone, including an attacker) is rejected forever.
+ */
+export circuit initializeIssuer(): [] {
+  assert(!issuer.member(0), "issuer already initialized");
+  issuer.insert(0, disclose(issuerCommitment(issuerSecretKey())));
+}
+
+/**
+ * Agent registers their pseudonym. Witness-walled: the caller must prove
+ * knowledge of the secret behind the commitment they are registering —
+ * an attacker cannot register someone else's commitment (front-running
+ * a published commitment fails the wall). A fresh secret = a fresh
+ * identity with zero reputation.
+ */
+export circuit registerAgent(agentComm: Bytes<32>): [] {
+  const mine = agentReputationCommitment(agentSecretKey());
+  assert(mine == agentComm, "only the secret holder can register this commitment");
+  assert(!reputation.member(disclose(agentComm)), "agent already registered");
+  reputation.insert(disclose(agentComm), Reputation {
+    settledCount: 0,
+    totalVolume: 0,
+    ratingSum: 0,
+    ratingCount: 0
+  });
+}
+
+/**
+ * Hub records a settlement against an agent's pseudonym. Issuer-walled
+ * (witness -> hash -> assert against the singleton). The hub has
+ * ALREADY verified the escrow was RELEASED on-chain before calling —
+ * that verification is the trust anchor. Rating: 1-5 enforced.
+ */
+export circuit recordSettlement(
+  agentComm: Bytes<32>,
+  volume: Uint<128>,
+  rating: Uint<8>
+): [] {
+  assert(issuer.member(0), "issuer not initialized");
+  const caller = issuerCommitment(issuerSecretKey());
+  assert(caller == issuer.lookup(0), "only the issuer can record settlements");
+
+  assert(volume > 0, "volume must be positive");
+  assert(rating >= 1, "rating must be at least 1");
+  assert(rating <= 5, "rating must be at most 5");
+
+  const key = disclose(agentComm);
+  assert(reputation.member(key), "agent not registered");
+  const rep = reputation.lookup(key);
+
+  reputation.insert(key, Reputation {
+    settledCount: disclose((rep.settledCount + 1) as Uint<64>),
+    totalVolume: disclose((rep.totalVolume + volume) as Uint<128>),
+    ratingSum: disclose((rep.ratingSum + (rating as Uint<64>)) as Uint<64>),
+    ratingCount: disclose((rep.ratingCount + 1) as Uint<64>)
+  });
+
+  settlementCount.increment(1);
+}
+
+/**
+ * The agent's ZK PROOF ACT: proves their pseudonym's stats meet ALL
+ * three thresholds without revealing the secret. Thresholds are PUBLIC
+ * circuit inputs (the verifier — e.g. a prospective organizer — chooses
+ * what bar to demand).
+ *
+ *   minSettlements  — prove at least this many settled escrows (>= 1
+ *                     enforced: the rating check is only meaningful with
+ *                     history; a zero-history agent must not pass)
+ *   minVolume       — prove at least this much total settled volume
+ *   minAvgRatingX10 — prove average rating >= this (times 10: 45 = 4.5).
+ *                     In-circuit division avoided via cross-multiplication:
+ *                     ratingSum * 10 >= minAvgRatingX10 * ratingCount
+ */
+export circuit proveReputation(
+  minSettlements: Uint<64>,
+  minVolume: Uint<128>,
+  minAvgRatingX10: Uint<64>
+): [] {
+  assert(minSettlements >= 1, "must demand at least one settlement (rating check is vacuous at zero)");
+
+  const comm = agentReputationCommitment(agentSecretKey());
+  const key = disclose(comm); // the pseudonym commitment is public BY DESIGN (it is the map key — same disclose pattern as escrow's stored commitments; the SECRET never leaves the agent)
+  assert(reputation.member(key), "agent not registered");
+  const rep = reputation.lookup(key);
+
+  assert(rep.settledCount >= minSettlements, "insufficient settlements");
+  assert(rep.totalVolume >= minVolume, "insufficient volume");
+
+  // average rating check WITHOUT division:
+  //   ratingSum / ratingCount >= minAvgRatingX10 / 10
+  // <=> ratingSum * 10 >= minAvgRatingX10 * ratingCount
+  assert((rep.ratingSum * 10) >= (minAvgRatingX10 * rep.ratingCount), "insufficient average rating");
+}
+
+/** Public read helper: fetch a pseudonym's stats (hub/UI polls). */
+export circuit getStats(agentComm: Bytes<32>): Reputation {
+  const key = disclose(agentComm);
+  assert(reputation.member(key), "agent not registered");
+  return reputation.lookup(key);
+}

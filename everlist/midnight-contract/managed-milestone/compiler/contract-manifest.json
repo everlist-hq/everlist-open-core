@@ -1,0 +1,258 @@
+{
+  "manifest-version": "1",
+  "compiler-version": "0.34.0",
+  "language-version": "0.26.0",
+  "runtime-version": "0.19.0",
+  "compiler": {
+    "type": "directory",
+    "contract-info.json": {
+      "type": "file",
+      "size": 21082,
+      "hash": "7a5842beac91b5a7c79601833edaca0f71a3e8ca415be26b906dd2adb69586d1"
+    }
+  },
+  "contract": {
+    "type": "directory",
+    "index.d.ts": {
+      "type": "file",
+      "size": 16372,
+      "hash": "c1de8a24501eb6935a6403234e94793e99685e1a1aa4896a719b491c656c9775"
+    },
+    "index.js": {
+      "type": "file",
+      "size": 180911,
+      "hash": "18ebfa10823cad1e22843fcc9cde46f88fd86721e9e5c136c572438c2f18d329"
+    },
+    "index.js.map": {
+      "type": "file",
+      "size": 10407,
+      "hash": "4ecbd5507214f27bfbd90cbd8e775cc2d2c4f32b2ccee4355436f3e5e5246ccd"
+    }
+  },
+  "zkir": {
+    "type": "directory",
+    "agentOpenDispute.bzkir": {
+      "type": "file",
+      "size": 667,
+      "hash": "721d260b73ef51741ad420e2127f7bfecafad09f43a5d664bf80b1bcd15306cf"
+    },
+    "agentOpenDispute.zkir": {
+      "type": "file",
+      "size": 12135,
+      "hash": "f468c8695945a899fbbcafe30e11057d411061c2659b4d02eb7d4bc9187dcdd4"
+    },
+    "arbiterRefund.bzkir": {
+      "type": "file",
+      "size": 1428,
+      "hash": "206120e6c16124183039220349df537986e2d8541bbbe3941359fd939b43cd15"
+    },
+    "arbiterRefund.zkir": {
+      "type": "file",
+      "size": 21420,
+      "hash": "b5e672045f9850538a2782f9fba06359274f36dfb31f33b00b9461e12a2c7667"
+    },
+    "arbiterRelease.bzkir": {
+      "type": "file",
+      "size": 1433,
+      "hash": "d75139a901a1f02f6c7a9d5b1441525292e462c6d5467de59d7aed19c4a9946e"
+    },
+    "arbiterRelease.zkir": {
+      "type": "file",
+      "size": 21460,
+      "hash": "7c7e9c72ab8e6856870ed4521fd0d5e01b24300a25992ab28c9f3cd900b19a8e"
+    },
+    "arbiterTimeoutRefund.bzkir": {
+      "type": "file",
+      "size": 1414,
+      "hash": "091b723e5079c3325ae42dd24346b3114362d73f74cb929cd0a2186d7f8541e4"
+    },
+    "arbiterTimeoutRefund.zkir": {
+      "type": "file",
+      "size": 21696,
+      "hash": "ed77bbac3f6ac546a7c69900076af93c9ed95c33411cc64c6ad2e45c998fa1d2"
+    },
+    "autoRelease.bzkir": {
+      "type": "file",
+      "size": 1416,
+      "hash": "cfc2cc1da8c32fc58fe49be27f87ecfb6bac5494a026c2104910a020a535a592"
+    },
+    "autoRelease.zkir": {
+      "type": "file",
+      "size": 21735,
+      "hash": "324d41ebf777baa722ef4aeec41b37a800ffb941f92beaf927066a8d275373c6"
+    },
+    "createDeal.bzkir": {
+      "type": "file",
+      "size": 332,
+      "hash": "25d99972535ed0b3781c827114b85a2b2796a0691d2474ea5037a599cc786d54"
+    },
+    "createDeal.zkir": {
+      "type": "file",
+      "size": 5326,
+      "hash": "3fcaca8062e31b03b98e83577fe686f3d871fb7f419aaa7fbec443c5d1516119"
+    },
+    "createMilestone.bzkir": {
+      "type": "file",
+      "size": 996,
+      "hash": "788906ddf49ed68ba9706a9aeb91abe5436a05cbc092066f377fd2a4d4551651"
+    },
+    "createMilestone.zkir": {
+      "type": "file",
+      "size": 15800,
+      "hash": "81b85d4b5d912262e32aac9950ac0cd85873266713e5f1c5146a0cac65cfafb8"
+    },
+    "organizerOpenDispute.bzkir": {
+      "type": "file",
+      "size": 671,
+      "hash": "f959b6d67dfa98d023239e1749a078077f0670e0721ca67c82851aaf9674b9fc"
+    },
+    "organizerOpenDispute.zkir": {
+      "type": "file",
+      "size": 12143,
+      "hash": "8ab7a97da24003e67749ffbabe1e3112113c10f4c708ba4bb8bb9a32b4fc0bc0"
+    },
+    "refundMilestone.bzkir": {
+      "type": "file",
+      "size": 1489,
+      "hash": "b552feda2eb4dba87d28ff2d13279bd4768fbba0ee0be652cbd0643d6fe35ef8"
+    },
+    "refundMilestone.zkir": {
+      "type": "file",
+      "size": 22465,
+      "hash": "2809022ee4104da63bba11e5195cd33876c14a6519cf302bca2482f53afa7e43"
+    },
+    "releaseMilestone.bzkir": {
+      "type": "file",
+      "size": 1435,
+      "hash": "fd095a4cf1dff75afd7de1d6776f6cf905c6498830848981b20e0c21df81d65c"
+    },
+    "releaseMilestone.zkir": {
+      "type": "file",
+      "size": 21464,
+      "hash": "973cd75db10304163a3fbb19b77ed3e0b466dce5f64929c5ee57b5a9782e3347"
+    },
+    "timeoutRefund.bzkir": {
+      "type": "file",
+      "size": 1416,
+      "hash": "aa1fd206a4f9835e55764093c8a8adac445983a1f238e076ab0c7cbb2e4eb724"
+    },
+    "timeoutRefund.zkir": {
+      "type": "file",
+      "size": 21735,
+      "hash": "402a87906ffad0ea88c90d8d809e25fc7d80c4ac0ea619707364dedb2a7880f9"
+    }
+  },
+  "keys": {
+    "type": "directory",
+    "agentOpenDispute.prover": {
+      "type": "file",
+      "size": 2820821,
+      "hash": "9df4e846844fe83564379f63c76a877ae04c9a34cb36330c25a91001a67caaf7"
+    },
+    "agentOpenDispute.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "71d94f89b266a60355a7b9867e4c59d464394a03efd3bb9abc32711e15fd4891"
+    },
+    "arbiterRefund.prover": {
+      "type": "file",
+      "size": 10000719,
+      "hash": "d5444a1e0ee3120b39b01ebf9a9bf1c06b05dcdf555559f3a09f8e7b3741ffd7"
+    },
+    "arbiterRefund.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "b0e41eac33e47bd49845dbeaff017b4a858dcc7ff7fcde7fb865a1ee58889a0d"
+    },
+    "arbiterRelease.prover": {
+      "type": "file",
+      "size": 10000719,
+      "hash": "65f1ebbc3329efea1c0ee00fc03385383e8d267d2cb258e9bce67e5437226112"
+    },
+    "arbiterRelease.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "08aba0edec52ece680003cc22993eb8fd9e0f959c33f6b8f6d81ffa90249d94c"
+    },
+    "arbiterTimeoutRefund.prover": {
+      "type": "file",
+      "size": 9994103,
+      "hash": "eb3a091b26d8f71836a9b58554a5a4ecd1405fd387874bbdeea7574a2ae2afd3"
+    },
+    "arbiterTimeoutRefund.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "bc6649406e02cf9a20d97a41e83937fb4c82b61161c231e4623d32e450ddd1c7"
+    },
+    "autoRelease.prover": {
+      "type": "file",
+      "size": 9994133,
+      "hash": "5fb5399f272b67ac6092ce920bd8b785e27ccd213d5d558029f3950eeb55d1de"
+    },
+    "autoRelease.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "06609230f785e750432111a08313ea29d9acfcd9c345bdb7a6dc7de42a9484f0"
+    },
+    "createDeal.prover": {
+      "type": "file",
+      "size": 2821635,
+      "hash": "55c17e6aee29c64a76ea6f897a716863112f68456380957248beee629183809c"
+    },
+    "createDeal.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "c0d1fd70bf68e264d2558a449483d4a887ed212aa8d9bd2cab644cc8f2ad4933"
+    },
+    "createMilestone.prover": {
+      "type": "file",
+      "size": 5208392,
+      "hash": "a35cd897a4774f862318631fc59391d1cab39283fe97f8a21ecbfe978eac9cf6"
+    },
+    "createMilestone.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "cd6504ca9476a22e5aad8ab4147cfd55e08de2375e4f918275b986b72d77f8d4"
+    },
+    "organizerOpenDispute.prover": {
+      "type": "file",
+      "size": 2820820,
+      "hash": "8f59b1720ecd0abd8fefa1d01a358f4f34d7d3dcc550590be1e1ed838cb4cea3"
+    },
+    "organizerOpenDispute.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "b457c7862f66d5e92070f84ce81f38c5556eea9bd85a6570e39e467de8e5d683"
+    },
+    "refundMilestone.prover": {
+      "type": "file",
+      "size": 10000763,
+      "hash": "244cfaa4edaaddd4327b29b8d96da3679ffe6b91649be462a8c4d8e59b395af0"
+    },
+    "refundMilestone.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "a323109c9f19aa430b23f4c548200e6cc04065e98abb8e3bee2023ab4847cd28"
+    },
+    "releaseMilestone.prover": {
+      "type": "file",
+      "size": 10000727,
+      "hash": "f18fc6b0b2545e2bbb3a5f6ce005c6bf7d892ced00c24016e4a14e84b6f472dc"
+    },
+    "releaseMilestone.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "1ec03ee4dfb7d8375eaab425ef28d6d5f596ad52c2a314f838f81344b80339b7"
+    },
+    "timeoutRefund.prover": {
+      "type": "file",
+      "size": 9994112,
+      "hash": "e614a1af15fa749e79a0d114fee7dc9f96b3b5b0d6ae36ca808906bc2b518f4f"
+    },
+    "timeoutRefund.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "69071543a14e26c3eb6d19d06352260db46c3517ace07f5f6fb42788b6ba49d1"
+    }
+  }
+}

@@ -1,0 +1,453 @@
+/**
+ * EverList Milestone Escrow — multi-day jobs + dispute path
+ * (techmining P1 #3 + P2 #5, zkEscrow + Milo pattern, 2026-10-17).
+ *
+ * A DEAL is a job split into up to 12 milestones. Each milestone is its
+ * own mini-escrow with its own custody coin (exact-value deposit, same
+ * M3 pattern as escrow.compact — no change-coin tracking needed).
+ *
+ * Milestone states (finals are contiguous: >= 3):
+ *   1 HELD         funded, waiting
+ *   2 DISPUTED     frozen, waiting for the arbiter
+ *   3 RELEASED     final — organizer confirmed, organizer paid
+ *   4 REFUNDED     final — agent cancelled, agent paid
+ *   5 ARB_RELEASED final — arbiter ruled for the organizer
+ *   6 ARB_REFUNDED final — arbiter ruled for the agent
+ *
+ * SEQUENTIAL FUNDING GATE (the agent-exposure cap): milestone N+1 can
+ * only be funded after milestone N is final. The agent never has more
+ * than ONE milestone of capital locked in the deal. A DISPUTED
+ * milestone (2) is NOT final — a dispute freezes the whole deal.
+ *
+ * Dispute path (P2 #5):
+ *   agentOpenDispute / organizerOpenDispute   HELD -> DISPUTED
+ *   arbiterRelease / arbiterRefund             DISPUTED -> 5 / 6
+ * The arbiter commitment is fixed at deal creation (per-deal tag,
+ * same W2 privacy binding as the parties). While DISPUTED, release/
+ * refund/timeout/autoRelease are all blocked — only the arbiter moves
+ * the money, or the arbiter-timeout hatch (below).
+ *
+ * Liveness (never weaker than escrow.compact):
+ *   timeoutRefund      anyone, HELD, after deadline        -> agent
+ *   autoRelease        anyone, HELD, after claimDeadline   -> organizer
+ *   arbiterTimeoutRefund anyone, DISPUTED, after arbiterDeadline -> agent
+ * The arbiterDeadline hatch means a vanished arbiter can never freeze
+ * agent funds forever (money defaults back to the buyer; the
+ * organizer's remedy is a timely ruling — the same honest operational
+ * assumption escrow already makes with its deadlines).
+ *
+ * Parties act via per-DEAL commitments (persistentHash of secret +
+ * dealRef — the W2 Tell fix pattern): no address ever appears, and one
+ * holder's deals do not line up on the public ledger.
+ *
+ * Honest bounds: the arbiter is a NEW trust role, chosen per deal at
+ * creation (pilot: the hub). Milestone custody coins are exact-value —
+ * partial spends with change are left to a future increment ( indexer-
+ * assisted) rather than risk in-circuit change-coin tracking.
+ *
+ * Language: Compact 0.26 (compiler 0.34.0)
+ */
+
+pragma language_version 0.26;
+
+import CompactStandardLibrary;
+
+struct Milestone {
+  amount: Uint<128>,
+  state: Uint<8>,
+  deadline: Uint<64>,
+  claimDeadline: Uint<64>,
+  coinNonce: Bytes<32>,
+  coinColor: Bytes<32>
+}
+
+struct Deal {
+  dealRef: Bytes<32>,
+  agentCommitment: Bytes<32>,
+  organizerCommitment: Bytes<32>,
+  arbiterCommitment: Bytes<32>,
+  count: Uint<8>,      // planned milestones (1..12)
+  created: Uint<8>,    // milestones already funded (0..count)
+  arbiterDeadline: Uint<64>,
+  agentPk: ZswapCoinPublicKey,
+  organizerPk: ZswapCoinPublicKey
+}
+
+export ledger deals: Map<Uint<64>, Deal>;
+export ledger milestones: Map<Uint<64>, Milestone>; // key = dealId * 100 + idx
+export ledger nextDealId: Counter;
+
+witness agentSecretKey(): Bytes<32>;
+witness organizerSecretKey(): Bytes<32>;
+witness arbiterSecretKey(): Bytes<32>;
+
+/** Agent (buyer) commitment, bound to the deal — sk never leaves the machine. */
+export circuit agentCommitment(sk: Bytes<32>, dealRef: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<3, Bytes<32>>>([pad(32, "everlist:milestone:agent:"), sk, dealRef]);
+}
+
+/** Organizer (seller) commitment, bound to the deal. */
+export circuit organizerCommitment(sk: Bytes<32>, dealRef: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<3, Bytes<32>>>([pad(32, "everlist:milestone:organizer:"), sk, dealRef]);
+}
+
+/** Arbiter commitment, bound to the deal. */
+export circuit arbiterCommitment(sk: Bytes<32>, dealRef: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<3, Bytes<32>>>([pad(32, "everlist:milestone:arbiter:"), sk, dealRef]);
+}
+
+/** Flat milestone map key: dealId * 100 + idx (idx < 12 < 100). */
+export circuit milestoneKey(dealId: Uint<64>, idx: Uint<8>): Uint<64> {
+  // dealId * 100 + idx: flat, collision-free while idx < 100 (idx < 12).
+  // Explicit as-cast: the multiplication widens the inferred range past
+  // 64 bits; deal ids are tiny in practice (Counter increments), so the
+  // cast cannot truncate real keys.
+  return (dealId * 100 + (idx as Uint<64>)) as Uint<64>;
+}
+
+/**
+ * Agent opens a deal: fixes the parties, the arbiter, the milestone
+ * count and the arbiter deadline. No money moves yet — milestones are
+ * funded one at a time by createMilestone (sequential gate).
+ */
+export circuit createDeal(
+  dealRef: Bytes<32>,
+  count: Uint<8>,
+  organizerCommitmentInput: Bytes<32>,
+  arbiterCommitmentInput: Bytes<32>,
+  arbiterDeadline: Uint<64>,
+  agentPk: ZswapCoinPublicKey,
+  organizerPk: ZswapCoinPublicKey
+): [] {
+  assert(count >= 1, "deal needs at least one milestone");
+  assert(count <= 12, "deal allows at most 12 milestones");
+
+  nextDealId.increment(1);
+  const did = disclose(nextDealId.read() as Uint<64>);
+  const aComm = agentCommitment(agentSecretKey(), dealRef);
+
+  deals.insert(did, Deal {
+    dealRef: disclose(dealRef),
+    agentCommitment: disclose(aComm),
+    organizerCommitment: disclose(organizerCommitmentInput),
+    arbiterCommitment: disclose(arbiterCommitmentInput),
+    count: disclose(count),
+    created: 0,
+    arbiterDeadline: disclose(arbiterDeadline),
+    agentPk: disclose(agentPk),
+    organizerPk: disclose(organizerPk)
+  });
+}
+
+/**
+ * Agent funds the NEXT milestone (idx = created). Sequential gate:
+ * milestone idx-1 must be final (state >= 3) — a HELD or DISPUTED
+ * previous milestone blocks funding. The deposit must equal the
+ * milestone amount exactly (M3 exact-value custody).
+ */
+export circuit createMilestone(
+  dealId: Uint<64>,
+  amount: Uint<128>,
+  deadline: Uint<64>,
+  claimDeadline: Uint<64>,
+  deposit: ShieldedCoinInfo
+): [] {
+  const did = disclose(dealId);
+  assert(deals.member(did), "deal not found");
+  const d = deals.lookup(did);
+
+  const caller = agentCommitment(agentSecretKey(), d.dealRef);
+  assert(caller == d.agentCommitment, "only agent can fund milestones");
+
+  assert(amount > 0, "amount must be positive");
+  assert(deposit.value == amount, "deposit must equal milestone amount");
+  assert(claimDeadline > deadline, "claim deadline must be after refund deadline");
+
+  const idx = d.created;
+  assert(idx < d.count, "all milestones already funded");
+  if (idx > 0) {
+    const prev = milestones.lookup(disclose(milestoneKey(dealId, (idx - 1) as Uint<8>)));
+    assert(prev.state >= 3, "previous milestone not settled (held or disputed)");
+  }
+
+  receiveShielded(disclose(deposit));
+
+  milestones.insert(disclose(milestoneKey(dealId, idx)), Milestone {
+    amount: disclose(amount),
+    state: 1, // HELD
+    deadline: disclose(deadline),
+    claimDeadline: disclose(claimDeadline),
+    coinNonce: disclose(deposit.nonce),
+    coinColor: disclose(deposit.color)
+  });
+
+  deals.insert(did, Deal {
+    dealRef: d.dealRef,
+    agentCommitment: d.agentCommitment,
+    organizerCommitment: d.organizerCommitment,
+    arbiterCommitment: d.arbiterCommitment,
+    count: d.count,
+    created: disclose((d.created + 1) as Uint<8>),
+    arbiterDeadline: d.arbiterDeadline,
+    agentPk: d.agentPk,
+    organizerPk: d.organizerPk
+  });
+}
+
+/**
+ * Read the current milestone record (helper used by every transition).
+ */
+circuit current(dealId: Uint<64>, idx: Uint<8>): Milestone {
+  const did = disclose(dealId);
+  assert(deals.member(did), "deal not found");
+  const d = deals.lookup(did);
+  assert(idx < d.created, "milestone not funded yet");
+  assert(milestones.member(disclose(milestoneKey(dealId, idx))), "milestone not found");
+  return milestones.lookup(disclose(milestoneKey(dealId, idx)));
+}
+
+/**
+ * Organizer confirms the work for milestone idx: custody coin pays the
+ * organizer's stored key. Only the organizer, only while HELD.
+ */
+export circuit releaseMilestone(dealId: Uint<64>, idx: Uint<8>, spendCoin: QualifiedShieldedCoinInfo): [] {
+  const m = current(dealId, idx);
+  assert(m.state == 1, "milestone not in HELD state");
+  const d = deals.lookup(disclose(dealId));
+  const caller = organizerCommitment(organizerSecretKey(), d.dealRef);
+  assert(caller == d.organizerCommitment, "only organizer can release");
+  assert(spendCoin.nonce == m.coinNonce, "coin does not match custody");
+  assert(spendCoin.color == m.coinColor, "coin does not match custody");
+  assert(spendCoin.value == m.amount, "coin does not match custody");
+
+  sendShielded(
+    disclose(spendCoin),
+    left<ZswapCoinPublicKey, ContractAddress>(d.organizerPk),
+    m.amount
+  );
+
+  milestones.insert(disclose(milestoneKey(dealId, idx)), Milestone {
+    amount: m.amount,
+    state: 3, // RELEASED (final)
+    deadline: m.deadline,
+    claimDeadline: m.claimDeadline,
+    coinNonce: m.coinNonce,
+    coinColor: m.coinColor
+  });
+}
+
+/**
+ * Agent cancels milestone idx: custody coin returns to the agent's
+ * stored key. Only the agent, only while HELD, only before the claim
+ * deadline (after that the organizer's auto-release applies).
+ */
+export circuit refundMilestone(dealId: Uint<64>, idx: Uint<8>, spendCoin: QualifiedShieldedCoinInfo): [] {
+  const m = current(dealId, idx);
+  assert(m.state == 1, "milestone not in HELD state");
+  const d = deals.lookup(disclose(dealId));
+  const caller = agentCommitment(agentSecretKey(), d.dealRef);
+  assert(caller == d.agentCommitment, "only agent can refund");
+  assert(!(blockTimeGte(m.claimDeadline)), "claim deadline passed - organizer auto-release applies");
+  assert(spendCoin.nonce == m.coinNonce, "coin does not match custody");
+  assert(spendCoin.color == m.coinColor, "coin does not match custody");
+  assert(spendCoin.value == m.amount, "coin does not match custody");
+
+  sendShielded(
+    disclose(spendCoin),
+    left<ZswapCoinPublicKey, ContractAddress>(d.agentPk),
+    m.amount
+  );
+
+  milestones.insert(disclose(milestoneKey(dealId, idx)), Milestone {
+    amount: m.amount,
+    state: 4, // REFUNDED (final)
+    deadline: m.deadline,
+    claimDeadline: m.claimDeadline,
+    coinNonce: m.coinNonce,
+    coinColor: m.coinColor
+  });
+}
+
+/**
+ * Permissionless timeout refund: after the milestone deadline ANYONE
+ * can return the deposit — to the AGENT'S stored key (liveness).
+ */
+export circuit timeoutRefund(dealId: Uint<64>, idx: Uint<8>, spendCoin: QualifiedShieldedCoinInfo): [] {
+  const m = current(dealId, idx);
+  assert(m.state == 1, "milestone not in HELD state");
+  assert(blockTimeGte(m.deadline), "refund deadline not yet passed");
+  const d = deals.lookup(disclose(dealId));
+  assert(spendCoin.nonce == m.coinNonce, "coin does not match custody");
+  assert(spendCoin.color == m.coinColor, "coin does not match custody");
+  assert(spendCoin.value == m.amount, "coin does not match custody");
+
+  sendShielded(
+    disclose(spendCoin),
+    left<ZswapCoinPublicKey, ContractAddress>(d.agentPk),
+    m.amount
+  );
+
+  milestones.insert(disclose(milestoneKey(dealId, idx)), Milestone {
+    amount: m.amount,
+    state: 4, // REFUNDED (final)
+    deadline: m.deadline,
+    claimDeadline: m.claimDeadline,
+    coinNonce: m.coinNonce,
+    coinColor: m.coinColor
+  });
+}
+
+/**
+ * Permissionless auto-release (M17 pattern): after the claim deadline
+ * with no refund claim, ANYONE can pay the organizer's stored key.
+ */
+export circuit autoRelease(dealId: Uint<64>, idx: Uint<8>, spendCoin: QualifiedShieldedCoinInfo): [] {
+  const m = current(dealId, idx);
+  assert(m.state == 1, "milestone not in HELD state");
+  assert(blockTimeGte(m.claimDeadline), "claim deadline not yet passed");
+  const d = deals.lookup(disclose(dealId));
+  assert(spendCoin.nonce == m.coinNonce, "coin does not match custody");
+  assert(spendCoin.color == m.coinColor, "coin does not match custody");
+  assert(spendCoin.value == m.amount, "coin does not match custody");
+
+  sendShielded(
+    disclose(spendCoin),
+    left<ZswapCoinPublicKey, ContractAddress>(d.organizerPk),
+    m.amount
+  );
+
+  milestones.insert(disclose(milestoneKey(dealId, idx)), Milestone {
+    amount: m.amount,
+    state: 3, // RELEASED (final)
+    deadline: m.deadline,
+    claimDeadline: m.claimDeadline,
+    coinNonce: m.coinNonce,
+    coinColor: m.coinColor
+  });
+}
+
+/** Agent freezes milestone idx for arbitration (HELD -> DISPUTED). */
+export circuit agentOpenDispute(dealId: Uint<64>, idx: Uint<8>): [] {
+  const m = current(dealId, idx);
+  assert(m.state == 1, "milestone not in HELD state");
+  const d = deals.lookup(disclose(dealId));
+  const caller = agentCommitment(agentSecretKey(), d.dealRef);
+  assert(caller == d.agentCommitment, "only agent can open this dispute");
+
+  milestones.insert(disclose(milestoneKey(dealId, idx)), Milestone {
+    amount: m.amount,
+    state: 2, // DISPUTED
+    deadline: m.deadline,
+    claimDeadline: m.claimDeadline,
+    coinNonce: m.coinNonce,
+    coinColor: m.coinColor
+  });
+}
+
+/** Organizer freezes milestone idx for arbitration (HELD -> DISPUTED). */
+export circuit organizerOpenDispute(dealId: Uint<64>, idx: Uint<8>): [] {
+  const m = current(dealId, idx);
+  assert(m.state == 1, "milestone not in HELD state");
+  const d = deals.lookup(disclose(dealId));
+  const caller = organizerCommitment(organizerSecretKey(), d.dealRef);
+  assert(caller == d.organizerCommitment, "only organizer can open this dispute");
+
+  milestones.insert(disclose(milestoneKey(dealId, idx)), Milestone {
+    amount: m.amount,
+    state: 2, // DISPUTED
+    deadline: m.deadline,
+    claimDeadline: m.claimDeadline,
+    coinNonce: m.coinNonce,
+    coinColor: m.coinColor
+  });
+}
+
+/**
+ * Arbiter rules for the organizer (DISPUTED -> ARB_RELEASED): the
+ * custody coin pays the organizer's stored key. Only the arbiter.
+ */
+export circuit arbiterRelease(dealId: Uint<64>, idx: Uint<8>, spendCoin: QualifiedShieldedCoinInfo): [] {
+  const m = current(dealId, idx);
+  assert(m.state == 2, "milestone not in DISPUTED state");
+  const d = deals.lookup(disclose(dealId));
+  const caller = arbiterCommitment(arbiterSecretKey(), d.dealRef);
+  assert(caller == d.arbiterCommitment, "only arbiter can rule");
+  assert(spendCoin.nonce == m.coinNonce, "coin does not match custody");
+  assert(spendCoin.color == m.coinColor, "coin does not match custody");
+  assert(spendCoin.value == m.amount, "coin does not match custody");
+
+  sendShielded(
+    disclose(spendCoin),
+    left<ZswapCoinPublicKey, ContractAddress>(d.organizerPk),
+    m.amount
+  );
+
+  milestones.insert(disclose(milestoneKey(dealId, idx)), Milestone {
+    amount: m.amount,
+    state: 5, // ARB_RELEASED (final)
+    deadline: m.deadline,
+    claimDeadline: m.claimDeadline,
+    coinNonce: m.coinNonce,
+    coinColor: m.coinColor
+  });
+}
+
+/**
+ * Arbiter rules for the agent (DISPUTED -> ARB_REFUNDED): the custody
+ * coin pays the agent's stored key. Only the arbiter.
+ */
+export circuit arbiterRefund(dealId: Uint<64>, idx: Uint<8>, spendCoin: QualifiedShieldedCoinInfo): [] {
+  const m = current(dealId, idx);
+  assert(m.state == 2, "milestone not in DISPUTED state");
+  const d = deals.lookup(disclose(dealId));
+  const caller = arbiterCommitment(arbiterSecretKey(), d.dealRef);
+  assert(caller == d.arbiterCommitment, "only arbiter can rule");
+  assert(spendCoin.nonce == m.coinNonce, "coin does not match custody");
+  assert(spendCoin.color == m.coinColor, "coin does not match custody");
+  assert(spendCoin.value == m.amount, "coin does not match custody");
+
+  sendShielded(
+    disclose(spendCoin),
+    left<ZswapCoinPublicKey, ContractAddress>(d.agentPk),
+    m.amount
+  );
+
+  milestones.insert(disclose(milestoneKey(dealId, idx)), Milestone {
+    amount: m.amount,
+    state: 6, // ARB_REFUNDED (final)
+    deadline: m.deadline,
+    claimDeadline: m.claimDeadline,
+    coinNonce: m.coinNonce,
+    coinColor: m.coinColor
+  });
+}
+
+/**
+ * Arbiter-liveness hatch: a DISPUTED milestone past the deal's
+ * arbiter deadline can be refunded to the agent's stored key by
+ * ANYONE — a vanished arbiter can never freeze buyer funds forever.
+ */
+export circuit arbiterTimeoutRefund(dealId: Uint<64>, idx: Uint<8>, spendCoin: QualifiedShieldedCoinInfo): [] {
+  const m = current(dealId, idx);
+  assert(m.state == 2, "milestone not in DISPUTED state");
+  const d = deals.lookup(disclose(dealId));
+  assert(blockTimeGte(d.arbiterDeadline), "arbiter deadline not yet passed");
+  assert(spendCoin.nonce == m.coinNonce, "coin does not match custody");
+  assert(spendCoin.color == m.coinColor, "coin does not match custody");
+  assert(spendCoin.value == m.amount, "coin does not match custody");
+
+  sendShielded(
+    disclose(spendCoin),
+    left<ZswapCoinPublicKey, ContractAddress>(d.agentPk),
+    m.amount
+  );
+
+  milestones.insert(disclose(milestoneKey(dealId, idx)), Milestone {
+    amount: m.amount,
+    state: 6, // ARB_REFUNDED (final)
+    deadline: m.deadline,
+    claimDeadline: m.claimDeadline,
+    coinNonce: m.coinNonce,
+    coinColor: m.coinColor
+  });
+}
