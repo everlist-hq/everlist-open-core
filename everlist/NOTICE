@@ -5,8 +5,9 @@ This repository is dual-licensed by component:
 
 1. PRE-EXISTING core (MIT, see LICENSE): the Agent Hub core (app.py, hublib.py,
    storage.py, chatlib.py, ...), the Midnight escrow M1-M17 contract sources
-   under midnight-contract/src/, and all infrastructure that existed before the
-   Midnight Buildathon Wave 2 build period.
+   under midnight-contract/src/ (escrow.compact, credential.compact), and all
+   infrastructure that existed before the Midnight Buildathon Wave 2 build
+   period.
 
 2. NEW Wave-2 Midnight code (Apache License 2.0, see LICENSE-APACHE-2.0.txt):
    developed during the Wave 2 build window and submitted for that wave's
@@ -19,6 +20,22 @@ This repository is dual-licensed by component:
      (GET /escrow/{id}/proof, real-time escrow state events, sponsorship gate
      wiring in POST /book, GET /sponsorship/stats)
    - test_w2_sponsorship_proof.py — the Wave-2 suite (22 tests)
+   - midnight-contract/src/mandate.compact (+ test/mandate.test.ts,
+     managed-mandate/) — delegated spending mandates: private cap and
+     category commitments, ZK authorize within cap/category/expiry,
+     principal-only revocation
+   - midnight-contract/src/reputation.compact (+ test/reputation.test.ts,
+     managed-reputation/) — pseudonymous agent reputation anchored to settled
+     escrows: issuer-walled settlement recorder, ZK threshold proofs over
+     count/volume/rating without revealing any deal
+   - midnight-contract/src/milestone.compact (+ test/milestone.test.ts,
+     managed-milestone/) — multi-milestone escrow with dispute path:
+     sequential funding gate, per-deal arbiter commitment, three
+     permissionless liveness hatches
+   - midnight-contract/test/indistinguishability.test.ts — two-world ledger
+     equality and PRF statistical privacy tests
+   - the six-suite contract battery lines in the repository CI workflow
+     (.github/workflows/tests.yml)
 
 Copyright 2026 EverList open-core contributors
 
