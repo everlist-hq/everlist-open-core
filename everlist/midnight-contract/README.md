@@ -13,7 +13,8 @@ Live marketplace: [everlist.network](https://everlist.network)
 | --- | --- |
 | `src/escrow.compact` | Escrow contract: create (funded, exact-value shielded coin), release, refund, timeout refund, auto-release, mutual refund |
 | `src/credential.compact` | ZK personhood credential: issue / proveHolder / revoke on commitments (one-human-one-account) |
-| `managed/`, `managed-credential/` | Compiled artifacts produced by `compactc` 0.34.0 (LFDT-Minokawa/compact) incl. ZK prover/verifier keys and ZKIR |
+| `src/mandate.compact` | Delegated spending mandate (2026-10-17): a human principal sets a private spending cap + allowed category (hidden commitments), agent authorizes actions by proving them inside the terms in ZK; principal-only permanent revocation | 
+| `managed/`, `managed-credential/`, `managed-mandate/` | Compiled artifacts produced by `compactc` 0.34.0 (LFDT-Minokawa/compact) incl. ZK prover/verifier keys and ZKIR |
 | `test/` | Offline state-machine tests running the REAL compiled circuits against a simulated ledger (`@midnight-ntwrk/compact-runtime`) — no network, no proof server |
 | `circuit-costs-20260913.json` | Recorded per-circuit cost matrix from the native proof-server run (2026-09-13); replayed by the hub's `tools/cost_matrix.py` |
 
@@ -22,8 +23,10 @@ Live marketplace: [everlist.network](https://everlist.network)
 ```bash
 cd midnight-contract
 npm ci                       # compact-runtime + onchain-runtime-v4
-npx tsx --test test/escrow.test.ts       # escrow state machine: 40/40
-npx tsx --test test/credential.test.ts   # credential lifecycle: 16/16
+npx tsx --test test/escrow.test.ts              # escrow state machine: 40/40
+npx tsx --test test/credential.test.ts          # credential lifecycle: 16/16
+npx tsx --test test/mandate.test.ts             # delegated spending mandate: 18/18
+npx tsx --test test/indistinguishability.test.ts # privacy indistinguishability: 7/7
 ```
 
 The circuits executed by these tests are the same compiled artifacts in
@@ -41,6 +44,7 @@ toolchain (`compactc` 0.34.0, language 0.26):
 | --- | --- | --- | --- |
 | `credential.compact` | Grade A | — | Grade A (clean) |
 | `escrow.compact` | **Grade C** | 1 medium: one commitment tag per holder meant all of an organizer's escrows were publicly linkable — identifying one booking identified all of them | **Grade A — 0 findings** |
+| `mandate.compact` (new, 2026-10-17) | — | — | **Grade A — 0 findings above info at birth** (scanned before first ship) |
 
 **The fix (Tell's own suggested remediation):** organizer commitments are now
 bound to the `bookingRef` — a per-booking tag instead of a per-holder tag.

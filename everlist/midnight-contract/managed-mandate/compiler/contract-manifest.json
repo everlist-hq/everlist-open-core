@@ -1,0 +1,138 @@
+{
+  "manifest-version": "1",
+  "compiler-version": "0.34.0",
+  "language-version": "0.26.0",
+  "runtime-version": "0.19.0",
+  "compiler": {
+    "type": "directory",
+    "contract-info.json": {
+      "type": "file",
+      "size": 5572,
+      "hash": "f74c2e96af3070256051462d0be1022479c0d0d6090df1632b20ca2a932cedc6"
+    }
+  },
+  "contract": {
+    "type": "directory",
+    "index.d.ts": {
+      "type": "file",
+      "size": 5127,
+      "hash": "f9a04c6ec069257ecf3077133f05745c63a8374dd011f4ca6f92ed07b66bc6f5"
+    },
+    "index.js": {
+      "type": "file",
+      "size": 82128,
+      "hash": "b5ae836f87be864caf7c022dcb01d379a10cc6560b278989ab51a358a2a15791"
+    },
+    "index.js.map": {
+      "type": "file",
+      "size": 3430,
+      "hash": "c328673fea013d00cdc363f73a6f585ef4bdc92833a1492650772dbb6c89e0f5"
+    }
+  },
+  "zkir": {
+    "type": "directory",
+    "authorize.bzkir": {
+      "type": "file",
+      "size": 468,
+      "hash": "b689f7d4aaec4603feaffb40fa5082cba43a634ebb7bba311fa46444b3fd5345"
+    },
+    "authorize.zkir": {
+      "type": "file",
+      "size": 7950,
+      "hash": "1687299656d1b731b0e3e2dfe4a4b0e01d480b935bdf19450b9f69eaeecd9646"
+    },
+    "isRevoked.bzkir": {
+      "type": "file",
+      "size": 180,
+      "hash": "66825656f3427c5ad6c1a44ac0a904a681a53e58aedcbe242c0452ccbf77ab6b"
+    },
+    "isRevoked.zkir": {
+      "type": "file",
+      "size": 3067,
+      "hash": "c88dd1000065573cdd806b561775959561f67e937a340ffc9ff95945912ff111"
+    },
+    "issueMandate.bzkir": {
+      "type": "file",
+      "size": 266,
+      "hash": "11dc5d07c891e87f072e43690d5add9c776bee80289894456b419297232b5eb2"
+    },
+    "issueMandate.zkir": {
+      "type": "file",
+      "size": 4481,
+      "hash": "8fe02d052d1e8b130e7800b2406baa5080e72cb901fc663e132086e6e010e863"
+    },
+    "revokeMandate.bzkir": {
+      "type": "file",
+      "size": 317,
+      "hash": "71b643a2f3532487769c7c879d0c92a94757720dcb186d82b90623eb6fed90ea"
+    },
+    "revokeMandate.zkir": {
+      "type": "file",
+      "size": 5191,
+      "hash": "896fb24c6adc7542b83f4289c1a3330cd221ee84b35a89b4b7e30fa3a49202bf"
+    },
+    "useCount.bzkir": {
+      "type": "file",
+      "size": 149,
+      "hash": "ea9248f3d4d5c41a04ea55e50d0e42844942b5bdf96211869f585e476c9d5555"
+    },
+    "useCount.zkir": {
+      "type": "file",
+      "size": 2395,
+      "hash": "e300e3292f6904e2f0bb485f631e9fd4f00e54997cbb07272e52b08c18107ba4"
+    }
+  },
+  "keys": {
+    "type": "directory",
+    "authorize.prover": {
+      "type": "file",
+      "size": 2828513,
+      "hash": "8bbff1e7c267f675255bfea1d5935718bee807987d52be62909f30af76c89349"
+    },
+    "authorize.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "403d5f9a9451b68379478581a353955e271a72730f0cd47755a043774e520a24"
+    },
+    "isRevoked.prover": {
+      "type": "file",
+      "size": 41583,
+      "hash": "3d2fb41df4b073cb931a5b4cc158fda2086bb4bb6cfbc521c75e176b8112213e"
+    },
+    "isRevoked.verifier": {
+      "type": "file",
+      "size": 1351,
+      "hash": "c4aefba7a6972da21165ad2d5d97b48ac67edefe0e4db54d5c36ba124ce7480a"
+    },
+    "issueMandate.prover": {
+      "type": "file",
+      "size": 287217,
+      "hash": "6eb59d79dc11251d8b45ec21c5c479eec7206754c7e3ef2b4f65f7dafe3de2ae"
+    },
+    "issueMandate.verifier": {
+      "type": "file",
+      "size": 1351,
+      "hash": "2f47a4bf16db43c35ed59beb206b17baf9c2490e488a360b1f140400070486ba"
+    },
+    "revokeMandate.prover": {
+      "type": "file",
+      "size": 2820326,
+      "hash": "d28b336a3638938fe7dfa44162ae652ed4d4838702be44335eb0fc8f480fcce0"
+    },
+    "revokeMandate.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "ca18a1df0cd7d940e91f04385070fb27ee01f424b2613a135684d72dc512ed02"
+    },
+    "useCount.prover": {
+      "type": "file",
+      "size": 41557,
+      "hash": "b1fd835da5342f918ee931492f390bce547c233991bf55cbb5d104b821649825"
+    },
+    "useCount.verifier": {
+      "type": "file",
+      "size": 1351,
+      "hash": "4c310fbb6a7972965b6909296ed98d606fbd8fc2834f990491deef3394a10195"
+    }
+  }
+}
