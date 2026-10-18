@@ -178,9 +178,9 @@ def _transfer_cmd(hub_url: str, sender: str, arg: str) -> str:
     if s is not None:
         tok = (s.get("cancel_tokens") or {}).get(bid)
     if not tok:
-        return ("I can only transfer bookings made in this chat - the transfer key "
-                "lives here. If you booked on another device, ask the hub operator, "
-                "or book afresh with 'book <listing> <name>'.")
+        return ("I can only transfer bookings made in this chat — the transfer key "
+                "stays right here. If you booked on another device, that chat holds "
+                "it — or just book afresh: 'book <listing> <name>'.")
     code, res = _hub_post(hub_url, f"/book/{bid}/transfer", {"name": new_name}, token=tok)
     if code is None:
         return "Sorry - the EverList hub is unreachable right now. Try again shortly."
@@ -223,8 +223,8 @@ def _cancel_booking(hub_url: str, sender: str, arg: str) -> str:
     s = _session(sender)
     tok = (s or {}).get("cancel_tokens", {}).get(bid) if s else None
     if not tok:
-        return ("I can only cancel bookings made in this chat - the cancel key "
-                "lives here. Find yours: 'my-bookings'.")
+        return ("I can only cancel bookings made in this chat — the cancel key "
+                "stays right here for safety. Your booking ids: 'my-bookings'.")
     code, res = _hub_post(hub_url, f"/book/{bid}/cancel", {}, token=tok)
     if code is None:
         return "Sorry - the EverList hub is unreachable right now. Try again shortly."
@@ -241,9 +241,8 @@ def _cancel_booking(hub_url: str, sender: str, arg: str) -> str:
         (s or {}).get("cancel_tokens", {}).pop(bid, None)
     except Exception:
         pass
-    return (f"✅ Cancelled — booking {bid} is off the board.\n"
-            + _escrow_journey(res.get("escrow", ""), res.get("amount"))
-            + "\nThe spot goes back to the board for someone else.")
+    return (f"✅ Cancelled — booking {bid}. You're free to rebook anytime.\n"
+            + _escrow_journey(res.get("escrow", ""), res.get("amount")))
 
 
 def _booking_status(hub_url: str, sender: str, arg: str) -> str:
@@ -253,7 +252,8 @@ def _booking_status(hub_url: str, sender: str, arg: str) -> str:
     or not-yours are the same answer."""
     bid = (arg or "").strip()
     if not bid or " " in bid or "/" in bid:
-        return "Usage: booking <booking id> — e.g. 'booking bk-abc123'"
+        return ("Sure — which booking? Send its id like this: "
+                "booking bk-abc123. Yours are in 'my-bookings'.")
     s = _session(sender)
     token = (s or {}).get("tokens", {}).get("book") or (s or {}).get("tokens", {}).get("list")
     note = ""
@@ -297,25 +297,20 @@ _G_ESCROW = "✪"    # seal = escrow-protected
 
 
 def _escrow_journey(esc_state: str, amount) -> str:
-    """W2 item 12: the escrow journey as a text-safe 4-step strip (textContent-
-    safe glyphs only, no emoji). Real states only — WAIVED/DIRECT honestly
-    show 'no payment needed' instead of a fake timeline."""
+    """W2 item 12, voice pass 2026-10-18: the escrow journey as warm honest
+    sentences (owner: friendly, not robotic). Real states only — WAIVED/DIRECT
+    honestly show 'nothing to pay' instead of a fake timeline."""
     if str(esc_state) in ("WAIVED", "DIRECT") or not float(amount or 0) > 0:
-        return "✪ Money journey: nothing to pay — honestly."
+        return "✪ Nothing to pay — honestly."
     if esc_state == "REFUNDED":
-        marks = ["✓", "✓", "—", "↩"]
-        last = "REFUNDED to you"
-    elif esc_state == "RELEASED":
-        marks = ["✓", "✓", "✓", "✓"]
-        last = "RELEASED to organizer"
-    elif esc_state == "HELD":
-        marks = ["✓", "✓", "·", "·"]
-        last = "money held safely"
-    else:  # unknown state: show it honestly, no invented steps
-        return "✪ Payment status: %s (hub state — see Bookings for actions)." % esc_state
-    steps = ["asked", "held", "happened", "released"]
-    strip = " ".join("[%s %s]" % (m, s) for m, s in zip(marks, steps))
-    return ("✪ %s — %s" % (strip, last))
+        return "✪ Escrow refunded — your money is back with you in full."
+    if esc_state == "RELEASED":
+        return "✪ Payment released to the organizer — all settled!"
+    if esc_state == "HELD":
+        return ("✪ Your money is held safely in escrow — the organizer "
+                "can't touch it until the event has ended.")
+    # unknown state: show it honestly, no invented steps
+    return "✪ Payment status: %s — see your Bookings tab for what you can do." % esc_state
 
 
 _G_INSTANT = "⇢"   # instant settlement
@@ -1444,7 +1439,8 @@ def _email_code(hub_url: str, sender: str, code: str) -> str:
 
 def _recover(hub_url: str, email: str) -> str:
     if not email:
-        return "Usage: recover you@example.com"
+        return ("Sure! Send your email like this: recover you@example.com "
+                "— the recovery code lands straight in your inbox.")
     try:
         pow_ = _pow_solve(hub_url, "recover")
         if pow_ is None:
@@ -1463,7 +1459,8 @@ def _recover_confirm(hub_url: str, email: str, code: str) -> str:
     """Recovery rotates the credential: keypair accounts get a fresh seed (shown
     ONCE, hub stores only the new pubkey); legacy code accounts get a fresh code."""
     if not email or not code:
-        return "Usage: recover-confirm <email> <6-char code from the recovery email>"
+        return ("Almost there! Send: recover-confirm <email> <6-char code> "
+                "— the code is waiting in your recovery email.")
     seed = os.urandom(32).hex()
     pub = _pubkey_of(seed)
     try:
@@ -2159,7 +2156,8 @@ def _my_listings(hub_url: str, sender: str) -> str:
     mine = [l for l in (data.get("listings") or [])
             if str(l.get("owner", "")) == (sess["account_id"] if sess else sender_n)]
     if not mine:
-        return "You have no listings yet. Create one with 'list ...'"
+        return ("No listings from you yet — say 'list' and we'll set up "
+                "your first one together. 🌱")
     lines = [f"• {l['title']} (id: {l['id']}, price {l.get('price')} USD)" for l in mine]
     tail = "\n\nEdit: 'edit <id>" + ("' (no code — account session)" if sess else " <code>'") \
            + " · Delete: 'delete <id>" + ("'" if sess else " <code>'")
@@ -2547,12 +2545,9 @@ def board_line(sender: str, n: int, listings: list = None) -> str:
             parts.append(cost)
             return ("Found exactly one that fits — %s. Want me to book it?%s"
                     % (", ".join(parts), extra))
-    if tick and listings:
-        ins = _search_insight(listings)
-        if ins:
-            return ("Found %d match%s open on the board for you — %s. "
-                    "Which one would you like?%s"
-                    % (n, "" if n == 1 else "es", ins, extra))
+    # owner 2026-10-18 (board-only law): free-count / cheapest stats live on
+    # the BOARD — the chat only points at the board and asks. Insight stays
+    # in the pure-chat footer (_book_tail) where no board exists.
     return base + extra
 
 
@@ -4882,7 +4877,6 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                     "💳 Money: " + ("your payment is locked in safely — the organizer "
                                      "can't touch it until the event has ended" if float(res.get('amount') or 0) > 0
                                     else "nothing to pay — this one's free") + ".\n"
-                    + _escrow_journey(res.get("escrow", "HELD"), res.get("amount")) + "\n"
                     "\n"
                     "🔑 YOUR BOOKING SECRET — shown once, only here. This chat resets "
                     "if you reload the page, so copy it NOW:\n"

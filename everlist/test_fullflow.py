@@ -211,10 +211,14 @@ def main():
           str(len(d.get("results") or [])))
     d = a.say("free yoga")
     ra3 = d.get("reply") or ""
+    _res3 = d.get("results") or []
+    # board-only law 2026-10-18: qualifier truth lives in the results payload
+    # (the board renders it) — the chat line only points and asks.
     check("A3 qualifier 'free yoga' finds the free yoga set",
           ("Free Morning Yoga" in ra3)
-          or ("free" in ra3.lower() and len(d.get("results") or []) >= 1),
-          ra3[:110])
+          or any("Free Morning Yoga" in str(r.get("title") or "") for r in _res3)
+          or ("free" in ra3.lower() and len(_res3) >= 1),
+          (ra3[:80] + " | results=%d" % len(_res3)))
     d = a.say("was ist los dieses wochenende?")
     check("A4 German natural search answers honestly", bool(d.get("reply")),
           (d.get("reply") or "")[:90])
@@ -283,7 +287,7 @@ def main():
     d = c.say(f"cancel {bid_c}")
     rcc = d.get("reply") or ""
     check("C6 in-window cancel refunds via chat", "Cancelled" in rcc
-          and "REFUNDED to you" in rcc, rcc[:140])
+          and "back with you" in rcc, rcc[:140])
     d = c.say("cancel bk-000000000000")
     check("C7 cancel unknown/non-chat booking is honest",
           "I can only cancel bookings made in this chat" in (d.get("reply") or ""),
@@ -366,7 +370,7 @@ def main():
           (d.get("reply") or "")[:90])
     # recover flow (bound email exists: egon@example.com)
     d = e.say("recover")
-    check("E12 recover usage", "Usage: recover" in (d.get("reply") or ""), (d.get("reply") or "")[:90])
+    check("E12 recover usage", "recover you@example.com" in (d.get("reply") or ""), (d.get("reply") or "")[:90])
     d = e.say("recover egon@example.com")
     r = d.get("reply") or ""
     check("E13 recover sends code (dev note)", "recover-confirm" in r, r[:120])
@@ -481,7 +485,7 @@ def main():
     r = d.get("reply") or ""
     check("H3 unknown listing honest", "No listing" in r or "No booking" in r, r[:100])
     d = h.say("booking ")
-    check("H4 bare booking usage", "Usage: booking" in (d.get("reply") or ""),
+    check("H4 bare booking usage", "booking bk-abc123" in (d.get("reply") or ""),
           (d.get("reply") or "")[:90])
     # capacity law: capacity-1 listing -- first books, second is refused
     rp = C()
