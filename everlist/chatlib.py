@@ -4415,6 +4415,68 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
              if low else None)
     if not _pbq and _ordm and (_LAST_RESULTS.get(sender) or []):
         _st_pick_fired = True
+    # capability-catalog mirror (owner law: the LLM routes, never states
+    # policy): when the deterministic catalog can answer this turn, the brain
+    # must NOT preempt it -- capability answers stay byte-stable whether the
+    # LLM is up, down, or rate-capped.
+    def _caps_would_answer():
+        try:
+            import capabilities as _caps
+            _qshape = ("?" in text
+                       or re.search(r"\b(can|can't|cannot|could|do(es)?|did|is|are|was|were|will|would|should|how|what|where|when|why|who|is it possible|ist|kann|kann man|geht|funktioniert|m\u00f6glich|darf|wei\u00dft du|weiss|wann|wie|wo|warum)\b", low))
+            _money_law = re.search(r"\b(fee|fees|escrow|refund)\b", low)
+            _ans = _caps.answer_for(low) if (_qshape and not _money_law) else None
+            if _ans is not None:
+                return True
+            if not _qshape:
+                for _cid, _kws, _cans in _caps.CANNOT:
+                    if any(k in low for k in _kws):
+                        return True
+            return False
+        except Exception:
+            return False
+
+    # --- owner 2026-10-18 (smart-first inversion): the brain now evaluates
+    # every NON-deterministic turn BEFORE the guess tiers (booking
+    # affirmations, natural-search regexes, capability catalog). Mid-flow
+    # states, typed commands, digits, thread-live go-aheads and pure-social
+    # shapes stay deterministic and instant, no LLM. Deterministic executors
+    # keep every fact; the regex tiers BELOW become the fail-open fallback
+    # (brain down / rate-capped / EVERLIST_LLM_FIRST=0 -> byte-identical old
+    # chat: the block no-ops and the ladder order is unchanged).
+    _w0 = low.split()
+    _thread_live = bool(_pending_book_get(sender) or _book_want_get(sender))  # owner 2026-10-17
+    _fb_soc = _social_fallback_reply(low, hub_url, sender)
+    _skip_brain = (
+        "|" in text
+        or _fb_soc is not None            # pure-social/battery shapes: never LLM (120-input law)
+        or re.match(r"^(book|search|show|help|cancel|signup|login|logout|login-seed|whoami|list|listings|more|next|all|fee|my-bookings|bookings|my-listings|dashboard|edit|delete|archive|unarchive|verify-|set-payout|notify|lang|email-|recover|delete-account)\b", low)
+        or re.match(r"^\d[\d\s,\-]*$", low)
+        # deterministic-law shapes (owner 2026-10-02): pasted bare email =
+        # signup/bind in ONE turn; bare 6-hex with pending email = confirm.
+        # Never brain-routed, never a latency tax on account setup.
+        or _caps_would_answer()
+        or _EMAIL_FULL_RX.match(low)
+        or (bool((_session(sender) or {}).get("pending_email"))
+            and re.fullmatch(r"[0-9A-Fa-f]{6}", low))
+        or (_thread_live and (_BOOK_AFFIRM_RX.match(low) or _BOOK_REFERENTIAL_RX.match(low)))
+        or (len(_w0) <= 3
+            and re.match(r"^[a-z0-9äöüß][a-z0-9äöüß \-]*$", low)
+            and "?" not in text
+            and not re.search(r"\b(yes|no|yeah|nope|ok|okay|please|bitte|danke|dank|thanks|thx|gern|book|buchen)\b", low))
+    )
+    if _LLM_FIRST and not _skip_brain:
+        try:
+            import brain as _brain_early
+            _out = _brain_early.respond(hub_url, text, sender,
+                                        chatlib=sys.modules[__name__],
+                                        social_house=_fb_soc or "")
+            if _out is not None:
+                return _out
+        except Exception:
+            pass                    # fail-open law: brain never takes the chat down
+        _brain_tried = True
+
     # --- booking affirmations resolve the SEARCH STASH (owner probe 2026-10-03)
     # Multi-turn human speech: search -> 'the jazz one sounds nice' -> 'yes
     # book it for me' must BOOK the narrowed pick, never re-search. Fires on
@@ -4611,35 +4673,6 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     _ps = _session(sender)
     if _ps and _ps.get("pending_email") and re.fullmatch(r"[0-9A-Fa-f]{6}", low):
         return _email_code(hub_url, sender, text.strip())
-
-    # --- owner 2026-09-29 (LLM-first inversion): the brain evaluates fuzzy
-    # turns BEFORE the regex mood/social tiers, with full context (pending
-    # booking + last results in its fact sheet). Deterministic executors keep
-    # every fact; the regex tiers below become the fail-open fallback (brain
-    # down / rate-capped / EVERLIST_LLM_FIRST=0 -> byte-identical old chat).
-    # Typed commands and plain keyword searches stay instant, no LLM.
-    _w0 = low.split()
-    _thread_live = bool(_pending_book_get(sender) or _book_want_get(sender))  # owner 2026-10-17
-    _skip_brain = (
-        "|" in text
-        or re.match(r"^(book|search|show|help|cancel|signup|login|logout|login-seed|whoami|list|listings|more|next|all|fee|my-bookings|bookings|my-listings|dashboard|edit|delete|archive|unarchive|verify-|set-payout|notify|lang|email-|recover|delete-account)\b", low)
-        or re.match(r"^\d[\d\s,\-]*$", low)
-        or (_thread_live and (_BOOK_AFFIRM_RX.match(low) or _BOOK_REFERENTIAL_RX.match(low)))
-        or (len(_w0) <= 3
-            and re.match(r"^[a-z0-9äöüß][a-z0-9äöüß \-]*$", low)
-            and not re.search(r"\b(yes|no|yeah|nope|ok|okay|please|bitte|danke|dank|thanks|thx|gern|book|buchen)\b", low))
-    )
-    if _LLM_FIRST and not _skip_brain:
-        try:
-            import brain as _brain_early
-            _out = _brain_early.respond(hub_url, text, sender,
-                                        chatlib=sys.modules[__name__],
-                                        social_house=_social_fallback_reply(low, hub_url, sender) or "")
-            if _out is not None:
-                return _out
-        except Exception:
-            pass                    # fail-open law: brain never takes the chat down
-        _brain_tried = True
 
     # --- deterministic social / semantic layer (120-input battery 2026-09-20):
     # greetings, acks, moods, account/stack help, cancellation policy, typos,
