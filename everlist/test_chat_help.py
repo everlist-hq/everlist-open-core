@@ -179,7 +179,7 @@ GEN = [
     ("Hello there!", "Hey!"), ("hii :)", "Hey!"),
     ("many thanks", "Anytime!"), ("thx", "Anytime"),
     ("what's x402?", "x402"), ("tell me about midnight", "Midnight"),
-    ("go back", "[[nav:home]]"), ("take me to the main page", "[[nav:home]]"),
+    ("go back", "[[nav:back]]"), ("take me to the main page", "[[nav:home]]"),
     ("i forgot my password", "recover"), ("can't log in", "recover"),
     ("refund please", "refund window"), ("how do i get a refund?", "refund window"),
     ("bye", "Bye for now"), ("see you later", "Bye for now"),

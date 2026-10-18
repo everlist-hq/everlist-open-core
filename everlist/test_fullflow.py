@@ -209,6 +209,23 @@ def main():
     d = a.say("any events in vienna?")
     check("A2 natural EN search finds Vienna board", len(d.get("results") or []) >= 3,
           str(len(d.get("results") or [])))
+    # owner 2026-10-18: ASKED stats questions get real answers in chat
+    d = a.say("how many are free?")
+    r_stats = d.get("reply") or ""
+    import re as _re_stats
+    check("A2b asked stats question answered in chat",
+          bool(_re_stats.search(r"\d+", r_stats)) and "free" in r_stats.lower()
+          and "match" not in r_stats.lower(), r_stats[:120])
+    # stash must survive the stats answer (no re-search clobber)
+    check("A2c stats answer keeps the board context",
+          len(d.get("results") or []) >= 3, str(len(d.get("results") or [])))
+    # owner 2026-10-18: 'go back' drives the UI to the previous screen
+    d = a.say("go back")
+    check("A2d 'go back' routes to nav-back",
+          d.get("nav") == "back" and "back" in (d.get("reply") or "").lower(),
+          str(d.get("nav")) + " | " + (d.get("reply") or "")[:80])
+    d = a.say("any events in vienna?")
+
     d = a.say("free yoga")
     ra3 = d.get("reply") or ""
     _res3 = d.get("results") or []

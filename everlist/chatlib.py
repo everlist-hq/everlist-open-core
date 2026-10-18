@@ -3146,6 +3146,70 @@ def nav_reply(hub_url: str, target: str, sender: str) -> str:
     return (_NAV_TOKEN % "home") + _smart_search(hub_url, "search", sender)
 
 
+_STATS_Q_RX = re.compile(
+    r"^(how many|wie viele|wieviele|how much|any)\b"
+    r"[^.?!]{0,60}\b(free|kostenlos|cheapest|g(ü|ue)nstig|free ones)\b"
+    r"[?.! ]*$", re.I)
+
+
+def _stats_answer(hub_url: str, sender: str, low: str) -> str:
+    """Owner 2026-10-18: an ASKED stats question gets a real answer in chat.
+    Board-only law removed UNSOLICITED stats; a direct question still earns
+    the number. Answers from the CURRENT stash (never re-search, never
+    clobber the user's board context). No stash: fetch the board once."""
+    ls = _LAST_RESULTS.get(sender) or []
+    fetched = False
+    if not ls:
+        try:
+            data = _hub_get(hub_url, "/listings?limit=48")
+            ls = data.get("listings") or []
+            fetched = True
+        except Exception:
+            ls = []
+    if not ls:
+        return ("Nothing on the board right now — say 'list' and yours can be "
+                "the first. 🌱")
+    prices = []
+    for l in ls:
+        try:
+            prices.append(float(l.get("price", 0) or 0))
+        except (TypeError, ValueError):
+            continue
+    if not prices:
+        return ("I couldn't read prices off the board just now — try a fresh "
+                "search and ask me again.")
+    free = sum(1 for x in prices if x == 0)
+    paid = [x for x in prices if x > 0]
+    scope = board_scope_note(sender) if not fetched else ""
+    if "cheapest" in low or "g\u00fcnstig" in low or "guenstig" in low:
+        if not paid:
+            return ("They're all free right now — %d listings, nothing to "
+                    "spend.%s" % (len(prices), scope))
+        return ("%d on the board — %d of them free, and the cheapest paid one "
+                "is €%g.%s" % (len(prices), free, min(paid), scope))
+    if free == len(prices):
+        return ("All %d on the board are free right now.%s" % (len(prices), scope))
+    if free == 0:
+        if paid:
+            return ("None of the %d on the board are free — the cheapest is "
+                    "€%g.%s" % (len(prices), min(paid), scope))
+    return ("%d of the %d on the board are free%s.%s" % (
+        free, len(prices),
+        (", and the cheapest paid one is €%g" % min(paid)) if paid else "",
+        scope))
+
+
+def nav_back_reply(hub_url: str, sender: str) -> str:
+    """Owner 2026-10-18: 'go back' pops the UI's screen history (previous
+    view/detail), instead of resetting to home. The UI owns the real history
+    (it records its own view/detail switches); the marker travels the same
+    [[nav:...]] channel as home/dash/results. Chat-side fallback state: if
+    the sender holds search results, keep them (a back must not clobber)."""
+    return (_NAV_TOKEN % "back") + (
+        "Done — you're back where you were. Want to keep browsing, or book "
+        "something?")
+
+
 def brain_search(hub_url: str, sender: str, act: dict, text: str = "") -> str:
     """Execute a brain search/refine action through the deterministic core.
     Builds a canonical command from validated fields (refine merges onto the
@@ -3700,9 +3764,16 @@ _RULES_RX = re.compile(
 _BOT_RX = re.compile(
     r"^(are|am) you (human|real|a (robot|bot|ai|human|person|machine))\b"
     r"|^(are|am) (you )?(u )?(an? )?(ai|bot|robot|human)\?*$", re.I)
+# owner 2026-10-18: 'go back' / 'back' now means PREVIOUS SCREEN, not home.
+# Bare back-phrases route to nav_back (history pop); explicit home phrasings
+# stay on nav home. Must run BEFORE the bare-name steer eats 'go back'.
+_NAVBACK_RX = re.compile(
+    r"^(go back|back|go back please|back please|zur(ü|ue)ck)"
+    r"( to (the )?(previous|last|board|results|page|screen|view|listing|detail))?"
+    r"[!,. ]*$", re.I)
 _NAVHOME_RX = re.compile(
-    r"^(dashboard|home|main page|start over|start page|front page|go home|go back|"
-    r"back|back (home|to (the )?(main page|start|start page|front page)))"
+    r"^(dashboard|home|main page|start over|start page|front page|go home|"
+    r"back home|back to (the )?(main page|start|start page|front page))"
     r"( please)?$|(take|bring) me (back |home|to the (main page|start( page)?|front page))", re.I)
 _FAREWELL_RX = re.compile(
     r"^(bye+|goodbye|good bye|see (ya|you)( later| soon| around)?|cya|later|"
@@ -3759,6 +3830,10 @@ def _social_safe_reply(low, hub_url, sender):
         return _smart_search(hub_url, "search food", sender)
     if bare in _TYPO_MAP:
         return handle_text(hub_url, _TYPO_MAP[bare], sender=sender)
+    if _NAVBACK_RX.match(bare):
+        return nav_back_reply(hub_url, sender)
+    if _STATS_Q_RX.match(bare) or _STATS_Q_RX.match(low):
+        return _stats_answer(hub_url, sender, low)
     if _NAVHOME_RX.match(bare):
         return nav_reply(hub_url, "home", sender)
     if _DELETE_ACC_RX.match(bare):
@@ -4410,7 +4485,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
             and not _TOPIC_NOUN_RX.search(_ns_full)
             and not _BOOK_AFFIRM_RX.match(_ns_full)
             and not _BOOK_REFERENTIAL_RX.match(_ns_full)  # owner 2026-10-17: go-aheads never become names ('lol ok' still steers)
-            and not re.match(r"^(search|find|show|book|cancel|booking|help|my-bookings|my-listings|bookings|more|next|all|edit|delete|archive|list|fee|whoami|dashboard|signup|login|logout|notify|recover)\b", _ns_full)  # r4 gate 2026-10-04: typed commands are not names — 'search pizza' re-run must search, not steer; fullflow 2026-10-18: +booking/my-listings
+            and not re.match(r"^(search|find|show|book|cancel|booking|help|my-bookings|my-listings|bookings|more|next|all|edit|delete|archive|list|fee|whoami|dashboard|signup|login|logout|notify|recover|back|go back)\b", _ns_full)  # r4 gate 2026-10-04: typed commands are not names — 'search pizza' re-run must search, not steer; fullflow 2026-10-18: +booking/my-listings
             and (_LAST_RESULTS.get(sender) or [])):
         return ("Which one would you like? Say 'the first one', 'the free one', "
                 "or its name - then I'll take the booking name.")
