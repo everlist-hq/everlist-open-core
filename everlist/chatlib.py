@@ -2986,6 +2986,12 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
                     # R5 2026-09-24: keywords that found NOTHING are dead --
                     # never stash them (a later refine would resurrect them).
                     "q": "",
+                    # owner 2026-10-18: these results are SUGGESTIONS, not a
+                    # real search — 'book <n>' references stay legal, but the
+                    # bare-name steer must not treat them as a pick question
+                    # (chip word 'pizzeria' after 'pizza?' steered instead of
+                    # searching — the exact 'stupid' owner transcript).
+                    "suggest": True,
                     "ts": time.time(),  # owner 2026-10-17: recovery guard — search newer than the booking WANT = changed mind
                     "filters": {**({"free": True} if free else {}),
                                 **{k: (float(v) if k.endswith("_price") else v) for k, v in qual.items()
@@ -3665,6 +3671,14 @@ _NATURAL_SEARCH_RX = re.compile(
 # what remains after stripping the frame must contain a real search subject
 # (a noun-ish word), not only politeness/stop words.
 _SEARCH_CONTENT_RX = re.compile(r"[a-z\u00e4öü]{3,}")
+
+# owner 2026-10-18 ('pizzeria' after 'pizza?'): social-only filler that must
+# NOT become a search when the last 'results' were no-match suggestions —
+# 'lol ok', 'haha nice', 'ok then'. A content word ('pizzeria', 'jazz') does.
+_SUGGEST_ACK_ONLY_RX = re.compile(
+    r"^(?:(?:lol|lmao|haha+|hehe+|rofl|nice|cool|great|ok|okay+|k|sure|yes|yep|yup"
+    r"|ja|gern|then|fine|wow|hmm+|hm+|not\s+sure\s+yet|maybe|later|idk)"
+    r"[\s,.!]*)+$", re.I)
 
 
 # leading greetings never change intent (owner probe 2026-10-03: 'hello, can
@@ -4536,6 +4550,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
             and not _BOOK_AFFIRM_RX.match(_ns_full)
             and not _BOOK_REFERENTIAL_RX.match(_ns_full)  # owner 2026-10-17: go-aheads never become names ('lol ok' still steers)
             and not re.match(r"^(search|find|show|book|cancel|booking|help|my-bookings|my-listings|bookings|more|next|all|edit|delete|archive|list|fee|whoami|dashboard|signup|login|logout|notify|recover|back|go back)\b", _ns_full)  # r4 gate 2026-10-04: typed commands are not names — 'search pizza' re-run must search, not steer; fullflow 2026-10-18: +booking/my-listings
+            and not ((_LAST_SEARCH.get(sender) or {}).get("suggest") and not _SUGGEST_ACK_ONLY_RX.match(_ns_full))  # owner 2026-10-18: a no-match suggestion stash is NOT a pick question — content words ('pizzeria') search; social acks ('lol ok') keep the steer (conversation C3.3)
             and (_LAST_RESULTS.get(sender) or [])):
         return ("Which one would you like? Say 'the first one', 'the free one', "
                 "or its name - then I'll take the booking name.")
