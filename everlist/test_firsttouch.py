@@ -61,7 +61,7 @@ CORPUS = [
     ("book the yoga class", "search"),
     ("I want to book the cinema", "search"),
     ("newuser9@example.com", "signup"),
-    ("signup", "signup"),
+    ("signup newuser10@example.com", "signup"),
     ("hello", "social"),
     ("hey", "social"),
     ("what can you do?", "catalog:overview"),

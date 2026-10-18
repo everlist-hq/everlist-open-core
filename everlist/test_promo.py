@@ -80,7 +80,7 @@ def main():
 
     # --- buyer FIRST: vouched chat account (verified-human gate needs it) ---
     bs = "web-promo-buyer"
-    r = chatlib.handle_text(hub, "signup", sender=bs)
+    r = chatlib.handle_text(hub, "signup promo-buyer@example.com", sender=bs)
     check("buyer signup", "Account created" in r, r[:80])
     w = chatlib.handle_text(hub, "whoami", sender=bs)
     ma = re.search(r"acct-[0-9a-f]+", w or "")
@@ -186,11 +186,11 @@ def main():
     anon = "web-promo-anon-1"
     r11 = chatlib.handle_text(hub, f"book {lid} Zoe promo CHAT10", sender=anon)
     _st = chatlib._PENDING_BOOK.get(anon) or {}
-    check("P11 anon paid gate holds", "signup" in r11.lower() and "paid listing" in r11.lower(), r11[:100])
+    check("P11 anon paid gate holds", "email" in r11.lower() and "paid listing" in r11.lower(), r11[:100])
     check("P11 stash carries who+promo", _st.get("who") == "Zoe" and _st.get("promo") == "CHAT10", str(_st))
 
     # --- P12: signup resumes the SAME paid booking with the promo intact ---
-    r12 = chatlib.handle_text(hub, "signup", sender=anon)
+    r12 = chatlib.handle_text(hub, "signup promo-anon@example.com", sender=anon)
     _int2 = chatlib._PAY_INTENTS.get(anon) or {}
     check("P12 signup resumes pay flow", "[[pay:" in r12, r12[-120:])
     check("P12 pay intent carries promo+who", _int2.get("promo_code") == "CHAT10" and _int2.get("who") == "Zoe", str(_int2))

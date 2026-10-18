@@ -246,7 +246,7 @@ try:
     SENDER = "m14-chat"
     out = chatlib.handle_text(BASE, "verify-midnight", SENDER)
     check("chat gate: login first", "Login first" in out, out[:80])
-    out = chatlib.handle_text(BASE, "signup", SENDER)
+    out = chatlib.handle_text(BASE, "signup m14chat@example.com", SENDER)
     check("chat signup ok", "Account created" in out, out[:80])
     out = chatlib.handle_text(BASE, "verify-midnight nope", SENDER)
     check("chat rejects non-numeric credential", "Usage" in out, out[:80])

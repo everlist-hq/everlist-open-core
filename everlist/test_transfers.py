@@ -79,7 +79,7 @@ def main():
     # --- account: signup via hub, vouch via admin ---
     import chatlib
     sender = "xfer-battery-1"
-    r = chatlib.handle_text(hub, "signup", sender=sender)
+    r = chatlib.handle_text(hub, "signup xfer1@example.com", sender=sender)
     check("signup via chat", "Account created" in r, r[:90])
     # find the account id from whoami
     w = chatlib.handle_text(hub, "whoami", sender=sender)

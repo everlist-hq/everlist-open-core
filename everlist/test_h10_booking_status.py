@@ -134,7 +134,7 @@ try:
     check("chat stranger poll honest 404", "not visible" in out2 or "doesn't exist" in out2, out2[:140])
     # account-based poll: signup via chat, book with account token, poll via session
     acct_sender = "agent1qf h10-acct".replace(" ", "")
-    r1 = chatlib.handle_text(BASE, "signup", sender=acct_sender)
+    r1 = chatlib.handle_text(BASE, "signup h10acct@example.com", sender=acct_sender)
     check("chat signup for account poll", "acct-" in r1, r1[:100])
     atok = chatlib._SESSIONS[acct_sender]["tokens"]["book"]
     c, abk = req("POST", "/book", {"listing_id": LID, "attendee": "Acct Buyer", "human_verified": True},

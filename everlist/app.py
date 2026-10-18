@@ -75,7 +75,7 @@ BACKUP_KEEP = int(os.environ.get("HUB_BACKUP_KEEP", "5"))
 # Default ON; HUB_FSYNC=0 disables (benchmarking only).
 FSYNC_ENABLED = os.environ.get("HUB_FSYNC", "1") != "0"
 AUTH_LIMITS = {"signup": (30, 3600), "login": (120, 60), "rotate": (10, 3600),
-                 "email": (5, 3600), "verify": (int(os.environ.get("HUB_LIMIT_VERIFY", "30")), 3600), "recover": (10, 3600),
+                 "email": (int(os.environ.get("HUB_LIMIT_EMAIL", "5")), 3600), "verify": (int(os.environ.get("HUB_LIMIT_VERIFY", "30")), 3600), "recover": (10, 3600),
                  "read": (READ_LIMIT, 60),
                  # H5: write-path backstops (per source) on every mutating route;
                  # env-tunable like READ_LIMIT (tests shrink them; ops can tune)

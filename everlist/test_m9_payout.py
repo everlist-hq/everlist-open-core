@@ -109,7 +109,7 @@ try:
     chatlib._SESSIONS.clear()
     out = chatlib.handle_text(BASE, "set-payout " + PK1, SENDER)
     check("chat without session -> login-first guidance", "Login first" in out, out[:60])
-    out = chatlib.handle_text(BASE, "signup", SENDER)
+    out = chatlib.handle_text(BASE, "signup m9chat@example.com", SENDER)
     assert "account" in out.lower(), out[:120]
     sess = chatlib._SESSIONS[SENDER]
     CHAT_CODE = None

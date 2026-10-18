@@ -210,7 +210,7 @@ check("paid deal unclaimable without claim (404, no payment oracle)", st == 404,
 
 # 11. chat E2E: deal one-liner -> claim -> book in chat (free deal)
 sess_sender = "p2-chat-user"
-r_signup = chatlib.handle_text(HUB, "signup", sender=sess_sender)
+r_signup = chatlib.handle_text(HUB, "signup p2chat@example.com", sender=sess_sender)
 check("chat signup works (session for booking)", "Account created" in r_signup, r_signup[:120])
 aid_m = re.search(r"acct-[0-9a-z]+", r_signup)
 check("signup reply exposes account id", bool(aid_m), r_signup[:120])
@@ -225,7 +225,7 @@ cl_id, cl_claim = (m_id.group(1), m_cl.group(0)) if (m_id and m_cl) else ("", ""
 st, leak = get(HUB, "/search?q=lamp")
 check("chat-created deal invisible in search", st == 200 and not any(x["id"] == cl_id for x in leak.get("listings", [])), f"{st}")
 r_book = chatlib.handle_text(HUB, f"book {cl_id} {cl_claim} Mia", sender=sess_sender)
-check("chat books private deal with inline claim", "Booked!" in r_book, r_book[:160])
+check("chat books private deal with inline claim", "Booked!" in r_book, r_book)
 
 # 12. chat deal help is honest
 r_help = chatlib.handle_text(HUB, "help", sender=sess_sender)

@@ -182,7 +182,7 @@ try:
     sys.path.insert(0, HERE)
     import chatlib
     sender = "h7-chat-sender"
-    r1 = chatlib.handle_text(BASE, "signup", sender=sender)
+    r1 = chatlib.handle_text(BASE, "signup h7chat@example.com", sender=sender)
     check("chat signup creates session", "acct-" in r1, r1[:120])
     s = chatlib._SESSIONS[sender]
     chat_aid = s["account_id"]

@@ -70,7 +70,7 @@ def main():
     env = dict(os.environ, HUB_PAY_MODE="testnet", HUB_SETTLE_MODE="auto",
                HUB_STATE_FILE=os.path.join(tmp, "state.json"),
                HUB_FACILITATOR_URL=stub.base("ok"),
-               HUB_EMAIL_MODE="log", HUB_ADMIN_KEY="ff-admin")
+               HUB_EMAIL_MODE="log", HUB_LIMIT_EMAIL="100", HUB_ADMIN_KEY="ff-admin")
     hub_log = open(os.path.join(tmp, "hub.log"), "a")
     hub = subprocess.Popen([sys.executable, "app.py", str(hub_port)],
                            cwd=HERE, env=env, stdout=hub_log,
@@ -191,7 +191,7 @@ def main():
         email-bind anti-spam cap (5/hour/source) is honest production law --
         a battery burning it with 8 personas gets stale codes. Vouch is the
         sanctioned pilot-era human check and burns no email quota."""
-        d = client.say("signup")
+        d = client.say("signup " + email)
         r1 = d.get("reply") or ""
         m = re.search(r"acct-[0-9a-f]+", r1)
         if m:
@@ -271,18 +271,14 @@ def main():
     c.say("any events in vienna?")
     d = c.say(f'Please book "Vinyl & Coffee Market — October Crates" for me ({L_VINYL})')
     check("C1 anon paid gate", "paid listing" in (d.get("reply") or "").lower()
-          and "signup" in (d.get("reply") or "").lower() and not is_pay_gate(d),
+          and "email" in (d.get("reply") or "").lower() and not is_pay_gate(d),
           (d.get("reply") or "")[:90])
-    d = c.say("signup")
+    d = c.say("signup cara@example.com")
     rc = d.get("reply") or ""
-    m_seed = re.search(r"\b([0-9a-f]{64})\b", rc)
-    seed_c = m_seed.group(1) if m_seed else ""
-    check("C2 signup auto-resumes paid flow (Tap Pay)",
-          "Account created" in rc and "Tap Pay" in rc and is_pay_gate(d)
+    check("C2 inline signup auto-resumes paid flow (Tap Pay)",
+          "Account created" in rc and "Code sent" in rc and "Tap Pay" in rc
+          and is_pay_gate(d)
           and (d.get("payment_request") or {}).get("listing_id") == L_VINYL, rc[-140:])
-    d = c.say("cara@example.com")
-    check("C2b email paste sends code", "Verification code sent" in (d.get("reply") or ""),
-          (d.get("reply") or "")[:90])
     d = c.say(last_email_code())
     check("C2c code paste completes the human check", "Email verified" in (d.get("reply") or ""),
           (d.get("reply") or "")[:90])
@@ -404,7 +400,7 @@ def main():
     # (re-signup would create a new account; instead capture from session state)
     # simpler: capture seed from a fresh signup reply text
     f = C()
-    d = f.say("signup")
+    d = f.say("signup frida-seed@example.com")
     r = d.get("reply") or ""
     secs_f = d.get("secrets") or []
     seed_f = ""

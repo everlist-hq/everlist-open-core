@@ -44,7 +44,7 @@ def main():
     env = dict(os.environ, HUB_PAY_MODE="testnet", HUB_SETTLE_MODE="auto",
                HUB_STATE_FILE=os.path.join(tmp, "state.json"),
                HUB_FACILITATOR_URL=stub.base("ok"),
-               HUB_EMAIL_MODE="log", HUB_ADMIN_KEY="bt-admin",
+               HUB_EMAIL_MODE="log", HUB_ADMIN_KEY="bt-admin", HUB_LIMIT_EMAIL="100",
                EVERLIST_BRAIN_DISABLED="1", EVERLIST_LLM_FIRST="0")
     hub_log = open(os.path.join(tmp, "hub.log"), "a")
     hub = subprocess.Popen([sys.executable, "app.py", str(hub_port)],
@@ -132,13 +132,13 @@ def main():
     d2 = c.say('Please book \u201cVinyl & Coffee Market \u2014 October Crates\u201d for me (even-1)')
     r2 = d2.get("reply") or ""
     check("T2 CTA hits the account gate", "paid listing" in r2.lower()
-          and "signup" in r2.lower(), r2[:90])
+          and "email" in r2.lower(), r2[:90])
     _want_after_t2 = {k: v for k, v in webchat.chatlib._LAST_BOOK_WANT.items()
                       if v.get("lid") == "even-1"}
     check("T2 thread stashed durably", bool(_want_after_t2),
           "no want recorded for even-1")
 
-    d3 = c.say("signup")
+    d3 = c.say("signup cara@example.com")
     r3 = d3.get("reply") or ""
     check("T3 signup creates account + resumes Pay gate",
           "Account created" in r3 and is_pay_gate(d3),
@@ -168,7 +168,7 @@ def main():
     d2b = c2.say("go ahead")
     r2b = d2b.get("reply") or ""
     check("stash-loss anomaly: 'go ahead' keeps the thread (anon gate re-render)",
-          "Vinyl" in r2b and "signup" in r2b.lower()
+          "Vinyl" in r2b and "email" in r2b.lower()
           and "paid listing" in r2b.lower() and not is_name_steer(r2b), r2b[:90])
 
     # ------------------------------------------------------------------
@@ -206,7 +206,7 @@ def main():
     r5a = d5a.get("reply") or ""
     check("German 'jetzt buchen' keeps the held spot",
           "Vinyl" in r5a and "holding your spot" in r5a.lower()
-          and "signup" in r5a.lower() and not is_name_steer(r5a), r5a[:90])
+          and "email" in r5a.lower() and not is_name_steer(r5a), r5a[:90])
 
     # ------------------------------------------------------------------
     # 6) free-listing journey: gate -> signup auto-resume -> name -> human
@@ -217,19 +217,19 @@ def main():
     c6.say("any events in vienna?")
     d6a = c6.say("book even-2")
     r6a = d6a.get("reply") or ""
-    check("free booking hits the account gate", "signup" in r6a.lower(), r6a[:90])
+    check("free booking hits the account gate", "email" in r6a.lower(), r6a[:90])
     d6b = c6.say("signup")
     r6b = d6b.get("reply") or ""
-    check("signup auto-resumes into the name ask",
-          "Account created" in r6b and "name" in r6b.lower(), r6b[-160:])
-    d6c = c6.say("Anna")
+    check("bare signup asks for the email (required at signup)",
+          "email" in r6b.lower() and "Account created" not in r6b, r6b[:110])
+    d6c = c6.say("anna@example.com")
     r6c = d6c.get("reply") or ""
-    check("'Anna' rides through to the human check",
-          "human check" in r6c.lower() or "email" in r6c.lower(), r6c[:90])
-    d6d = c6.say("anna@example.com")
+    check("email paste creates account + resumes into the name ask",
+          "Account created" in r6c and "name" in r6c.lower(), r6c[-160:])
+    d6d = c6.say("Anna")
     r6d = d6d.get("reply") or ""
-    check("email paste sends the verification code",
-          "code" in r6d.lower(), r6d[:90])
+    check("'Anna' rides through to the human check (code already sent)",
+          "code" in r6d.lower() or "human check" in r6d.lower(), r6d[:110])
     import re as _re
     _m = _re.findall(r"verification code: ([A-Za-z0-9]{6})",
                      open(os.path.join(tmp, "hub.log")).read())

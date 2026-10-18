@@ -123,7 +123,7 @@ try:
 
     print("== H15: chat E2E - services listing + booking IN CHAT ==")
     # A0-style secrets (spec 2026-10-18): agent path inlines raw values.
-    reply = chatlib.secrets_inline(chatlib.handle_text(HUB, "signup", "h15-chat"), "h15-chat")
+    reply = chatlib.secrets_inline(chatlib.handle_text(HUB, "signup h15@example.com", "h15-chat"), "h15-chat")
     m = re.search(r"[0-9a-f]{64}", reply)
     check("chat signup returns seed once (session active, agent path inlines)", bool(m), reply[:120])
     aid_m = re.search(r"acct-[0-9a-f]{8}", reply)

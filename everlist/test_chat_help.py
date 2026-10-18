@@ -110,7 +110,7 @@ check("B10 no documented command falls through to search-fallback", not fell, f"
 
 # ---- per-intent signatures (routing proof) ----
 SIGS = {
-    "signup": "Account created",
+    "signup": "email",
     "login-seed": "unknown pubkey",          # rejection, NOT a session
     "login": "❌",                            # B10 fix: rejected logins never welcome
     "whoami": "anonymously",                  # probe order: signup(auto-login) -> ... -> logout-all
@@ -125,7 +125,7 @@ for cmd, sig in SIGS.items():
           f"reply: {REPLIES[cmd][:80]!r}")
 
 # positive whoami: fresh chat, signup auto-login -> logged-in status
-r_signup = chatlib.handle_text(HUB, "signup", "b10-whoami")
+r_signup = chatlib.handle_text(HUB, "signup b10who@example.com", "b10-whoami")
 assert "Account created" in r_signup
 r_who = chatlib.handle_text(HUB, "whoami", "b10-whoami")
 check("B10 whoami shows logged-in account after signup", "Logged in as acct-" in r_who, r_who[:80])
@@ -321,7 +321,7 @@ import re as _re_mega
 _M = "mega-%d" % os.getpid()
 # A0-style secrets (spec 2026-10-18): the AGENT path inlines raw values via
 # secrets_inline (wrapper.py does the same); handle_text alone returns markers.
-_r = chatlib.secrets_inline(chatlib.handle_text(HUB, "signup Mega Reg", _M), _M)
+_r = chatlib.secrets_inline(chatlib.handle_text(HUB, "signup mega-reg@example.com", _M), _M)
 _seed = _re_mega.search(r"[0-9a-f]{64}", _r)
 check("mega: signup returns a 64-hex seed (agent path inlines)", bool(_seed), _r[:90])
 if _seed:
