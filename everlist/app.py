@@ -3658,7 +3658,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(409, {"error": f"escrow is {b['escrow']}"})
                 b["escrow"] = "RELEASED"
                 for t in LEDGER:
-                    if t["booking"] == bid: t["escrow"] = "RELEASED"; t["released_to"] = "owner"
+                    if t.get("booking") == bid: t["escrow"] = "RELEASED"; t["released_to"] = "owner"  # fullflow 2026-10-18: t.get - ledger rows without a booking key (x402_settlement wallet rows) must be skipped, not KeyError the hub
                 _persist_locked()
             _notify_booking("released", b, _listing_of(b))
             return self._json(200, {"ok": True, "id": bid, "escrow": "RELEASED",
@@ -3793,11 +3793,15 @@ class Handler(BaseHTTPRequestHandler):
                 lst = next((l for l in LISTINGS if l["id"] == b.get("listing_id")), None)
                 if lst and VERTICAL_SCHEMAS.get(b["vertical"], {}).get("tracks_capacity"):
                     lst["registered"] = max(0, lst.get("registered", 0) - b.get("quantity", 1))
-                for t in LEDGER:
-                    if t["booking"] == bid: t["escrow"] = "REFUNDED"; t["refunded_to"] = "buyer"
+                for t in LEDGER:  # fullflow 2026-10-18: t.get - ledger rows without a booking key (x402_settlement wallet rows) must be skipped, not KeyError the hub
+                    if t.get("booking") == bid: t["escrow"] = "REFUNDED"; t["refunded_to"] = "buyer"
                 _persist_locked()
             _notify_booking("refunded", b, _listing_of(b))
-            return self._json(200, {"ok": True, "id": bid, "escrow": "REFUNDED"})
+            # fullflow 2026-10-18: the response carries the refunded amount so
+            # honest clients can show the real money journey (a PAID cancel
+            # must never print 'nothing to pay')
+            return self._json(200, {"ok": True, "id": bid, "escrow": "REFUNDED",
+                                    "amount": b.get("amount", 0)})
         if path.startswith("/book/") and path.endswith("/rate"):
             # S2: mutating route - per-source backstop before any auth work
             with LOCK:

@@ -210,6 +210,42 @@ def _transfer_cmd(hub_url: str, sender: str, arg: str) -> str:
             "any booking.")
 
 
+def _cancel_booking(hub_url: str, sender: str, arg: str) -> str:
+    """Chat-level booking cancellation (owner full-flow battery 2026-10-18):
+    the hub owns the refund-window law (/book/<id>/cancel, cancel-token auth,
+    REFUNDED only when the hub really executes the refund) - the chat is a
+    thin, honest client: in-window cancels refund, closed windows refuse."""
+    bid = (arg or "").strip()
+    if not bid or " " in bid or "/" in bid or not bid.startswith("bk-"):
+        return ("To cancel a booking: cancel <booking-id>\n"
+                "e.g. cancel bk-1a2b3c4d5e6f. Yours: 'my-bookings'. Inside the "
+                "listing's refund window your money goes straight back to you.")
+    s = _session(sender)
+    tok = (s or {}).get("cancel_tokens", {}).get(bid) if s else None
+    if not tok:
+        return ("I can only cancel bookings made in this chat - the cancel key "
+                "lives here. Find yours: 'my-bookings'.")
+    code, res = _hub_post(hub_url, f"/book/{bid}/cancel", {}, token=tok)
+    if code is None:
+        return "Sorry - the EverList hub is unreachable right now. Try again shortly."
+    if code == 409:
+        err = str(res.get("error", ""))
+        if "refund window" in err.lower():
+            return ("⏳ The refund window for this booking has closed — the escrow "
+                    "released to the organizer, so there is nothing left to refund. "
+                    "That is the protection working exactly as agreed.")
+        return f"❌ {err or 'this booking can no longer be cancelled'}"
+    if code != 200:
+        return f"❌ {res.get('error', 'could not cancel this booking')}"
+    try:
+        (s or {}).get("cancel_tokens", {}).pop(bid, None)
+    except Exception:
+        pass
+    return (f"✅ Cancelled — booking {bid} is off the board.\n"
+            + _escrow_journey(res.get("escrow", ""), res.get("amount"))
+            + "\nThe spot goes back to the board for someone else.")
+
+
 def _booking_status(hub_url: str, sender: str, arg: str) -> str:
     """H10: poll one booking's status. Logged-in: session token. Anonymous:
     re-mint /access for this chat's own agent address (deterministic principal
@@ -4263,6 +4299,15 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                  or re.match(r"^(?:(?:ok|okay|yes|yep|sure|and|then|actually|also|please|bitte|gerne|ja|danke)[,\s]+)*(?:i(?:'d|\s+would|\s+want\s+to|\s+will)?\s+(?:like\s+|will\s+)?|ich\s+(?:moe?chte|will|nehme)|let'?s\s+)?(?:book|buchen?|nimm|take)\b", low))):
         _st = _LAST_RESULTS.get(sender) or []
         if not _st:
+            # owner 2026-10-17 (post-success guard): a bare affirmation after a
+            # SUCCESSFUL booking must get the honest already-booked reply even
+            # with no search stash (fullflow B3 2026-10-18: one-shot booking
+            # then 'book it' hit the no-stash wall and invited a re-book).
+            _bdone0 = _LAST_BOOK_DONE.get(sender)
+            if _bdone0 and _BOOK_AFFIRM_RX.match(low):
+                return (f"You're already booked for '{_bdone0.get('title')}' — see your "
+                        "Bookings tab (/?view=dash). Want another spot? Say "
+                        "'book <nr>' after a fresh search.")
             # r5 gate 2026-10-04 (first-touch corpus): a book-shaped sentence
             # with NO stash is a search request - 'i want to book something
             # outdoors in vienna' must search, never dead-end.
@@ -4370,7 +4415,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
             and not _TOPIC_NOUN_RX.search(_ns_full)
             and not _BOOK_AFFIRM_RX.match(_ns_full)
             and not _BOOK_REFERENTIAL_RX.match(_ns_full)  # owner 2026-10-17: go-aheads never become names ('lol ok' still steers)
-            and not re.match(r"^(search|find|show|book|cancel|help|my-bookings|bookings|more|next|all|edit|delete|archive|list|fee|whoami|dashboard|signup|login|logout|notify|recover)\b", _ns_full)  # r4 gate 2026-10-04: typed commands are not names — 'search pizza' re-run must search, not steer
+            and not re.match(r"^(search|find|show|book|cancel|booking|help|my-bookings|my-listings|bookings|more|next|all|edit|delete|archive|list|fee|whoami|dashboard|signup|login|logout|notify|recover)\b", _ns_full)  # r4 gate 2026-10-04: typed commands are not names — 'search pizza' re-run must search, not steer; fullflow 2026-10-18: +booking/my-listings
             and (_LAST_RESULTS.get(sender) or [])):
         return ("Which one would you like? Say 'the first one', 'the free one', "
                 "or its name - then I'll take the booking name.")
@@ -4495,6 +4540,8 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
         email = bits[0] if bits else ""
         code = bits[1] if len(bits) > 1 else ""
         return _recover_confirm(hub_url, email, code)
+    if low == "recover":
+        return _recover(hub_url, "")
     if low.startswith("recover "):
         return _recover(hub_url, text.strip()[8:].strip())
 
@@ -4650,7 +4697,9 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     # H10: booking status poll — BEFORE the booking-intent (startswith('book') would swallow it)
     if low == "transfer" or low.startswith("transfer "):
         return _transfer_cmd(hub_url, sender, text.strip()[len("transfer"):].strip())
-    if low.startswith("booking "):
+    if low.startswith("cancel "):
+        return _cancel_booking(hub_url, sender, text.strip()[7:].strip())
+    if low == "booking" or low.startswith("booking "):
         return _booking_status(hub_url, sender, text.strip()[8:].strip())
     # C4: buyer rates a settled booking (its own command — 'book' would swallow 'rate' otherwise never)
     if low == "rate" or low.startswith("rate "):
