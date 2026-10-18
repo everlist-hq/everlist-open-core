@@ -319,9 +319,11 @@ check("r4: listing resume is honest when nothing is in progress",
 import re as _re_mega
 
 _M = "mega-%d" % os.getpid()
-_r = chatlib.handle_text(HUB, "signup Mega Reg", _M)
+# A0-style secrets (spec 2026-10-18): the AGENT path inlines raw values via
+# secrets_inline (wrapper.py does the same); handle_text alone returns markers.
+_r = chatlib.secrets_inline(chatlib.handle_text(HUB, "signup Mega Reg", _M), _M)
 _seed = _re_mega.search(r"[0-9a-f]{64}", _r)
-check("mega: signup returns a 64-hex seed", bool(_seed), _r[:90])
+check("mega: signup returns a 64-hex seed (agent path inlines)", bool(_seed), _r[:90])
 if _seed:
     chatlib.handle_text(HUB, "login-seed %s" % _seed.group(0), _M)
 _r = chatlib.handle_text(HUB, "deal Mega Reg Deal | 30 | 2026-10-20 | Graz", _M)

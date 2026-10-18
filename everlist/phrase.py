@@ -115,6 +115,7 @@ _SECRET_RX = re.compile(
     r"|manage code[^\n]*:[^\n]*"
     r"|\b[0-9a-f]{16,64}\b)", re.I)              # raw hex codes/seeds
 _SECRET_PH = "[[SECRET]]"
+_MARKER_RX = re.compile(r"\[\[(?:secret|pay|focus):[^\]]+\]\]")
 
 
 def _redact(text: str):
@@ -124,6 +125,9 @@ def _redact(text: str):
         secrets.append(m.group(0))
         return _SECRET_PH
 
+    # A0-style markers ride the [[SECRET]] placeholder slot: the author never
+    # sees even the ref ids; _reinject restores them byte-identically after.
+    text = _MARKER_RX.sub(_sub, text)
     return _SECRET_RX.sub(_sub, text), secrets
 
 
@@ -308,6 +312,11 @@ def phrase(reply: str, user_text: str, sender: str = "", history=None) -> str:
                 "Rewrite this answer naturally, changing NO facts at all:\n"
                 + redacted[:4000])})
         out = _call(msgs)
+        if out is not None and out.count(_SECRET_PH) != len(secrets):
+            # A0 secret slots lost/duplicated in the rewrite: force floor
+            _log({"event": "secret_slot_guard", "sender": sender[:16],
+                  "attempt": attempt})
+            out = None
         if out is None:
             _STAT["outage"] += 1
             _log({"event": "outage", "sender": sender[:16], "attempt": attempt})

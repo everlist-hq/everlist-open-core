@@ -122,9 +122,10 @@ try:
     check("cancel works on WAIVED bookings (H15 fix)", c.get("escrow") == "REFUNDED", str(c.get("escrow")))
 
     print("== H15: chat E2E - services listing + booking IN CHAT ==")
-    reply = chatlib.handle_text(HUB, "signup", "h15-chat")
+    # A0-style secrets (spec 2026-10-18): agent path inlines raw values.
+    reply = chatlib.secrets_inline(chatlib.handle_text(HUB, "signup", "h15-chat"), "h15-chat")
     m = re.search(r"[0-9a-f]{64}", reply)
-    check("chat signup returns seed once (session active)", bool(m), reply[:120])
+    check("chat signup returns seed once (session active, agent path inlines)", bool(m), reply[:120])
     aid_m = re.search(r"acct-[0-9a-f]{8}", reply)
     check("chat signup returns account id", bool(aid_m), reply[:120])
     st, vres = req("POST", "/accounts/vouch", {"account_id": aid_m.group(0)},

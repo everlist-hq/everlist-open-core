@@ -203,7 +203,7 @@ def _transfer_cmd(hub_url: str, sender: str, arg: str) -> str:
             "\n"
             "🔑 NEW BOOKING SECRET - shown once, only here. The old secret stopped "
             "working the moment we transferred. Copy it NOW and send it to them:\n"
-            f"{res.get('booking_secret')}\n"
+            f"[[secret:booking:{_secret_put(sender, 'booking', res.get('booking_secret'))}]]\n"
             "\n"
             "💳 Everything else stays exactly as it was - payment protection, refund "
             "window, the event itself. They can cancel via their Bookings tab like "
@@ -294,6 +294,43 @@ _G_PLACE = "⌂"     # house = place
 _G_TIME = "◷"      # clock face = time
 _G_PERSON = "♟"    # pawn = a human wanted; closes every row
 _G_ESCROW = "✪"    # seal = escrow-protected
+
+# ---- Secret placeholders (A0-style, spec 2026-10-18) -----------------------
+_SECRET_STASH: dict = {}          # sender -> {ref: {kind, value, ts}}
+_SECRET_TTL = 900.0
+_SECRET_CAP = 20
+_SECRET_MARKER_RX = re.compile(r"\[\[secret:([a-z]+):([0-9a-f]{24})\]\]")
+
+
+def _secret_put(sender: str, kind: str, value: str) -> str:
+    """Stash one secret for this sender; returns the opaque ref."""
+    import secrets as _secrets
+    ref = _secrets.token_hex(12)
+    bucket = _SECRET_STASH.setdefault(sender, {})
+    now = time.time()
+    for k in [k for k, v in bucket.items() if now - v.get("ts", 0) > _SECRET_TTL]:
+        bucket.pop(k, None)
+    if len(bucket) >= _SECRET_CAP:
+        bucket.pop(next(iter(bucket)))
+    bucket[ref] = {"kind": kind, "value": str(value or ""), "ts": now}
+    return ref
+
+
+def secret_take(sender: str, ref: str):
+    e = (_SECRET_STASH.get(sender) or {}).pop(ref, None)
+    if not e or time.time() - e.get("ts", 0) > _SECRET_TTL:
+        return None
+    return e.get("kind"), e.get("value")
+
+
+def secrets_inline(reply: str, sender: str) -> str:
+    """Agent/A2A/CLI path: replace markers with raw values from the stash."""
+    def _sub(m):
+        e = (_SECRET_STASH.get(sender) or {}).pop(m.group(2), None)
+        if not e or time.time() - e.get("ts", 0) > _SECRET_TTL:
+            return "[secret unavailable]"
+        return str(e.get("value") or "")
+    return _SECRET_MARKER_RX.sub(_sub, reply)
 
 
 def _escrow_journey(esc_state: str, amount) -> str:
@@ -1330,7 +1367,7 @@ def _signup(hub_url: str, sender: str, email: str = "") -> str:
        # the old block was hard to read and users didn't know what to do next.
     _seed_msg = (f"✅ Account created ({aid}).\n\n"
             f"1️⃣ Save your account SEED — shown ONCE, like a crypto seed phrase:\n"
-            f"   {seed}\n"
+            f"   [[secret:seed:{_secret_put(sender, 'seed', seed)}]]\n"
             "   (Only you hold it — the hub stores just your public key. "
             "Lost it + no recovery email = account gone.)\n"
             + _step2
@@ -1472,7 +1509,7 @@ def _recover_confirm(hub_url: str, email: str, code: str) -> str:
         return f"{res.get('error', 'Invalid or expired recovery code. Request a new one with recover <email>.')}"
     if res.get("kind") == "keypair":
         return (f"Recovered account {res.get('account_id')}!\n\n"
-                f"\U0001f511 Your NEW account SEED (shown ONCE): {seed}\n"
+                f"\U0001f511 Your NEW account SEED (shown ONCE): [[secret:seed:{_secret_put(sender, 'seed', seed)}]]\n"
                 "Store it - and 'login-seed <seed>' to continue here.")
     return (f"Recovered account {res.get('account_id')}!\n\n"
             f"Your NEW account code (shown ONCE): {res.get('account_code')}\n"
@@ -1719,9 +1756,9 @@ def _create_deal(hub_url: str, sender: str, text: str) -> str:
     lid = res.get("id", "?")
     claim = res.get("claim_code", "")
     mgmt = ("Owned by your account — manage it without codes." if sess
-            else f"🔑 Manage code (shown ONCE): {res.get('manage_code', '')}")
+            else f"\U0001f511 Manage code (shown ONCE): [[secret:manage:{_secret_put(sender, 'manage', res.get('manage_code', ''))}]]")
     return (f"🔒 Private deal created: '{title}' — {price:g} USD (id: {lid})\n"
-            f"🗝 Claim code (shown ONCE — the ONLY key to this deal): {claim}\n\n"
+            f"\U0001f5dd Claim code (shown ONCE \u2014 the ONLY key to this deal): [[secret:claim:{_secret_put(sender, 'claim', claim)}]]\n\n"
             f"Send the other party BOTH things: id {lid} + claim code.\n"
             f"They book via any EverList agent ('book {lid} {claim} <name>') or the SDK "
             "(booking field claim=...). The money is held safely when they book; you release it "
@@ -2071,7 +2108,7 @@ def _create_listing(hub_url: str, sender: str, text: str) -> str:
     return (f"✅ Listed! '{res.get('title', title)}' is live (id: {res.get('id')}). "
             f"Anyone can find it with 'search'. "
             f"({_list_counts[sender]}/{_LIST_CAP} listings used)" + _tip + "\n\n"
-            f"🔑 Your manage code (shown ONCE — store it!): {code}\n"
+            f"\U0001f511 Your manage code (shown ONCE \u2014 store it!): [[secret:manage:{_secret_put(sender, 'manage', code)}]]\n"
             f"It owns the listing: 'edit {res.get('id')} <code> ...' or 'delete {res.get('id')} <code>'. "
             f"Tip: 'signup' gives you an account (cap 25, no codes).")
 
@@ -4955,7 +4992,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                     "\n"
                     "🔑 YOUR BOOKING SECRET — shown once, only here. This chat resets "
                     "if you reload the page, so copy it NOW:\n"
-                    f"{res.get('booking_secret')}\n"
+                    f"[[secret:booking:{_secret_put(sender, 'booking', res.get('booking_secret'))}]]\n"
                     "(It unlocks your private booking details.)\n"
                     "\n"
                     "⏭ What happens next:\n"

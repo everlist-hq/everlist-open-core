@@ -103,7 +103,8 @@ def main():
     assert code == 201, f"listing {code} {res}"
     lid = res.get("id")
     check("free listing created", bool(lid), str(res)[:100])
-    r = chatlib.handle_text(hub, f"book {lid} Anna", sender=sender)
+    # A0-style secrets (spec 2026-10-18): agent path inlines raw values.
+    r = chatlib.secrets_inline(chatlib.handle_text(hub, f"book {lid} Anna", sender=sender), sender)
     m = _re.search(r"bk-[0-9a-f]+", r)
     check("chat booking made", bool(m), r[:120])
     bid = m.group(0) if m else ""
@@ -119,7 +120,7 @@ def main():
     old_secret = m.group(1) if m else ""
 
     # --- T1 happy path via chat command ---
-    r2 = chatlib.handle_text(hub, f"transfer {bid} Bob", sender=sender)
+    r2 = chatlib.secrets_inline(chatlib.handle_text(hub, f"transfer {bid} Bob", sender=sender), sender)
     check("T1 chat transfer ok", "Transferred" in r2 and "Bob" in r2, r2[:120])
     m = _re.search(r"([0-9a-f]{32})", r2)
     new_secret = m.group(1) if m else ""

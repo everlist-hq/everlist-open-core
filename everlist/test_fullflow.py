@@ -406,9 +406,14 @@ def main():
     f = C()
     d = f.say("signup")
     r = d.get("reply") or ""
-    m = re.search(r"\b([0-9a-f]{64})\b", r)
-    seed_f = m.group(1) if m else ""
-    check("E15 seed shown ONCE at signup", bool(seed_f), r[:110])
+    secs_f = d.get("secrets") or []
+    seed_f = ""
+    if secs_f:
+        st_f, d_f = f._req("/api/secret/reveal", {"ref": secs_f[0]["ref"]}, "POST")
+        if st_f == 200:
+            seed_f = d_f.get("value") or ""
+    check("E15 seed shown ONCE at signup (reveal flow)", bool(re.search(r"[0-9a-f]{64}", seed_f))
+          and "[0-9a-f]{64}" not in r, r[:110])
     d = e2.say(f"login-seed {seed_f}")
     r = d.get("reply") or ""
     check("E16 login-seed restores account in 2nd chat", "Welcome back" in r or "logged" in r.lower(), r[:110])

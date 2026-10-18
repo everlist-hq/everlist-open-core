@@ -247,6 +247,10 @@ async def handle_chat(ctx: Context, sender: str, msg: ChatMessage):
     log.info("chat from %s: %s", redact(sender), redact(text[:80]))
     try:
         reply_text = await asyncio.to_thread(chatlib.handle_text, HUB_URL, text, sender)
+        # A0-style secrets (spec 2026-10-18): agents receive raw values
+        # via the stash — markers never leave the server unresolved.
+        reply_text = await asyncio.to_thread(
+            chatlib.secrets_inline, reply_text, sender)
     except Exception as ex:  # B4: safe envelope even for chatlib bugs
         log.warning("chat failure detail=%s", redact(repr(ex)))
         reply_text = "Sorry — something went wrong on my side. Please try again."
