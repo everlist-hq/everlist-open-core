@@ -511,9 +511,14 @@ Booking flows through the SAME `_book_core` engine (zero drift from /book
 gates); checkout only adds a browser front door.
 
 - **Sessions:** `POST /checkout/sessions` mints a `chk-` capability URL
-  (128-bit, TTL 24h, hub cap 5000, per-source rate limit) for a PUBLIC,
-  **FREE** listing. Paid listings refuse at create with the TRACK E4/E5
-  fiat-provider pointer (contract honesty; the demo rail moves no money).
+  (128-bit, TTL 24h, hub cap 5000, per-source rate limit) for a PUBLIC
+  listing. Rails (owner-approved 2026-10-19): **FREE** listings run the
+  demo rail (escrow WAIVED at booking, no money moves); **PAID** listings
+  run the **wallet rail** (TRACK E7) on testnet hubs — the session face
+  carries a `payment_request` copied VERBATIM from `/payterms` (the single
+  source of truth: receiver, micro-units, asset, network; never
+  recomputed). On non-testnet hubs paid sessions still refuse at create
+  with the TRACK E4/E5 fiat pointer (fiat/card rails stay deferred).
   Terms + total are snapshotted at create.
 - **Stale detection (lazy):** archive, make-private, re-price, or re-terms
   under a live session -> honest 409 `listing changed`; the verified email
@@ -529,10 +534,21 @@ gates); checkout only adds a browser front door.
   exhausted). Bind-or-create account per the Tier-1 email law
   (`verified_by=email-code`). The Tier-2 `require_verified_buyer` gate is
   NOT satisfied by checkout email verification — fail-closed as everywhere.
+  PAID sessions (wallet rail): `POST .../verify {code, payment}` — the
+  buyer's EIP-3009 payment (base64 x402 envelope signed for the face's
+  `payment_request`) is verified by the booking engine itself. Honesty
+  walls: a proven code WITHOUT payment returns 402 and burns NO attempt
+  (wallet hiccup ≠ user fault); an INVALID payment returns 402 with the
+  engine's reason and the session reopens honestly (code cleared, email
+  and account kept — re-pay for a fresh code).
 - **Booking:** internally minted, gen-bound book token + sid idempotency
-  key call `_book_core`. Free listings settle escrow-WAIVED. The 201 body
-  carries the one-time booking credentials — buyer channel ONLY; the
-  merchant postMessage learns `booking_id` and nothing else.
+  key call `_book_core` — the signed payment RIDES this call, so money
+  moves exactly when the booking lands (atomic pay+book; a failed booking
+  never moves money). `payment_payer` / `payment_value` / `payment_nonce`
+  are server-derived only (M14/C12 law — never client-claimed). Free
+  listings settle escrow-WAIVED; paid bookings settle escrow-HELD. The
+  201 body carries the one-time booking credentials — buyer channel ONLY;
+  the merchant postMessage learns `booking_id` and nothing else.
 - **Faces:** GET on the capability URL returns status, masked email,
   listing snapshot, total — NO secrets, ever. Static assets (`/checkout`,
   `/checkout.js`, `/checkout.css`, `/book.js`) ship from a
@@ -545,10 +561,15 @@ gates); checkout only adds a browser front door.
 - **Knobs:** `HUB_CHECKOUT_TTL`, `HUB_CHECKOUT_PENDING_TTL` (code window,
   15 min), `HUB_CHECKOUT_RESEND_COOLDOWN`, `HUB_CHECKOUT_CAP`,
   `HUB_LIMIT_CHECKOUT`, `HUB_LIMIT_CHECKOUT_PAY`.
-- **Real money:** gated on TRACK E4/E5 (licensed fiat on-ramp widget inside
-  the hosted window; refund-to-original-card as a hard provider criterion).
-  The demo rail is the honest v1; nothing else changes when E4 lands.
+- **Real money:** paid listings move REAL stablecoins via the wallet rail
+  (owner-approved TRACK E7, testnet hubs) — no partners, no licenses, no
+  third parties: wallet → escrow directly. Fiat/card rails (Apple Pay
+  inside our window) stay deferred on TRACK E4/E5 (licensed fiat on-ramp;
+  refund-to-original-card as a hard provider criterion when revived).
 
 Regression: `test_checkout.py` (58 checks: honest walls, genuine capacity
 race, secrets-never-on-capability-face, mail/attempts walls, stale matrix,
-assets+CSP, embed contract) wired into the gate as the TRACK E cluster.
+assets+CSP, embed contract) plus `test_checkout_paid.py` (25 checks: real
+EIP-3009 pay+book atomicity, forged/replay walls, recovery path, no-burn
+honesty, fee+payterms face equality) wired into the gate as the TRACK E
+cluster.

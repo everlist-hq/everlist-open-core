@@ -103,9 +103,13 @@ AUTH_HITS = {}  # (kind, source_ip) -> [timestamps]
 # "EverList as Stripe": any website sells an EverList listing through a
 # hosted checkout window on the hub domain. Sessions are CAPABILITY URLs
 # (chk- 128-bit); bookings are created ONLY through the shared _book_core
-# engine (zero drift from the /book gates). Fiat rail: HUB_CHECKOUT_PROVIDER
-# empty = demo rail (honestly labeled, no real money); any value = honest
-# 501 until the owner-gated provider integration lands (TRACK E4/E5).
+# engine (zero drift from the /book gates). Rails: FREE listings = demo rail
+# (escrow WAIVED, no money moves). PAID listings = wallet rail (E7,
+# owner-approved 2026-10-19): on testnet hubs (HUB_PAY_MODE=testnet) the
+# buyer's EIP-3009 wallet signature rides the verify call into _book_core -
+# money moves exactly when the booking lands (atomic pay+book). Fiat/card
+# rails stay deferred (TRACK E4/E5); HUB_CHECKOUT_PROVIDER remains reserved
+# for that future door.
 CHECKOUT_TTL = int(os.environ.get("HUB_CHECKOUT_TTL", "86400"))
 CHECKOUT_CAP = int(os.environ.get("HUB_CHECKOUT_CAP", "5000"))
 CHECKOUT_PENDING_TTL = int(os.environ.get("HUB_CHECKOUT_PENDING_TTL", "900"))  # email-code window (mirrors /accounts law)
@@ -152,12 +156,25 @@ def _checkout_face(sess):
         return {"listing": None}
     pub = _pub_listing(listing)
     total_c = _checkout_total_c(sess, listing)
-    return {"listing": pub, "quantity": sess["qty"],
+    resp = {"listing": pub, "quantity": sess["qty"],
             "total": total_c / 100.0,
             "buyer_fee": 0.0,
             "fee_note": "no EverList buyer fee - the price is what you pay",
             "payment_terms": sess["terms"],
             "identity_label": VERTICAL_SCHEMAS[listing["vertical"]]["booking"]["identity"]}
+    # Payment request for wallet-pay rail (only in testnet, only for paid listings)
+    if total_c > 0 and PAY_MODE == "testnet":
+        _recv = str(listing.get("receive_addr") or PAYTO).lower()
+        resp["payment_request"] = {
+            "listing_id": listing["id"],
+            "network": "base-sepolia",
+            "asset": BASE_SEPOLIA_USDC,
+            "receiver": _recv,
+            # EXACTLY the units _book_core's x402verify wall checks against:
+            # int(round((price_c / 100.0) * 1_000_000)) - zero drift.
+            "units": str(int(round((total_c / 100.0) * 1_000_000))),
+        }
+    return resp
 
 _CHECKOUT_MAIL_HITS = {}  # sha256(email) -> [timestamps]: anti email-bombing
 
@@ -1392,13 +1409,13 @@ def _openapi_spec():
             "/accounts/email/bind": {"post": op("Bind recovery email (code sent)", "accounts")},
             "/accounts/email/verify": {"post": op("Verify email code", "accounts")},
             "/checkout/sessions": {"post": op("Create embeddable checkout session (TRACK E)", "checkout",
-                note="Public, rate-limited. Creates a hosted checkout session (chk- capability URL) for a PUBLIC, FREE listing (v1 demo rail; paid listings need the fiat provider, TRACK E4/E5). Payment terms + total are snapshotted at create; listing changes stale the session.")},
+                note="Public, rate-limited. Creates a hosted checkout session (chk- capability URL) for a PUBLIC listing. FREE listings: demo rail, escrow WAIVED at booking (no money moves). PAID listings: wallet rail (E7) on testnet hubs (HUB_PAY_MODE=testnet) - the session face carries payment_request (receiver/units/asset) and the verify step takes the buyer's EIP-3009 signature; money moves exactly when the booking lands. Paid sessions are refused honestly on non-testnet hubs (TRACK E4/E5 fiat deferred). Payment terms + total are snapshotted at create; listing changes stale the session.")},
             "/checkout/sessions/{sid}": {"get": op("Checkout session status", "checkout",
                 note="Capability-URL face: status, masked email, listing snapshot, total. No secrets.")},
             "/checkout/sessions/{sid}/pay": {"post": op("Checkout pay step", "checkout",
                 note="POST {email, name} binds the buyer and emails a 6-digit code (cooldown + per-address mail cap).")},
             "/checkout/sessions/{sid}/verify": {"post": op("Checkout verify step", "checkout",
-                note="POST {code} proves mailbox control (bind-or-create account, Tier-1 email law) and books through the shared booking engine. The 201 carries the one-time booking credentials (buyer channel only; merchant postMessage gets booking_id only).")},
+                note="POST {code} proves mailbox control (bind-or-create account, Tier-1 email law) and books through the shared booking engine. PAID sessions (wallet rail): POST {code, payment} - the buyer's EIP-3009 payment (base64 x402 envelope, signed for the session face's payment_request) is verified by the booking engine itself; money moves exactly when the booking lands (atomic pay+book; a proven code without payment returns honest 402 and burns no attempt). The 201 carries the one-time booking credentials (buyer channel only; merchant postMessage gets booking_id only).")},
             "/accounts/email/recover": {"post": op("Request recovery code (anti-enumeration)", "accounts")},
             "/accounts/email/recover/confirm": {"post": op("Confirm recovery -> NEW account code", "accounts")},
             "/accounts/notify/unsubscribe": {"get": op("Unsubscribe landing page (signed link from email footer)", "accounts"),
@@ -1673,8 +1690,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _checkout_pay(self, sess, data):
         """Pay step: bind email + name to the session and email a 6-digit code.
-        No money moves in the v1 rail (free listings book WAIVED; paid listings
-        were refused at session create - TRACK E4/E5 honesty)."""
+        No money moves HERE: free listings book escrow-WAIVED at verify; paid
+        listings (wallet rail, PAY_MODE=testnet) take the buyer's wallet
+        signature AT verify - money moves exactly when the booking lands."""
         email = str(data.get("email", "")).strip().lower()
         if not email or "@" not in email or "." not in email.rsplit("@", 1)[1] or len(email) > 254 or " " in email:
             return self._json(400, {"error": "valid email required (name@domain.tld)"})
@@ -1755,6 +1773,20 @@ class Handler(BaseHTTPRequestHandler):
                 _persist_locked()
                 return self._json(403, {"error": "invalid code",
                     "attempts_left": max(0, CHECKOUT_MAX_ATTEMPTS - sess["attempts"])})
+            # E7 wallet-pay: paid sessions move money AT booking time only -
+            # the signed payment rides THIS call into _book_core, so a proven
+            # code without a wallet signature costs nothing (no money moved,
+            # no nonce consumed) and the attempt is not burned.
+            payment_b64 = ""  # free sessions move no money
+            if sess.get("total_c", 0) > 0:
+                if PAY_MODE != "testnet":
+                    return self._json(409, {"error": "paid checkout requires PAY_MODE=testnet on this hub"})
+                payment_b64 = str(data.get("payment", "") or "").strip()
+                if not payment_b64:
+                    sess["attempts"] = 0  # code proven correct - wallet hiccup must not punish it
+                    _persist_locked()
+                    return self._json(402, {"error": "wallet signature required for paid checkout",
+                        "how": "approve the payment in your wallet, then confirm the code again"})
             # mailbox control proven -> bind-or-create (one email = one account)
             email, name = sess["email"], sess["name"]
             aid = next((a for a, v in ACCOUNTS.items()
@@ -1794,15 +1826,26 @@ class Handler(BaseHTTPRequestHandler):
         book = {"listing_id": lid, idf: name}
         if qty > 1:
             book["quantity"] = qty
-        bcode, bbody, beh = self._book_core(book, token=tok, idem_key=sess["sid"])
+        # E7: echo snapshotted terms for paid listings with CUSTOM terms
+        # (C12 consent law, mirrors the engine's own validation; the stale
+        # wall guarantees listing terms == sess['terms'] at verify time)
+        if listing and (listing.get("price") or 0) > 0 and _listing_is_custom_terms(listing):
+            book["accepted_payment_terms"] = sess["terms"]
+        # E7: payment rides INTO the engine - money moves exactly when the
+        # booking lands (atomic pay+book). payment=None for free sessions.
+        payment = payment_b64 if payment_b64 else None
+        bcode, bbody, beh = self._book_core(book, token=tok, idem_key=sess["sid"], payment=payment)
         with LOCK:
             if bcode == 201 and isinstance(bbody, dict):
                 sess["status"] = "booked"
                 sess["booking_id"] = str(bbody.get("id", ""))
+                sess["payment_payer"] = str(bbody.get("payment_payer") or "")
                 _persist_locked()
+                _moved = "paid wallet rail - money moved" if (sess.get("total_c", 0) > 0) else "demo rail - no money moved"
                 return self._json(201, {**bbody,
-                    "checkout": {"sid": sess["sid"], "rail": sess["rail"],
-                                 "note": "booked via embeddable checkout (demo rail - no money moved)"}},
+                    "checkout": {"sid": sess["sid"], "rail": sess["rail"], "money": _moved,
+                                 "payment_payer": sess.get("payment_payer") or None,
+                                 "note": "booked via embeddable checkout"}},
                     extra_headers=beh)
             # honest failure: reopen the session (email/account stay verified);
             # pass the REAL booking error through (capacity race, field walls...)
@@ -1817,7 +1860,7 @@ class Handler(BaseHTTPRequestHandler):
         """Book-core exit shim: tuple result instead of an HTTP write."""
         return (code, data, extra_headers)
 
-    def _book_core(self, data, token=None, claim=None, idem_key=None):
+    def _book_core(self, data, token=None, claim=None, idem_key=None, payment=None):
         """Booking engine core (extracted verbatim from the /book route).
 
         Returns (code, body, extra_headers). The HTTP route wraps this;
@@ -2118,7 +2161,7 @@ class Handler(BaseHTTPRequestHandler):
             _payer6 = _pvalue6 = _pnonce6 = None
             _paysettle = None
             if price_c > 0 and PAY_MODE == "testnet":
-                _phdr = self.headers.get("X-PAYMENT", "")
+                _phdr = payment if payment is not None else self.headers.get("X-PAYMENT", "")
                 if _phdr:
                     _recv6 = str(listing.get("receive_addr") or PAYTO).lower()
                     _units6 = int(round(price * 1_000_000))
@@ -3016,10 +3059,10 @@ class Handler(BaseHTTPRequestHandler):
                 price_c = int(round(listing["price"] * 100)) * qty
                 # honesty walls BEFORE any session exists. Checkout v1 = FREE
                 # listings only (demo rail, no money moves): paid listings
-                # need the fiat provider rail (TRACK E4/E5) - refusing here IS
-                # the contract (OpenAPI note + pay-step docstring promise it).
-                if price_c > 0:
-                    return self._json(409, {"error": "paid listings need the fiat provider rail (TRACK E4/E5) - checkout v1 covers free listings on this hub"})
+                # need PAY_MODE=testnet (wallet-pay rail) - refusing otherwise
+                # IS the contract (OpenAPI note + pay-step docstring promise it).
+                if price_c > 0 and PAY_MODE != "testnet":
+                    return self._json(409, {"error": "paid listings need PAY_MODE=testnet (wallet-pay rail, TRACK E7) on this hub - fiat/card rails deferred (TRACK E4/E5); checkout covers free listings here"})
                 sch = VERTICAL_SCHEMAS[_v]
                 if sch.get("tracks_capacity"):
                     left = listing["capacity"] - listing.get("registered", 0)
@@ -3036,7 +3079,11 @@ class Handler(BaseHTTPRequestHandler):
                     "email": "", "name": "", "acct_id": "", "origin": origin,
                     "lang": lang, "terms": _pt, "created": now, "exp": now + CHECKOUT_TTL,
                     "pay_exp": 0, "attempts": 0, "last_code": 0,
-                    "rail": "provider-pending" if CHECKOUT_PROVIDER else "demo",
+                    # E7 rail honesty: paid sessions carry the wallet rail
+                    # label (money moves at verify, testnet); free sessions
+                    # stay demo (escrow WAIVED, nothing moves).
+                    "rail": ("wallet-testnet" if price_c > 0 and PAY_MODE == "testnet"
+                             else ("provider-pending" if CHECKOUT_PROVIDER else "demo")),
                     "booking_id": "", "provider_ref": None,
                     "total_c": price_c}
             with LOCK:

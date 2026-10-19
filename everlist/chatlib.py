@@ -2521,6 +2521,56 @@ _BOARD_NOMATCH_LINES = (
 )
 
 
+def _family_suggest(hub_url: str, words: list, qual: dict, free_only: bool = False):
+    """Owner 2026-10-19 smart relaxation: turn a dead keyword into discovery.
+    Maps the search words onto the hub's OWN auto-tag families (pizza→food,
+    jazz→music — the same _AUTO_TAG_RULES listings are tagged with), then
+    counts real live family listings (location filter preserved — P0 city
+    law). Returns (matched_token, family, count, rows, top_list); empty
+    family/0 count when nothing honestly matches. Facts only from real
+    listings; the count is never invented."""
+    try:
+        _w = [str(x).lower() for x in (words or []) if str(x).strip()]
+        if not _w:
+            return "", "", 0, "", []
+        fam = rx = tok = None
+        for tag, r in _AUTO_TAG_RULES:
+            _hit = next((w for w in _w if re.search(r, w, re.I)), None)
+            if _hit:
+                fam, rx, tok = tag, r, _hit
+                break
+        if not fam:
+            return "", "", 0, "", []
+        import datetime as _dtf
+        import urllib.parse as _upf
+        _locq = ("&location=" + _upf.quote(str(qual["location"]))) if qual and "location" in qual else ""
+        try:
+            ls = _hub_get(hub_url, "/search?sort=date&from=" + _dtf.date.today().isoformat() + _locq).get("listings")
+        except Exception:
+            return "", "", 0, "", []
+        hits = [l for l in (ls or []) if re.search(
+            rx,
+            (str(l.get("title") or "") + " " + str(l.get("description") or "")
+             + " " + str(l.get("tags") or "") + " " + str(l.get("category") or "")
+             + " " + str(l.get("vertical") or "")).lower(), re.I)]
+        if free_only:
+            hits = [l for l in hits if float(l.get("price") or 0) <= 0]
+        if not hits:
+            return "", "", 0, "", []
+        rows = "\n".join(
+            "• %s — %s · say 'show %s'" % (
+                _mb(str(l.get("title") or "?")),
+                _human_date(str(l.get("date") or l.get("start") or "")),
+                l.get("id"))
+            for l in hits[:3])
+        # 5th element = ALL family hits: the caller stashes them all so the
+        # board chip count equals the honest line's count ('4 food
+        # experiences' -> 4 labeled cards); rows stay a 3-row preview.
+        return tok, fam, len(hits), rows, hits
+    except Exception:
+        return "", "", 0, "", []
+
+
 # per-sender one-shot reply notes (owner GO 2026-10-06): complaint restores
 # and fuzzy city corrections get a SHORT human acknowledgment, then clear.
 _SEARCH_NOTE: dict[str, str] = {}
@@ -2969,6 +3019,45 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
         try:
             import datetime as _dt
             import urllib.parse as _uparse
+            # Owner 2026-10-19 smart relaxation: before generic 'coming up',
+            # try the keyword's own auto-tag FAMILY (pizza→food, jazz→music —
+            # the same rules listings are tagged with). Location filter is
+            # preserved (P0 city law: never suggest other cities).
+            _ftok, _ffam, _fcount, _frows, _ftop = _family_suggest(hub_url, words, qual, free_only=free)
+            if _ftop:
+                if len(_LAST_RESULTS) > 500:
+                    for k in list(_LAST_RESULTS)[:len(_LAST_RESULTS) - 500]:
+                        _LAST_RESULTS.pop(k, None)
+                        _LAST_SEARCH.pop(k, None)
+                # stash ALL family hits: the board chip must show the same
+                # count the honest line quotes ('4 food experiences' -> 4
+                # labeled cards); agent rows stay capped at 3.
+                _LAST_RESULTS[sender] = _ftop
+                _LAST_SEARCH[sender] = {
+                    "q": "",
+                    "suggest": True,          # suggestions, not a pick question
+                    "sug_kind": "family",     # honest-results labeling (UI)
+                    "ts": time.time(),
+                    "filters": {**({"free": True} if free else {}),
+                                **{k: (float(v) if k.endswith("_price") else v) for k, v in qual.items()
+                                   if k != "location_corrected"},
+                                **({"exclude": " ".join(_excl[:3])} if _excl else {}),
+                                **({"tod": _tod} if _tod else {})}}
+                _plural = "" if _fcount == 1 else "s"
+                _verb = "is" if _fcount == 1 else "are"
+                if sender.startswith("web-"):
+                    # board-first law: ONE honest discovery line; the family
+                    # picks live on the board (stashed above, chip-labeled).
+                    sug = ("\n\nNo %s on the board right now — but %d %s experience%s %s, "
+                           "open for you on the board. 🌱 Tell me the one you like."
+                           % (_ftok, _fcount, _ffam, _plural, _verb))
+                else:
+                    sug = ("\n\nNo %s on the board right now — but %d %s experience%s %s. "
+                           "Here's what's coming up:\n%s\nSay 'search all' to browse everything."
+                           % (_ftok, _fcount, _ffam, _plural, _verb, _frows))
+                # no rotation tail here: the discovery line IS the copy
+                # (bank-retirement law; no double emoji, no filler)
+                return f"Nothing matched{qualifier}" + sug + _consume_note(sender)
             up = None
             # P0 2026-10-11: a location-scoped search must NEVER suggest
             # other cities as if they matched. When the user named a place,
@@ -3001,6 +3090,7 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
                     # (chip word 'pizzeria' after 'pizza?' steered instead of
                     # searching — the exact 'stupid' owner transcript).
                     "suggest": True,
+                    "sug_kind": "upcoming",   # honest-results labeling (UI)
                     "ts": time.time(),  # owner 2026-10-17: recovery guard — search newer than the booking WANT = changed mind
                     "filters": {**({"free": True} if free else {}),
                                 **{k: (float(v) if k.endswith("_price") else v) for k, v in qual.items()
@@ -3781,6 +3871,14 @@ def last_results(sender: str, cap: int = 48) -> list:
     same order the 'book <n>' / 'rate <n>' indexes refer to). Web UI uses this
     to open the results on the board; cap keeps payloads small."""
     return list(_LAST_RESULTS.get(sender) or [])[:cap]
+
+
+def last_results_kind(sender: str) -> str:
+    """Owner 2026-10-19 honest-results labeling: what the current stash IS.
+    Returns 'suggestions' when the stash came from a no-match relaxation
+    (family or upcoming) — the UI labels those cards so they never pose as
+    search results; '' for a real search."""
+    return "suggestions" if (_LAST_SEARCH.get(sender) or {}).get("sug_kind") else ""
 
 
 def handle_text(hub_url: str, text: str, sender: str = "") -> str:
@@ -5152,6 +5250,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     # scope here); `_tl` is only assigned further down in the dispatch region.
     if re.search(r"\b(i (really )?want to pay|i wanna pay|i would like to pay"
                  r"|i'?d like to pay|i'?ll pay|let me pay|how (do|can) i pay"
+                 r"|where (do|can|should) i pay|where to pay|no pay button"
                  r"|pay(ing)? (now|directly|here|in chat|by (card|paypal)))\b", low) \
             or re.fullmatch(r"(no+[!,.:; )*-]*)?(i want to pay|i'?ll pay"
                             r"|let me pay|pay)", low):

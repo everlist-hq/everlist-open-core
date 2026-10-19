@@ -52,9 +52,12 @@ booking credentials by email) without visiting the marketplace first:
 ```
 
 The merchant page learns a `booking_id` and nothing else (origin-checked
-postMessage; booking secrets never cross to the merchant site). v1 runs the
-honestly-labeled demo rail — bookings are real, no money moves; real fiat lands
-with the licensed provider rail. Normative contract: [SPEC.md §25](SPEC.md).
+postMessage; booking secrets never cross to the merchant site). Rails:
+**free** listings book on the demo rail (no money moves); **paid** listings
+pay with a crypto wallet right in the window — stablecoins land directly in
+escrow, money moves exactly when the booking lands, no third party ever
+touches the payment. Card/Apple Pay stays deferred (licensed fiat-provider
+rail). Normative contract: [SPEC.md §25](SPEC.md).
 
 ## Quickstart (10 minutes, SDK)
 

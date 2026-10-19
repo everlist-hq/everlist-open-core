@@ -64,13 +64,16 @@ Run a hub (`make up` → `http://localhost:8802`), then point the script at it:
 `book.js` derives the hub origin from its own script URL — production and
 local use the same embed.
 
-## Honest limits today (v1, demo rail)
+## Honest rails today
 
 - **Free listings** book end-to-end (escrow WAIVED — nothing to pay).
-- **Paid listings refuse checkout for now** with a clear pointer: real
-  card/Apple Pay arrives with the licensed fiat-provider rail (checkout
-  never moves money it can't settle). Paid bookings keep working via chat,
-  SDK, and direct API in the meantime.
+- **Paid listings** pay with a **crypto wallet inside the window**
+  (wallet rail, owner-approved 2026-10-19): a MetaMask-style signature for
+  the exact amount — stablecoins land directly in the booking's escrow,
+  money moves exactly when the booking lands, no third party ever touches
+  the payment (testnet-enabled hubs).
+- **Card/Apple Pay stays deferred** (licensed fiat-provider rail, TRACK
+  E4/E5). Paid bookings also keep working via chat, SDK, and direct API.
 - The window labels the rail honestly in-product; no surprises for buyers.
 
 ## Troubleshooting
