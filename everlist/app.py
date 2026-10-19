@@ -91,10 +91,29 @@ AUTH_LIMITS = {"signup": (30, 3600), "login": (120, 60), "rotate": (10, 3600),
                  # S2 sweep: dedicated per-source kinds for the M9/M14 account
                  # endpoints - pre-auth, so brute-forceable secrets count
                  "payout": (int(os.environ.get("HUB_LIMIT_PAYOUT", "20")), 3600),
-                 "rate": (int(os.environ.get("HUB_LIMIT_RATE", "30")), 60)}
+                 "rate": (int(os.environ.get("HUB_LIMIT_RATE", "30")), 60),
+                 # TRACK E: checkout session create + pay/verify walls (per source)
+                 "checkout": (int(os.environ.get("HUB_LIMIT_CHECKOUT", "30")), 3600),
+                 "checkout_pay": (int(os.environ.get("HUB_LIMIT_CHECKOUT_PAY", "20")), 3600)}
 # HARDENING-v2: per-source fairness (was: one global bucket per kind — a single
 # attacker could deny service to ALL signups by filling the shared window).
 AUTH_HITS = {}  # (kind, source_ip) -> [timestamps]
+
+# TRACK E2/E3 (owner-approved 2026-10-19): embeddable checkout sessions -
+# "EverList as Stripe": any website sells an EverList listing through a
+# hosted checkout window on the hub domain. Sessions are CAPABILITY URLs
+# (chk- 128-bit); bookings are created ONLY through the shared _book_core
+# engine (zero drift from the /book gates). Fiat rail: HUB_CHECKOUT_PROVIDER
+# empty = demo rail (honestly labeled, no real money); any value = honest
+# 501 until the owner-gated provider integration lands (TRACK E4/E5).
+CHECKOUT_TTL = int(os.environ.get("HUB_CHECKOUT_TTL", "86400"))
+CHECKOUT_CAP = int(os.environ.get("HUB_CHECKOUT_CAP", "5000"))
+CHECKOUT_PENDING_TTL = int(os.environ.get("HUB_CHECKOUT_PENDING_TTL", "900"))  # email-code window (mirrors /accounts law)
+CHECKOUT_RESEND_COOLDOWN = int(os.environ.get("HUB_CHECKOUT_RESEND_COOLDOWN", "60"))
+CHECKOUT_MAX_ATTEMPTS = 5
+CHECKOUT_PROVIDER = os.environ.get("HUB_CHECKOUT_PROVIDER", "").strip()
+CHECKOUT_SESSIONS = {}  # sid -> session dict; persisted in state.json
+
 _AUTH_HITS_CAP = 100_000  # bound memory vs source-spoofing floods
 TRUST_PROXY = os.environ.get("HUB_TRUST_PROXY", "") == "1"  # behind reverse proxy only
 
@@ -107,6 +126,56 @@ def _source_of(handler):
         if xff:
             return xff.split(",")[0].strip()[:64]
     return str(handler.client_address[0]) if handler.client_address else "unknown"
+
+
+# ---------------- TRACK E helpers (embeddable checkout, E2/E3) ----------------
+
+def _checkout_mask(email):
+    """Masked email for capability-URL faces (chk- links are bearer tokens)."""
+    if not email or "@" not in email:
+        return ""
+    name, dom = email.split("@", 1)
+    return (name[:1] + "***@" + dom) if name else "***@" + dom
+
+def _checkout_total_c(sess, listing):
+    try:
+        return int(round(float(listing.get("price", 0)) * 100)) * sess["qty"]
+    except (TypeError, ValueError):
+        return 0
+
+def _checkout_face(sess):
+    """Public face of a checkout session: listing snapshot + money honesty.
+    Carries NO secrets (booking_secret/cancel_token stay email-only)."""
+    with LOCK:
+        listing = next((l for l in LISTINGS if l["id"] == sess["listing_id"]), None)
+    if not listing:
+        return {"listing": None}
+    pub = _pub_listing(listing)
+    total_c = _checkout_total_c(sess, listing)
+    return {"listing": pub, "quantity": sess["qty"],
+            "total": total_c / 100.0,
+            "buyer_fee": 0.0,
+            "fee_note": "no EverList buyer fee - the price is what you pay",
+            "payment_terms": sess["terms"],
+            "identity_label": VERTICAL_SCHEMAS[listing["vertical"]]["booking"]["identity"]}
+
+_CHECKOUT_MAIL_HITS = {}  # sha256(email) -> [timestamps]: anti email-bombing
+
+def _checkout_mail_allow(email, now):
+    """Max 3 verification mails per address per hour, GLOBAL across sessions
+    (sessions are mintable; mailboxes are not). Caller holds LOCK."""
+    key = hashlib.sha256(email.encode()).hexdigest()
+    hist = [t for t in _CHECKOUT_MAIL_HITS.get(key, []) if now - t < 3600]
+    if len(hist) >= 3:
+        _CHECKOUT_MAIL_HITS[key] = hist
+        return False
+    hist.append(now)
+    _CHECKOUT_MAIL_HITS[key] = hist
+    if len(_CHECKOUT_MAIL_HITS) > 50_000:
+        for k in list(_CHECKOUT_MAIL_HITS)[: len(_CHECKOUT_MAIL_HITS) // 10]:
+            _CHECKOUT_MAIL_HITS.pop(k, None)
+    return True
+
 
 
 def _paginate(items, query):
@@ -384,6 +453,7 @@ def _persist_locked():
     _backup_locked()
     snap = {"listings": LISTINGS, "bookings": BOOKINGS, "ledger": LEDGER,
             "idempotency": IDEMPOTENCY, "accounts": ACCOUNTS, "id_counters": ID_COUNTERS,
+            "checkout": CHECKOUT_SESSIONS,
             "nonces": {n: e for n, e in getattr(hublib, "_NONCES", {}).items()},
             "x402_nonces": (x402verify.snapshot_used_nonces() if PAY_MODE == "testnet" else {}),
             "settlements": (SETTLEMENTS.snapshot() if PAY_MODE == "testnet" else {}),
@@ -403,6 +473,7 @@ def _load_state():
         LEDGER[:] = snap.get("ledger", [])
         IDEMPOTENCY.update(snap.get("idempotency", {}))
         ACCOUNTS.update(snap.get("accounts", {}))
+        CHECKOUT_SESSIONS.update(snap.get("checkout", {}))  # TRACK E: durable checkout sessions
         ID_COUNTERS.update(snap.get("id_counters", {}))
         # B3c-email + B1 migration: legacy accounts predate email/gen fields
         _EFIELDS = {"email": None, "email_verified": False, "notify_email": True, "marketing_email": True, "pending_email": None,
@@ -1320,6 +1391,14 @@ def _openapi_spec():
             "/accounts/logout-all": {"post": op("Revoke all tokens (generation bump)", "accounts")},
             "/accounts/email/bind": {"post": op("Bind recovery email (code sent)", "accounts")},
             "/accounts/email/verify": {"post": op("Verify email code", "accounts")},
+            "/checkout/sessions": {"post": op("Create embeddable checkout session (TRACK E)", "checkout",
+                note="Public, rate-limited. Creates a hosted checkout session (chk- capability URL) for a PUBLIC, FREE listing (v1 demo rail; paid listings need the fiat provider, TRACK E4/E5). Payment terms + total are snapshotted at create; listing changes stale the session.")},
+            "/checkout/sessions/{sid}": {"get": op("Checkout session status", "checkout",
+                note="Capability-URL face: status, masked email, listing snapshot, total. No secrets.")},
+            "/checkout/sessions/{sid}/pay": {"post": op("Checkout pay step", "checkout",
+                note="POST {email, name} binds the buyer and emails a 6-digit code (cooldown + per-address mail cap).")},
+            "/checkout/sessions/{sid}/verify": {"post": op("Checkout verify step", "checkout",
+                note="POST {code} proves mailbox control (bind-or-create account, Tier-1 email law) and books through the shared booking engine. The 201 carries the one-time booking credentials (buyer channel only; merchant postMessage gets booking_id only).")},
             "/accounts/email/recover": {"post": op("Request recovery code (anti-enumeration)", "accounts")},
             "/accounts/email/recover/confirm": {"post": op("Confirm recovery -> NEW account code", "accounts")},
             "/accounts/notify/unsubscribe": {"get": op("Unsubscribe landing page (signed link from email footer)", "accounts"),
@@ -1354,6 +1433,10 @@ def _openapi_spec():
         ("get", "/bookings", "200", "OrderList", "Principal-scoped bookings"),
         ("get", "/book/{id}", "200", "PrivateBooking", "Private booking details (booking secret)"),
         ("post", "/book", "201", "BookingCreated", "Booking created (booking_secret shown once)"),
+        ("post", "/checkout/sessions", "201", "CheckoutSession", "Checkout session created"),
+        ("get", "/checkout/sessions/{sid}", "200", "CheckoutSession", "Checkout session status"),
+        ("post", "/checkout/sessions/{sid}/pay", "200", "CheckoutPending", "Checkout email bound, code sent"),
+        ("post", "/checkout/sessions/{sid}/verify", "201", "CheckoutBooked", "Checkout booking created"),
         ("post", "/book/{id}/confirm", "200", "ConfirmResponse", "Owner confirmed (escrow RELEASED)"),
         ("post", "/book/{id}/cancel", "200", "CancelResponse", "Buyer cancelled (full refund)"),
         ("post", "/book/{id}/rate", "200", "RateResponse", "Rating recorded"),
@@ -1520,6 +1603,633 @@ class Handler(BaseHTTPRequestHandler):
                          "fingerprint": fp},
             "count": len(rich), "events": rich}, extra_headers=hdr)
 
+    # ---------------- TRACK E methods (embeddable checkout, E2/E3) ----------------
+    def _serve_checkout_asset(self, fname):
+        """Strict-allowlist static server for checkout assets (literal fnames
+        only; normpath guard keeps the traversal wall even if that changes)."""
+        base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+        fpath = os.path.normpath(os.path.join(base, fname))
+        if not fpath.startswith(base + os.sep) or not os.path.isfile(fpath):
+            return self._json(404, {"error": "asset missing"})
+        ctype = ("text/html; charset=utf-8" if fname.endswith(".html")
+                 else "application/javascript; charset=utf-8")
+        with open(fpath, "rb") as fh:
+            body = fh.read()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store" if fname.endswith(".html") else "max-age=300")
+        self.send_header("Content-Security-Policy",
+                         "default-src 'none'; script-src 'self'; style-src 'self'; "
+                         "connect-src 'self'; img-src 'self' data:; form-action 'self'; "
+                         "base-uri 'none'; frame-ancestors 'none'")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+        self.end_headers()
+        self.wfile.write(body)
+        return None
+
+    def _checkout_session(self, sid, sub, data):
+        """Shared session lookup + expiry + stale detection, then dispatch.
+        sub: '' (status face), 'pay' or 'verify'."""
+        with LOCK:
+            sess = CHECKOUT_SESSIONS.get(sid)
+            if not sess:
+                return self._json(404, {"error": "no checkout session"})
+            if sess["exp"] < time.time():
+                CHECKOUT_SESSIONS.pop(sid, None)
+                _persist_locked()
+                return self._json(410, {"error": "checkout session expired",
+                    "how": "start again from the merchant site"})
+            if sess["status"] in ("open", "pending_verify"):
+                # lazy stale detection: archived/made-private/re-priced/re-termsed
+                # under the session -> honest dead end (email stays verified)
+                listing = next((l for l in LISTINGS if l["id"] == sess["listing_id"]), None)
+                stale = (not listing or listing.get("archived")
+                         or listing.get("visibility") == "private")
+                if not stale:
+                    _pt = listing.get("payment_terms") or _default_payment_terms(listing["vertical"])
+                    try:
+                        _tot = int(round(float(listing.get("price", 0)) * 100)) * sess["qty"]
+                    except (TypeError, ValueError):
+                        _tot = -1
+                    stale = (_pt != sess["terms"] or _tot != sess.get("total_c", -1))
+                if stale:
+                    sess["status"] = "stale"
+                    _persist_locked()
+            status = sess["status"]
+        if status == "stale":
+            return self._json(409, {"error": "listing changed - this checkout is no longer valid",
+                "how": "start a new checkout on the merchant site"})
+        if sub == "":
+            face = _checkout_face(sess)
+            return self._json(200, {"ok": True, "sid": sid, "status": status,
+                "rail": sess["rail"], "email_masked": _checkout_mask(sess.get("email", "")),
+                "exp": sess["exp"], "pay_exp": sess.get("pay_exp", 0),
+                "booking_id": sess.get("booking_id") or None, **face})
+        if sub == "pay":
+            return self._checkout_pay(sess, data)
+        return self._checkout_verify(sess, data)
+
+    def _checkout_pay(self, sess, data):
+        """Pay step: bind email + name to the session and email a 6-digit code.
+        No money moves in the v1 rail (free listings book WAIVED; paid listings
+        were refused at session create - TRACK E4/E5 honesty)."""
+        email = str(data.get("email", "")).strip().lower()
+        if not email or "@" not in email or "." not in email.rsplit("@", 1)[1] or len(email) > 254 or " " in email:
+            return self._json(400, {"error": "valid email required (name@domain.tld)"})
+        name = str(data.get("name", "")).strip()
+        if not name or len(name) > 80 or _BAD_CHARS_RE.search(name):
+            return self._json(400, {"error": "name required (max 80 chars, no control characters)"})
+        now = time.time()
+        with LOCK:
+            if not _auth_allow("checkout_pay", _source_of(self)):
+                return self._json(429, {"error": "checkout rate limit reached for your source, retry later"})
+            if sess["status"] == "booked":
+                return self._json(409, {"error": "already booked", "booking_id": sess["booking_id"]})
+            if sess["status"] == "stale":
+                return self._json(409, {"error": "listing changed - start a new checkout on the merchant site"})
+            if sess["status"] == "processing":
+                return self._json(409, {"error": "booking already in progress - GET the session for status"})
+            if sess["status"] not in ("open", "pending_verify"):
+                return self._json(409, {"error": "checkout session not open"})
+            if sess["status"] == "pending_verify" and sess.get("email") and email != sess["email"]:
+                return self._json(409, {"error": "email already bound to this checkout - start a new session for another address"})
+            live = sess["status"] == "pending_verify" and sess.get("pay_exp", 0) > now
+            if live and now - sess.get("last_code", 0) < CHECKOUT_RESEND_COOLDOWN:
+                retry = int(CHECKOUT_RESEND_COOLDOWN - (now - sess.get("last_code", 0))) + 1
+                return self._json(429, {"error": "code already sent - retry later", "retry_after": retry},
+                                  extra_headers={"Retry-After": str(retry)})
+            if not _checkout_mail_allow(email, now):
+                return self._json(429, {"error": "too many verification emails for this address - try again later"})
+            code = secrets.token_hex(3).upper()
+            sess["status"] = "pending_verify"
+            sess["email"] = email
+            sess["name"] = name
+            sess["code_hash"] = hashlib.sha256(code.encode()).hexdigest()
+            sess["pay_exp"] = now + CHECKOUT_PENDING_TTL
+            sess["attempts"] = 0
+            sess["last_code"] = now
+            _persist_locked()
+            d = emailkit_code("verify", code, loc=sess.get("lang", "en"))
+        delivered = bool(_send_email(email, d["subject"], d))
+        resp = {"ok": True, "status": "pending_verify",
+                "email_masked": _checkout_mask(email), "pay_exp": sess["pay_exp"],
+                "rail": sess["rail"]}
+        if delivered:
+            resp["delivery"] = "sent"
+        else:
+            resp["delivery"] = "suppressed"
+            resp["note"] = ("email delivery is off on this hub (HUB_EMAIL_MODE=off) - "
+                            "checkout cannot complete until SMTP or log mode is configured")
+        return self._json(200, resp)
+
+    def _checkout_verify(self, sess, data):
+        """Verify step: the 6-digit code proves mailbox control (Tier-1 email
+        law, owner GO 2026-10-03). Bind-or-create the account (one email = one
+        account), then book through the SHARED _book_core engine with an
+        internally minted, gen-bound book token - identical gates, zero drift.
+        The 201 body carries the one-time booking credentials - buyer-only
+        channel (this HTTPS session); merchant postMessage gets booking_id only."""
+        code = str(data.get("code", "")).strip().upper()
+        now = time.time()
+        with LOCK:
+            if sess["status"] == "booked":
+                return self._json(409, {"error": "already booked", "booking_id": sess["booking_id"]})
+            if sess["status"] == "processing":
+                return self._json(409, {"error": "booking already in progress - GET the session for status"})
+            if sess["status"] == "stale":
+                return self._json(409, {"error": "listing changed - start a new checkout"})
+            if sess["status"] != "pending_verify":
+                return self._json(400, {"error": "pay first",
+                    "how": "POST /checkout/sessions/{sid}/pay {email, name}"})
+            if not sess.get("code_hash") or sess.get("pay_exp", 0) < now:
+                sess["status"] = "open"
+                _persist_locked()
+                return self._json(410, {"error": "verification window expired",
+                    "how": "POST /pay again for a fresh code"})
+            if sess["attempts"] >= CHECKOUT_MAX_ATTEMPTS:
+                return self._json(429, {"error": "too many wrong codes - request a fresh one via /pay"})
+            sess["attempts"] += 1
+            if not code or not hmac.compare_digest(sess["code_hash"], hashlib.sha256(code.encode()).hexdigest()):
+                _persist_locked()
+                return self._json(403, {"error": "invalid code",
+                    "attempts_left": max(0, CHECKOUT_MAX_ATTEMPTS - sess["attempts"])})
+            # mailbox control proven -> bind-or-create (one email = one account)
+            email, name = sess["email"], sess["name"]
+            aid = next((a for a, v in ACCOUNTS.items()
+                        if v.get("email") == email and v.get("email_verified")), None)
+            if not aid:
+                if len(ACCOUNTS) >= ACCOUNTS_CAP:
+                    return self._json(429, {"error": "hub at account capacity; contact the operator"})
+                aid = "acct-" + secrets.token_hex(4)
+                while aid in ACCOUNTS:
+                    aid = "acct-" + secrets.token_hex(4)
+                ACCOUNTS[aid] = {"bound": [], "created": time.time(),
+                                 "email_lang": sess.get("lang", "en"),
+                                 "email": None, "email_verified": False,
+                                 "notify_email": True, "marketing_email": True,
+                                 "pending_email": None, "pending_code_hash": None,
+                                 "pending_exp": 0, "recovery_code_hash": None,
+                                 "recovery_exp": 0, "payout_pk": None,
+                                 "midnight_credential": None, "gen": 0}
+            acct = ACCOUNTS[aid]
+            acct["email"] = email
+            acct["email_verified"] = True
+            acct["human_verified"] = True          # Tier-1 email-code law
+            acct["verified_by"] = "email-code"
+            acct["pending_email"] = None
+            acct["pending_code_hash"] = None
+            acct["pending_exp"] = 0
+            sess["acct_id"] = aid
+            sess["status"] = "processing"
+            sess["code_hash"] = None
+            _persist_locked()
+            tok = hublib.mint_token(BOOKING_KEY, "book", aid, ttl=120,
+                                    extra={"gen": int(acct.get("gen", 0))})
+            lid, qty = sess["listing_id"], sess["qty"]
+            listing = next((l for l in LISTINGS if l["id"] == lid), None)
+            idf = VERTICAL_SCHEMAS[listing["vertical"]]["booking"]["identity"] if listing else "name"
+        # booking engine OUTSIDE the LOCK (it takes LOCK internally)
+        book = {"listing_id": lid, idf: name}
+        if qty > 1:
+            book["quantity"] = qty
+        bcode, bbody, beh = self._book_core(book, token=tok, idem_key=sess["sid"])
+        with LOCK:
+            if bcode == 201 and isinstance(bbody, dict):
+                sess["status"] = "booked"
+                sess["booking_id"] = str(bbody.get("id", ""))
+                _persist_locked()
+                return self._json(201, {**bbody,
+                    "checkout": {"sid": sess["sid"], "rail": sess["rail"],
+                                 "note": "booked via embeddable checkout (demo rail - no money moved)"}},
+                    extra_headers=beh)
+            # honest failure: reopen the session (email/account stay verified);
+            # pass the REAL booking error through (capacity race, field walls...)
+            sess["status"] = "open"
+            _persist_locked()
+            if isinstance(bbody, dict):
+                bbody = {**bbody, "note": "email verified and kept - POST /pay for a fresh code to retry"}
+            return self._json(bcode, bbody, extra_headers=beh)
+
+
+    def _bk_json(self, code, data, extra_headers=None):
+        """Book-core exit shim: tuple result instead of an HTTP write."""
+        return (code, data, extra_headers)
+
+    def _book_core(self, data, token=None, claim=None, idem_key=None):
+        """Booking engine core (extracted verbatim from the /book route).
+
+        Returns (code, body, extra_headers). The HTTP route wraps this;
+        checkout sessions call it with an internally minted book token so
+        embedded bookings pass the EXACT same gates (zero drift).
+
+        """
+        cred = token if token is not None else self.headers.get("X-Hub-Token", "")  # I2: book token (route header or internal mint)
+        p, err = hublib.verify_token(BOOKING_KEY, cred, "book", single_use=False) if cred \
+            else (None, "missing X-Hub-Token")
+        if not p:
+            if cred:  # valid token but wrong action => authenticated, not authorized
+                for other in ("list",):
+                    po, _ = hublib.verify_token(BOOKING_KEY, cred, other, single_use=False)
+                    if po:
+                        return self._bk_json(403, {"error": f"token is for '{other}', not 'book'"})
+            return self._bk_json(401, {"error": err or "invalid book token",
+                "hint": "POST /access {agent: '<your-agent>', acts: ['book']} then send token as X-Hub-Token",
+                "note": "interim open bootstrap; production = Midnight zk-personhood (A2)"})
+        p, gerr = _gen_check(p)  # B1
+        if not p:
+            return self._bk_json(401, {"error": gerr or "token revoked",
+                "hint": "log in again (POST /accounts/login) for fresh tokens"})
+        principal = p["sub"]
+        # H5: per-source backstop — G4 caps per principal, but principals are
+        # freely mintable pre-personhood; rotation must not defeat flooding
+        with LOCK:
+            if not _auth_allow("book", _source_of(self)):
+                return self._bk_json(429, {"error": "booking rate limit reached for your source, retry later"})
+        # B3c-accounts: verified accounts carry their human proof server-side
+        # (admin-vouch pilot / email-code deploy / Midnight zk A2 production)
+        acct_verified = False
+        if principal.startswith("acct-"):
+            with LOCK:
+                acct = ACCOUNTS.get(principal)
+            if acct and acct.get("human_verified"):
+                acct_verified = True
+        if not data.get("human_verified") and not acct_verified:
+            return self._bk_json(403, {"error": "booking requires verified-human credential",
+                "note": "production: zk-proof of personhood (Midnight); interim: verified EverList account or stub flag"})
+        # G4: per-principal fixed-window rate limit (default 10 books / 60s,
+        # HUB_RATE_BOOKS_PER_MIN env) - derived from the VERIFIED token principal,
+        # not attacker-chosen payload names
+        now = time.time()
+        with LOCK:
+            hist = [t for t in RATE_LIMITS.setdefault(principal, []) if now - t < 60]
+            if len(hist) >= RATE_BOOKS_PER_MIN:
+                retry = int(60 - (now - hist[0])) + 1
+                return self._bk_json(429, {"error": f"rate limit: max {RATE_BOOKS_PER_MIN} bookings/min per principal",
+                                        "retry_after": retry},
+                                  extra_headers={"Retry-After": str(retry)})
+            hist.append(now)
+            RATE_LIMITS[principal] = hist
+        lid = data.get("listing_id")
+        _claim = str(data.pop("claim", "") or claim or self.headers.get("X-Claim-Code", "")).strip()
+        with LOCK: listing = next((l for l in LISTINGS if l["id"] == lid), None)
+        if not listing: return self._bk_json(404, {"error": f"no listing {lid}"})
+        if listing.get("visibility") == "private":
+            # P2: private deal — booking needs the claim (or owner auth); uniform 404
+            _ok = bool(_claim) and listing.get("claim_code_hash") == hashlib.sha256(_claim.encode()).hexdigest()
+            if not _ok:
+                _cred = self.headers.get("X-Hub-Token", "")
+                _pl, _err = None, "missing X-Hub-Token"
+                if _cred:
+                    for _act in ("list", "book"):
+                        _pl, _err = hublib.verify_token(BOOKING_KEY, _cred, _act, single_use=False)
+                        if _pl: break
+                if _pl:
+                    _pl, _err = _gen_check(_pl)  # B1
+                _ok = bool(_pl) and _pl.get("sub") == listing.get("owner")
+            if not _ok:
+                return self._bk_json(404, {"error": f"no listing {lid}"})
+        if listing.get("archived"):  # before any validation: the honest answer is 'archived', not field errors
+            return self._bk_json(409, {"error": "listing archived - not bookable"})
+        # C11 Tier-2 split (owner GO 2026-10-03): email-code satisfies the
+        # Tier-1 verified-human gate above, but NEVER the Tier-2 buyer gate —
+        # only midnight-zk / admin-vouch count here (fail-closed).
+        acct_t2 = False
+        if acct_verified and principal.startswith("acct-"):
+            with LOCK:
+                acct = ACCOUNTS.get(principal)
+            if acct and acct.get("verified_by") in ("midnight-zk", "admin-vouch"):
+                acct_t2 = True
+        if listing.get("require_verified_buyer") and not acct_t2:
+            # C11 (SPEC section 22): the merchant demanded Tier-2-verified buyers.
+            # The client-asserted human_verified stub NEVER satisfies this gate —
+            # only server-side verification (midnight-zk / admin-vouch) counts.
+            return self._bk_json(403, {"error": "this listing requires a Tier-2-verified buyer",
+                "note": "sign in to your account and verify via POST /accounts/verify-midnight (fail-closed Midnight personhood credential); chat: 'verify-midnight <credential_id>'",
+                "verified": False})
+        v = listing["vertical"]
+        missing = [f for f in VERTICAL_SCHEMAS[v]["booking"]["required"] if f not in data]
+        if missing: return self._bk_json(400, {"error": f"missing fields: {missing}"})
+        # H17: human_verified must be a real boolean ("yes" passed truthiness)
+        hv = data.get("human_verified")
+        if hv is not None and not isinstance(hv, bool):
+            return self._bk_json(400, {"error": "human_verified must be a boolean"})
+        if not data.get("human_verified") and not acct_verified:  # H15: consistent with the first gate — vouched accounts carry server-side proof
+            return self._bk_json(403, {"error": "booking requires verified-human credential",
+                "note": "production: zk-proof of personhood (Midnight); interim: verified EverList account or stub flag"})
+        # I1: field ownership — reject reserved fields, keep only allowlisted client fields
+        reserved_seen = [k for k in data if k in RESERVED_BOOKING_FIELDS]
+        if reserved_seen:
+            return self._bk_json(400, {"error": f"reserved fields rejected: {reserved_seen}"})
+        allowed = CLIENT_BOOKING_FIELDS[v] | {"listing_id", "human_verified", "escrow_ref", "accepted_payment_terms", "promo_code"}
+        unknown = [k for k in data if k not in allowed]
+        if unknown:
+            return self._bk_json(400, {"error": f"unknown fields rejected: {unknown}",
+                "allowed": sorted(CLIENT_BOOKING_FIELDS[v])})
+        # H17: identity field is a bounded nonempty STRING (probe: numbers,
+        # objects, empty and 5000-char values were accepted; schema-driven
+        # so every vertical's identity field gets the same wall)
+        idf = VERTICAL_SCHEMAS[v]["booking"]["identity"]
+        if not isinstance(data[idf], str):
+            return self._bk_json(400, {"error": f"{idf} must be a string"})
+        _idv = data[idf].strip()
+        if not _idv:
+            return self._bk_json(400, {"error": f"{idf} cannot be empty"})
+        if len(_idv) > 80:
+            return self._bk_json(400, {"error": f"{idf} too long (max 80 chars)"})
+        data[idf] = _idv
+        qty_raw = data.get("quantity", 1)
+        # I3: strict integer quantity — bool/float/str rejected, no silent truncation
+        if isinstance(qty_raw, bool) or not isinstance(qty_raw, int) or not (1 <= qty_raw <= 100):
+            return self._bk_json(400, {"error": "quantity must be an integer in [1, 100]"})
+        qty = qty_raw
+        # M5: optional on-chain escrow reference — shape-validated pointer
+        # (contract address + escrow id + tx hash). The chain is the source
+        # of truth; the hub only stores and mirrors it (M7), never invents it.
+        er = data.get("escrow_ref")
+        if er is not None:
+            if not isinstance(er, dict) or set(er.keys()) != {"contract", "escrow_id", "tx"}:
+                return self._bk_json(400, {"error": "escrow_ref must be an object with exactly: contract, escrow_id, tx"})
+            _erc = er.get("contract")
+            if not isinstance(_erc, str) or not _erc.strip() or len(_erc) > 80:
+                return self._bk_json(400, {"error": "escrow_ref.contract must be a nonempty string (max 80 chars)"})
+            _eri = er.get("escrow_id")
+            if isinstance(_eri, bool) or not isinstance(_eri, int) or _eri < 1 or _eri >= 2 ** 64:
+                return self._bk_json(400, {"error": "escrow_ref.escrow_id must be a positive integer (< 2^64, contract Uint<64>)"})
+            _ert = er.get("tx")
+            if not isinstance(_ert, str) or not _ert.strip() or len(_ert) > 100:
+                return self._bk_json(400, {"error": "escrow_ref.tx must be a nonempty string (max 100 chars)"})
+            er = {"contract": _erc.strip(), "escrow_id": _eri, "tx": _ert.strip()}
+        # I4: idempotency — same key + identical payload replays the same booking;
+        # same key + different payload -> 409 conflict. Bound to the token principal:
+        # agent B can never replay agent A's stored response (it contains secrets).
+        idem_key = idem_key or self.headers.get("Idempotency-Key", "")
+        canon = json.dumps({"principal": principal, **data}, sort_keys=True, separators=(",", ":"))
+        if idem_key:
+            with LOCK:
+                if len(IDEMPOTENCY) >= IDEMPOTENCY_CAP and idem_key not in IDEMPOTENCY:
+                    for k in list(IDEMPOTENCY)[:len(IDEMPOTENCY) // 10]:
+                        IDEMPOTENCY.pop(k, None)  # FIFO evict oldest 10%
+                prev = IDEMPOTENCY.get(idem_key)
+                if prev:
+                    if prev["hash"] != hashlib.sha256(canon.encode()).hexdigest():
+                        return self._bk_json(409, {"error": "Idempotency-Key reused with different payload"})
+                    return self._bk_json(201, {**prev["response"], "replayed": True})
+        # LEVEL-1 chain gate - INTAKE (owner-approved 2026-09-20): an
+        # escrow_ref must point at a REAL, currently-HELD on-chain escrow
+        # before it can back a booking. Single-source read here (terminal
+        # flips get dual-source); the LOCK section below re-asserts the
+        # amount against the authoritative price. Network stays OUTSIDE
+        # the LOCK (the settlement lesson).
+        _chain_v = None
+        if CHAIN_GATE and er is not None:
+            _chain_v, _cerr = _chain_gate_read(er, dual=False)
+            if _chain_v is None:
+                _ccode, _cbody = _cerr
+                return self._bk_json(_ccode, _cbody)
+            if _chain_v["state_name"] != "HELD":
+                return self._bk_json(409, {
+                    "error": "escrow_ref points at a %s escrow - only a HELD escrow can back a new booking" % _chain_v["state_name"],
+                    "note": "released/refunded escrows cannot be re-claimed; squatting a settled escrow is refused",
+                    "chain": {"state": _chain_v["state_name"], "escrow_id": er["escrow_id"]}})
+        with LOCK:  # I3: single reservation section — check + increment atomic under one LOCK
+            listing = next((l for l in LISTINGS if l["id"] == lid), None)
+            if not listing: return self._bk_json(404, {"error": f"no listing {lid}"})
+            if listing.get("archived"):
+                return self._bk_json(409, {"error": "listing archived - not bookable"})
+            _lsch = VERTICAL_SCHEMAS[listing["vertical"]]
+            if _lsch.get("tracks_capacity"):
+                if listing.get("registered", 0) + qty > listing["capacity"]:
+                    return self._bk_json(409, {"error": "event full"})
+            elif not listing.get("available", True):
+                return self._bk_json(409, {"error": "listing unavailable"})
+            # I3: money as integer minor units internally (convert at the edge)
+            price_c = int(round(listing["price"] * 100)) * qty
+            # promo redemption (owner-approved 2026-09-30): validate + recompute
+            # the price EARLY so fee/escrow/chain-amount checks all validate
+            # against the honest discounted total. The use is only decremented
+            # at booking-commit time - a failed booking never burns a use.
+            _promo_pcode = data.get("promo_code")
+            _promo_pct = 0
+            if _promo_pcode is not None:
+                if not isinstance(_promo_pcode, str) or not re.fullmatch(r"[A-Za-z0-9]{3,24}", _promo_pcode.strip()):
+                    return self._bk_json(400, {"error": "promo_code must be 3-24 letters/digits"})
+                _promo_pcode = _promo_pcode.strip().upper()
+                _ph = listing.get("promo_code_hash")
+                if not _ph:
+                    return self._bk_json(404, {"error": "this listing has no promo code"})
+                if not hmac.compare_digest(hashlib.sha256(_promo_pcode.encode()).hexdigest(), str(_ph)):
+                    return self._bk_json(403, {"error": "invalid promo code"})
+                if int(listing.get("promo_uses_left") or 0) < 1:
+                    return self._bk_json(409, {"error": "promo code exhausted - no redemptions left"})
+                if price_c <= 0:
+                    return self._bk_json(409, {"error": "promo needs a paid listing (this one is free)"})
+                _promo_pct = int(listing.get("promo_pct") or 0)
+                if not (1 <= _promo_pct <= 50):
+                    return self._bk_json(409, {"error": "promo on this listing is misconfigured - the organizer needs to reset it"})
+                price_c = price_c * (100 - _promo_pct) // 100
+            fee_c = hub_fee_c(price_c); payout_c = price_c - fee_c
+            price = price_c / 100.0; fee = fee_c / 100.0; payout = payout_c / 100.0
+            # C12 (SPEC §19a): booking = acceptance of the listing's payment
+            # terms. Default-terms bookings stay friction-free; custom terms
+            # (instant rail / custom window / deposit) require the buyer to
+            # echo the terms object exactly — API-enforced consent.
+            _pt = listing.get("payment_terms") or _default_payment_terms(v)
+            if price_c > 0 and _listing_is_custom_terms(listing):
+                _echo = data.get("accepted_payment_terms")
+                if _echo != _pt:
+                    return self._bk_json(409, {"error": "this listing uses custom payment terms - confirm by echoing them exactly",
+                        "payment_terms": _pt,
+                        "how": "re-send the booking with accepted_payment_terms set to exactly the payment_terms object shown here"})
+            # B3c-waiver: free listings need no payment rail — escrow state WAIVED
+            # (verified-human gate still applies; ledger stays complete).
+            # C12: instant rail = settled at booking -> DIRECT (no escrow,
+            # no refund window, no confirm/cancel money step).
+            escrow_state = "WAIVED" if price_c == 0 else (
+                "DIRECT" if _pt.get("rail") == "instant" else "HELD")
+            # M5: an on-chain escrow ref on a free booking is a contradiction —
+            # free listings waive the payment rail entirely. Same for instant:
+            # DIRECT means no escrow exists for this booking.
+            if er is not None and escrow_state in ("WAIVED", "DIRECT"):
+                return self._bk_json(409, {"error": "escrow_ref requires an escrow-rail paid booking (free listings waive the rail; instant bookings settle directly without escrow)"})
+            # W2 #1: abuse-resistant sponsorship gate (owner-approved). When
+            # sponsor-relay mode is on, the hub covers the organizer's chain
+            # fees for this escrow lifecycle - subject to the three
+            # anti-abuse rules in sponsorship.py (window limit, pool cap,
+            # stake threshold). Refusals are honest 402s with the reason.
+            if SPONSOR_RELAY and escrow_state == "HELD":
+                import sponsorship as _sp
+                _funded = sum(1 for x in BOOKINGS
+                              if x.get("listing_id") == listing["id"]
+                              and x.get("escrow") == "RELEASED")
+                _ok, _why = _sp.check(listing.get("owner", "unknown"), _funded)
+                if not _ok:
+                    return self._bk_json(402, {"error": "sponsored fee relay refused",
+                                            "reason": _why,
+                                            "sponsorship": _sp.stats()})
+            # LEVEL-1 chain gate - INTAKE ASSERTIONS (in-LOCK, no network;
+            # the chain read happened outside above). Under gating an
+            # escrow-rail paid booking MUST carry a chain-verified
+            # escrow_ref (E3: no zero-money HELD->RELEASED farming), the
+            # on-chain amount must cover the booking total exactly, and
+            # the escrow's claim deadline must not have passed (D2
+            # anchored to the CHAIN deadline, not just hub terms).
+            if CHAIN_GATE and escrow_state == "HELD":
+                if er is None:
+                    return self._bk_json(400, {
+                        "error": "escrow_ref required for paid escrow-rail bookings (chain gating enabled)",
+                        "note": "book with escrow_ref {contract, escrow_id, tx} pointing at a live HELD escrow on the hub's configured indexer"})
+                try:
+                    _camt = float(str(_chain_v.get("amount")))
+                except (TypeError, ValueError):
+                    _camt = None
+                if _camt is None or int(round(_camt * 100)) != price_c:
+                    return self._bk_json(409, {
+                        "error": "escrow amount does not match the booking total",
+                        "chain_amount": _chain_v.get("amount"),
+                        "booking_total": price,
+                        "note": "the on-chain escrow must cover the booking exactly (price x quantity, minor units)"})
+                try:
+                    _cdl = float(str(_chain_v.get("deadline")))
+                except (TypeError, ValueError):
+                    _cdl = None
+                if _cdl is not None and time.time() > _cdl:
+                    return self._bk_json(409, {
+                        "error": "escrow claim deadline already passed on-chain",
+                        "deadline": _chain_v.get("deadline"),
+                        "note": "a spent or expiring escrow cannot back a new booking"})
+            # S1 red-team 3: duplicate (contract, escrow_id) would let two
+            # bookings claim the same on-chain escrow (double-claim / squat
+            # before the real buyer books) - wall lives inside the LOCK
+            if er is not None:
+                dup = next((x for x in BOOKINGS if x.get("escrow_ref")
+                            and x["escrow_ref"]["contract"] == er["contract"]
+                            and x["escrow_ref"]["escrow_id"] == er["escrow_id"]), None)
+                if dup is not None:
+                    return self._bk_json(409, {"error": "escrow_ref already claimed by booking %s" % dup["id"]})
+            # S6-L1 + P0 human paid bookings (spec 2026-09-29): payment
+            # evidence (testnet). A valid X-PAYMENT header binds the
+            # buyer's wallet to this booking (self-pay review walls,
+            # interlock detection). P0 widens this from instant-rail-only
+            # to EVERY paid booking: humans in the webchat pay the same
+            # way agents do. Absent header -> booking proceeds, rating
+            # later weights at the floor.
+            _payer6 = _pvalue6 = _pnonce6 = None
+            _paysettle = None
+            if price_c > 0 and PAY_MODE == "testnet":
+                _phdr = self.headers.get("X-PAYMENT", "")
+                if _phdr:
+                    _recv6 = str(listing.get("receive_addr") or PAYTO).lower()
+                    _units6 = int(round(price * 1_000_000))
+                    _info6, _perr6 = x402verify.verify_payment(
+                        _phdr, network="base-sepolia", pay_to=_recv6,
+                        max_amount_units=_units6)
+                    if _perr6:
+                        return self._bk_json(402, {"x402Version": 1, "error": "invalid payment",
+                                                "detail": _perr6, "mode": "TESTNET"})
+                    _payer6 = str(_info6["from"]).lower()
+                    _pvalue6 = _info6["value"]
+                    _pnonce6 = _info6["nonce"]
+                    # N7 replay-across-restart + D4 crash safety: persist
+                    # the used nonce and the pending marker IMMEDIATELY.
+                    _persist_locked()
+                    if SETTLE_MODE == "auto":
+                        _fp6 = x402facilitate.payment_fingerprint(
+                            {"from": _info6["from"], "to": _recv6,
+                             "value": _info6["value"], "nonce": _info6["nonce"]})
+                        SETTLEMENTS.mark_pending(_fp6)
+                        _persist_locked()
+                        _paysettle = (_fp6, _info6, _recv6)
+            # H2: unguessable booking IDs (no sequential enumeration)
+            bid = "bk-" + secrets.token_hex(12)
+            secret = secrets.token_hex(16)
+            # I1: server-owned fields ONLY; client data enters via explicit allowlist
+            _idf = VERTICAL_SCHEMAS[v]["booking"]["identity"]  # H15: schema-declared
+            priv_fields = {k: d for k, d in data.items() if k == _idf}
+            pub = {k: (anon_ref() if k == _idf else d)
+                   for k, d in data.items() if k in CLIENT_BOOKING_FIELDS[v]}
+            if _promo_pcode is not None:  # commit the redemption (same LOCK as the booking append)
+                listing["promo_uses_left"] = int(listing.get("promo_uses_left") or 0) - 1
+            booking = {"id": bid, "listing_id": lid, "vertical": v,
+                "escrow": escrow_state, "amount": price, "hub_fee": fee,
+                "owner_payout": payout, "quantity": qty, "created": time.time(),
+                "booked_by": principal,
+                "payment_terms": _pt,  # C12: server-copied snapshot of the terms IN FORCE at booking time; later listing edits never rewrite a done deal
+                **pub}
+            if _promo_pct:
+                booking["promo_applied"] = {"pct": _promo_pct}  # server-derived; the raw code is never stored
+            # M14: bookings carry verification provenance SERVER-SIDE only
+            # (verified_by is reserved - clients can never claim it)
+            if principal.startswith("acct-"):
+                _acct = ACCOUNTS.get(principal)
+                if _acct and _acct.get("human_verified"):
+                    booking["verified_by"] = _acct.get("verified_by") or "midnight-zk"
+            if _payer6:
+                # S6: server-verified payment evidence (never client-claimed)
+                booking["payment_payer"] = _payer6
+                booking["payment_value"] = _pvalue6
+                booking["payment_nonce"] = _pnonce6
+            if er is not None:
+                booking["escrow_ref"] = er  # M5: chain pointer, verbatim after validation
+            # real identity stored ONLY here, retrievable only with the secret
+            SECRETS[bid] = {"secret": secret, "private": priv_fields}
+            BOOKINGS.append(booking)
+            LEDGER.append({"ts": time.time(), "booking": bid, "amount": price,
+                "hub_fee": fee, "owner_payout": payout, "escrow": escrow_state})
+            if VERTICAL_SCHEMAS[v].get("tracks_capacity"):
+                listing["registered"] = listing.get("registered", 0) + qty
+            _persist_locked()
+        _notify_booking("created", booking, listing)
+        # P0 human paid bookings (spec 2026-09-29): settle the verified
+        # payment OUTSIDE the global LOCK (the settlement lesson — one
+        # facilitator hop must never serialize the hub). The x402 nonce
+        # is already marked used + persisted and SETTLEMENTS.settle() is
+        # fingerprint-idempotent, so this is safe unlocked. Booking ships
+        # immediately; settlement lands in the ledger either way.
+        if _paysettle is not None:
+            _fp6, _info6, _recv6 = _paysettle
+            _srec6 = SETTLEMENTS.settle(
+                _fp6, _info6["payload"],
+                {"scheme": "exact", "network": "base-sepolia",
+                 "asset": BASE_SEPOLIA_USDC, "payTo": _recv6,
+                 "maxAmountRequired": str(_info6["value"])},
+                FACIL)
+            with LOCK:
+                if _srec6["status"] == "settled":
+                    LEDGER.append({"kind": "x402_settlement", "ts": time.time(),
+                                   "detail": {"fingerprint": _fp6, "tx": _srec6["tx"],
+                                               "value": _info6["value"], "payer": _info6["from"],
+                                               "network": _srec6.get("network", "base-sepolia"),
+                                               "booking": bid}})
+                _persist_locked()
+        # C12: per-rail flow lines (plain list building — no starred unpacks)
+        if escrow_state == "DIRECT":
+            _flow = ["instant rail — payment settled at booking (DIRECT, no refund window)"]
+        elif escrow_state == "WAIVED":
+            _flow = ["free listing — payment WAIVED (no escrow rail)",
+                     "confirm: owner POST /book/{id}/confirm with X-Hub-Token (mint via POST /admin/tokens, act=confirm)",
+                     f"cancel: buyer POST /book/{bid}/cancel with X-Hub-Token: cancel_token before fulfillment -> full refund"]
+        else:
+            _flow = ["escrow HELD (funds locked)",
+                     "confirm: owner POST /book/{id}/confirm with X-Hub-Token (mint via POST /admin/tokens, act=confirm)",
+                     f"cancel: buyer POST /book/{bid}/cancel with X-Hub-Token: cancel_token before fulfillment -> full refund"]
+        resp = {**booking,
+            "booking_secret": secret, "secret_note": "shown ONCE; required to view private details",
+            "cancel_token": hublib.mint_token(BOOKING_KEY, "cancel", bid,
+                # S7: TTL must outlive the advertised refund window — a buyer
+                # on a 30-day window loses their only self-refund credential
+                # at day 7 with a fixed 7d token.
+                ttl=max(7 * 24 * 3600,
+                        int((_pt or {}).get("refund_window_hours", 0) or 0) * 3600 + 48 * 3600)),
+            "flow": _flow}
+        if idem_key:
+            with LOCK:
+                IDEMPOTENCY[idem_key] = {"hash": hashlib.sha256(canon.encode()).hexdigest(),
+                                         "response": resp}
+                _persist_locked()
+        return self._bk_json(201, resp)
+
     def do_GET(self):
         self._t0 = time.time()  # H12: latency start
         u = urlparse(self.path)
@@ -1547,6 +2257,18 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 return _html_resp(self, 200, "<html><body><p>Unsubscribe link invalid. "
                     "Say notify off in the EverList chat.</p></body></html>")
+        # TRACK E: checkout session status + hosted checkout assets
+        _mckg = re.match(r"^/checkout/sessions/(chk-[0-9a-f]{32})$", u.path)
+        if _mckg:
+            return self._checkout_session(_mckg.group(1), "", {})
+        if u.path == "/checkout":
+            return self._serve_checkout_asset("checkout.html")
+        if u.path == "/checkout.js":
+            return self._serve_checkout_asset("checkout.js")
+        if u.path == "/checkout.css":
+            return self._serve_checkout_asset("checkout.css")
+        if u.path == "/book.js":
+            return self._serve_checkout_asset("book.js")
         if u.path == "/auth/challenge":
             """HARDENING-v2: challenge issuance for cost curves.
             kind=signup -> sha256 PoW challenge (must be solved to signup)
@@ -2257,6 +2979,77 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(201, {"agent": agent, "tokens": toks, "ttl": ttl,
                 "note": "interim open bootstrap (pre-personhood): anyone may obtain book/list tokens today; production identity = Midnight zk-personhood (A2)",
                 "usage": "send as X-Hub-Token header on POST /book, POST /listings, GET /bookings"})
+
+        # ---------------- TRACK E: embeddable checkout (E2/E3) ----------------
+        if path == "/checkout/sessions":
+            # Session create: public, per-source limited. The session is a
+            # capability URL (chk- 128-bit); the hosted checkout page does the
+            # pay/verify dance same-origin. Booking happens ONLY through
+            # _book_core at verify time (zero drift from /book gates).
+            if not isinstance(data, dict):
+                return self._json(400, {"error": "JSON object required"})
+            lid = str(data.get("listing_id", "")).strip()
+            if not lid or len(lid) > 40:
+                return self._json(400, {"error": "listing_id required"})
+            qty = data.get("quantity", 1)
+            if isinstance(qty, bool) or not isinstance(qty, int) or not (1 <= qty <= 100):
+                return self._json(400, {"error": "quantity must be an integer in [1, 100]"})
+            lang = str(data.get("lang", "en")).strip().lower()
+            if lang not in ("en", "de"):
+                lang = "en"
+            origin = str(data.get("origin", "")).strip()
+            if origin:
+                # best-effort postMessage target ONLY (never a security
+                # boundary: the payload carries no secrets either way)
+                if not origin.startswith(("http://", "https://")) or len(origin) > 100 or "/" in origin[8:]:
+                    origin = ""
+            with LOCK:
+                if not _auth_allow("checkout", _source_of(self)):
+                    return self._json(429, {"error": "checkout rate limit reached for your source, retry later"})
+                listing = next((l for l in LISTINGS if l["id"] == lid), None)
+                if not listing or listing.get("visibility") == "private":
+                    return self._json(404, {"error": f"no listing {lid}"})
+                if listing.get("archived"):
+                    return self._json(409, {"error": "listing archived - not bookable"})
+                _v = listing["vertical"]
+                _pt = listing.get("payment_terms") or _default_payment_terms(_v)
+                price_c = int(round(listing["price"] * 100)) * qty
+                # honesty walls BEFORE any session exists. Checkout v1 = FREE
+                # listings only (demo rail, no money moves): paid listings
+                # need the fiat provider rail (TRACK E4/E5) - refusing here IS
+                # the contract (OpenAPI note + pay-step docstring promise it).
+                if price_c > 0:
+                    return self._json(409, {"error": "paid listings need the fiat provider rail (TRACK E4/E5) - checkout v1 covers free listings on this hub"})
+                sch = VERTICAL_SCHEMAS[_v]
+                if sch.get("tracks_capacity"):
+                    left = listing["capacity"] - listing.get("registered", 0)
+                    if qty > left:
+                        return self._json(409, {"error": "event full", "left": max(left, 0)})
+                elif not listing.get("available", True):
+                    return self._json(409, {"error": "listing unavailable"})
+                if len(CHECKOUT_SESSIONS) >= CHECKOUT_CAP:
+                    for k in list(CHECKOUT_SESSIONS)[: len(CHECKOUT_SESSIONS) // 10]:
+                        CHECKOUT_SESSIONS.pop(k, None)
+            sid = "chk-" + secrets.token_hex(16)
+            now = time.time()
+            sess = {"sid": sid, "listing_id": lid, "qty": qty, "status": "open",
+                    "email": "", "name": "", "acct_id": "", "origin": origin,
+                    "lang": lang, "terms": _pt, "created": now, "exp": now + CHECKOUT_TTL,
+                    "pay_exp": 0, "attempts": 0, "last_code": 0,
+                    "rail": "provider-pending" if CHECKOUT_PROVIDER else "demo",
+                    "booking_id": "", "provider_ref": None,
+                    "total_c": price_c}
+            with LOCK:
+                CHECKOUT_SESSIONS[sid] = sess
+                _persist_locked()
+            return self._json(201, {"ok": True, "sid": sid,
+                "url": "/checkout?sid=" + sid, "rail": sess["rail"],
+                "exp": sess["exp"], **_checkout_face(sess)})
+        _mck = re.match(r"^/checkout/sessions/(chk-[0-9a-f]{32})/(pay|verify)$", path)
+        if _mck:
+            return self._checkout_session(_mck.group(1), _mck.group(2), data)
+        # ---------------- end TRACK E checkout POST routes ----------------
+
         if path == "/accounts/signup":
             # B3c-accounts v2: PoW-gated. Two kinds:
             #  keypair (default): client generates ed25519 seed OFF-server; we store
@@ -3177,410 +3970,10 @@ class Handler(BaseHTTPRequestHandler):
                 _persist_locked()
                 return self._json(200, {"ok": True, "edited": lid, "fields": sorted(changes)})
         if path == "/book":
-            cred = self.headers.get("X-Hub-Token", "")  # I2: book token required
-            p, err = hublib.verify_token(BOOKING_KEY, cred, "book", single_use=False) if cred \
-                else (None, "missing X-Hub-Token")
-            if not p:
-                if cred:  # valid token but wrong action => authenticated, not authorized
-                    for other in ("list",):
-                        po, _ = hublib.verify_token(BOOKING_KEY, cred, other, single_use=False)
-                        if po:
-                            return self._json(403, {"error": f"token is for '{other}', not 'book'"})
-                return self._json(401, {"error": err or "invalid book token",
-                    "hint": "POST /access {agent: '<your-agent>', acts: ['book']} then send token as X-Hub-Token",
-                    "note": "interim open bootstrap; production = Midnight zk-personhood (A2)"})
-            p, gerr = _gen_check(p)  # B1
-            if not p:
-                return self._json(401, {"error": gerr or "token revoked",
-                    "hint": "log in again (POST /accounts/login) for fresh tokens"})
-            principal = p["sub"]
-            # H5: per-source backstop — G4 caps per principal, but principals are
-            # freely mintable pre-personhood; rotation must not defeat flooding
-            with LOCK:
-                if not _auth_allow("book", _source_of(self)):
-                    return self._json(429, {"error": "booking rate limit reached for your source, retry later"})
-            # B3c-accounts: verified accounts carry their human proof server-side
-            # (admin-vouch pilot / email-code deploy / Midnight zk A2 production)
-            acct_verified = False
-            if principal.startswith("acct-"):
-                with LOCK:
-                    acct = ACCOUNTS.get(principal)
-                if acct and acct.get("human_verified"):
-                    acct_verified = True
-            if not data.get("human_verified") and not acct_verified:
-                return self._json(403, {"error": "booking requires verified-human credential",
-                    "note": "production: zk-proof of personhood (Midnight); interim: verified EverList account or stub flag"})
-            # G4: per-principal fixed-window rate limit (default 10 books / 60s,
-            # HUB_RATE_BOOKS_PER_MIN env) - derived from the VERIFIED token principal,
-            # not attacker-chosen payload names
-            now = time.time()
-            with LOCK:
-                hist = [t for t in RATE_LIMITS.setdefault(principal, []) if now - t < 60]
-                if len(hist) >= RATE_BOOKS_PER_MIN:
-                    retry = int(60 - (now - hist[0])) + 1
-                    return self._json(429, {"error": f"rate limit: max {RATE_BOOKS_PER_MIN} bookings/min per principal",
-                                            "retry_after": retry},
-                                      extra_headers={"Retry-After": str(retry)})
-                hist.append(now)
-                RATE_LIMITS[principal] = hist
-            lid = data.get("listing_id")
-            _claim = str(data.pop("claim", "") or self.headers.get("X-Claim-Code", "")).strip()
-            with LOCK: listing = next((l for l in LISTINGS if l["id"] == lid), None)
-            if not listing: return self._json(404, {"error": f"no listing {lid}"})
-            if listing.get("visibility") == "private":
-                # P2: private deal — booking needs the claim (or owner auth); uniform 404
-                _ok = bool(_claim) and listing.get("claim_code_hash") == hashlib.sha256(_claim.encode()).hexdigest()
-                if not _ok:
-                    _cred = self.headers.get("X-Hub-Token", "")
-                    _pl, _err = None, "missing X-Hub-Token"
-                    if _cred:
-                        for _act in ("list", "book"):
-                            _pl, _err = hublib.verify_token(BOOKING_KEY, _cred, _act, single_use=False)
-                            if _pl: break
-                    if _pl:
-                        _pl, _err = _gen_check(_pl)  # B1
-                    _ok = bool(_pl) and _pl.get("sub") == listing.get("owner")
-                if not _ok:
-                    return self._json(404, {"error": f"no listing {lid}"})
-            if listing.get("archived"):  # before any validation: the honest answer is 'archived', not field errors
-                return self._json(409, {"error": "listing archived - not bookable"})
-            # C11 Tier-2 split (owner GO 2026-10-03): email-code satisfies the
-            # Tier-1 verified-human gate above, but NEVER the Tier-2 buyer gate —
-            # only midnight-zk / admin-vouch count here (fail-closed).
-            acct_t2 = False
-            if acct_verified and principal.startswith("acct-"):
-                with LOCK:
-                    acct = ACCOUNTS.get(principal)
-                if acct and acct.get("verified_by") in ("midnight-zk", "admin-vouch"):
-                    acct_t2 = True
-            if listing.get("require_verified_buyer") and not acct_t2:
-                # C11 (SPEC section 22): the merchant demanded Tier-2-verified buyers.
-                # The client-asserted human_verified stub NEVER satisfies this gate —
-                # only server-side verification (midnight-zk / admin-vouch) counts.
-                return self._json(403, {"error": "this listing requires a Tier-2-verified buyer",
-                    "note": "sign in to your account and verify via POST /accounts/verify-midnight (fail-closed Midnight personhood credential); chat: 'verify-midnight <credential_id>'",
-                    "verified": False})
-            v = listing["vertical"]
-            missing = [f for f in VERTICAL_SCHEMAS[v]["booking"]["required"] if f not in data]
-            if missing: return self._json(400, {"error": f"missing fields: {missing}"})
-            # H17: human_verified must be a real boolean ("yes" passed truthiness)
-            hv = data.get("human_verified")
-            if hv is not None and not isinstance(hv, bool):
-                return self._json(400, {"error": "human_verified must be a boolean"})
-            if not data.get("human_verified") and not acct_verified:  # H15: consistent with the first gate — vouched accounts carry server-side proof
-                return self._json(403, {"error": "booking requires verified-human credential",
-                    "note": "production: zk-proof of personhood (Midnight); interim: verified EverList account or stub flag"})
-            # I1: field ownership — reject reserved fields, keep only allowlisted client fields
-            reserved_seen = [k for k in data if k in RESERVED_BOOKING_FIELDS]
-            if reserved_seen:
-                return self._json(400, {"error": f"reserved fields rejected: {reserved_seen}"})
-            allowed = CLIENT_BOOKING_FIELDS[v] | {"listing_id", "human_verified", "escrow_ref", "accepted_payment_terms", "promo_code"}
-            unknown = [k for k in data if k not in allowed]
-            if unknown:
-                return self._json(400, {"error": f"unknown fields rejected: {unknown}",
-                    "allowed": sorted(CLIENT_BOOKING_FIELDS[v])})
-            # H17: identity field is a bounded nonempty STRING (probe: numbers,
-            # objects, empty and 5000-char values were accepted; schema-driven
-            # so every vertical's identity field gets the same wall)
-            idf = VERTICAL_SCHEMAS[v]["booking"]["identity"]
-            if not isinstance(data[idf], str):
-                return self._json(400, {"error": f"{idf} must be a string"})
-            _idv = data[idf].strip()
-            if not _idv:
-                return self._json(400, {"error": f"{idf} cannot be empty"})
-            if len(_idv) > 80:
-                return self._json(400, {"error": f"{idf} too long (max 80 chars)"})
-            data[idf] = _idv
-            qty_raw = data.get("quantity", 1)
-            # I3: strict integer quantity — bool/float/str rejected, no silent truncation
-            if isinstance(qty_raw, bool) or not isinstance(qty_raw, int) or not (1 <= qty_raw <= 100):
-                return self._json(400, {"error": "quantity must be an integer in [1, 100]"})
-            qty = qty_raw
-            # M5: optional on-chain escrow reference — shape-validated pointer
-            # (contract address + escrow id + tx hash). The chain is the source
-            # of truth; the hub only stores and mirrors it (M7), never invents it.
-            er = data.get("escrow_ref")
-            if er is not None:
-                if not isinstance(er, dict) or set(er.keys()) != {"contract", "escrow_id", "tx"}:
-                    return self._json(400, {"error": "escrow_ref must be an object with exactly: contract, escrow_id, tx"})
-                _erc = er.get("contract")
-                if not isinstance(_erc, str) or not _erc.strip() or len(_erc) > 80:
-                    return self._json(400, {"error": "escrow_ref.contract must be a nonempty string (max 80 chars)"})
-                _eri = er.get("escrow_id")
-                if isinstance(_eri, bool) or not isinstance(_eri, int) or _eri < 1 or _eri >= 2 ** 64:
-                    return self._json(400, {"error": "escrow_ref.escrow_id must be a positive integer (< 2^64, contract Uint<64>)"})
-                _ert = er.get("tx")
-                if not isinstance(_ert, str) or not _ert.strip() or len(_ert) > 100:
-                    return self._json(400, {"error": "escrow_ref.tx must be a nonempty string (max 100 chars)"})
-                er = {"contract": _erc.strip(), "escrow_id": _eri, "tx": _ert.strip()}
-            # I4: idempotency — same key + identical payload replays the same booking;
-            # same key + different payload -> 409 conflict. Bound to the token principal:
-            # agent B can never replay agent A's stored response (it contains secrets).
-            idem_key = self.headers.get("Idempotency-Key", "")
-            canon = json.dumps({"principal": principal, **data}, sort_keys=True, separators=(",", ":"))
-            if idem_key:
-                with LOCK:
-                    if len(IDEMPOTENCY) >= IDEMPOTENCY_CAP and idem_key not in IDEMPOTENCY:
-                        for k in list(IDEMPOTENCY)[:len(IDEMPOTENCY) // 10]:
-                            IDEMPOTENCY.pop(k, None)  # FIFO evict oldest 10%
-                    prev = IDEMPOTENCY.get(idem_key)
-                    if prev:
-                        if prev["hash"] != hashlib.sha256(canon.encode()).hexdigest():
-                            return self._json(409, {"error": "Idempotency-Key reused with different payload"})
-                        return self._json(201, {**prev["response"], "replayed": True})
-            # LEVEL-1 chain gate - INTAKE (owner-approved 2026-09-20): an
-            # escrow_ref must point at a REAL, currently-HELD on-chain escrow
-            # before it can back a booking. Single-source read here (terminal
-            # flips get dual-source); the LOCK section below re-asserts the
-            # amount against the authoritative price. Network stays OUTSIDE
-            # the LOCK (the settlement lesson).
-            _chain_v = None
-            if CHAIN_GATE and er is not None:
-                _chain_v, _cerr = _chain_gate_read(er, dual=False)
-                if _chain_v is None:
-                    _ccode, _cbody = _cerr
-                    return self._json(_ccode, _cbody)
-                if _chain_v["state_name"] != "HELD":
-                    return self._json(409, {
-                        "error": "escrow_ref points at a %s escrow - only a HELD escrow can back a new booking" % _chain_v["state_name"],
-                        "note": "released/refunded escrows cannot be re-claimed; squatting a settled escrow is refused",
-                        "chain": {"state": _chain_v["state_name"], "escrow_id": er["escrow_id"]}})
-            with LOCK:  # I3: single reservation section — check + increment atomic under one LOCK
-                listing = next((l for l in LISTINGS if l["id"] == lid), None)
-                if not listing: return self._json(404, {"error": f"no listing {lid}"})
-                if listing.get("archived"):
-                    return self._json(409, {"error": "listing archived - not bookable"})
-                _lsch = VERTICAL_SCHEMAS[listing["vertical"]]
-                if _lsch.get("tracks_capacity"):
-                    if listing.get("registered", 0) + qty > listing["capacity"]:
-                        return self._json(409, {"error": "event full"})
-                elif not listing.get("available", True):
-                    return self._json(409, {"error": "listing unavailable"})
-                # I3: money as integer minor units internally (convert at the edge)
-                price_c = int(round(listing["price"] * 100)) * qty
-                # promo redemption (owner-approved 2026-09-30): validate + recompute
-                # the price EARLY so fee/escrow/chain-amount checks all validate
-                # against the honest discounted total. The use is only decremented
-                # at booking-commit time - a failed booking never burns a use.
-                _promo_pcode = data.get("promo_code")
-                _promo_pct = 0
-                if _promo_pcode is not None:
-                    if not isinstance(_promo_pcode, str) or not re.fullmatch(r"[A-Za-z0-9]{3,24}", _promo_pcode.strip()):
-                        return self._json(400, {"error": "promo_code must be 3-24 letters/digits"})
-                    _promo_pcode = _promo_pcode.strip().upper()
-                    _ph = listing.get("promo_code_hash")
-                    if not _ph:
-                        return self._json(404, {"error": "this listing has no promo code"})
-                    if not hmac.compare_digest(hashlib.sha256(_promo_pcode.encode()).hexdigest(), str(_ph)):
-                        return self._json(403, {"error": "invalid promo code"})
-                    if int(listing.get("promo_uses_left") or 0) < 1:
-                        return self._json(409, {"error": "promo code exhausted - no redemptions left"})
-                    if price_c <= 0:
-                        return self._json(409, {"error": "promo needs a paid listing (this one is free)"})
-                    _promo_pct = int(listing.get("promo_pct") or 0)
-                    if not (1 <= _promo_pct <= 50):
-                        return self._json(409, {"error": "promo on this listing is misconfigured - the organizer needs to reset it"})
-                    price_c = price_c * (100 - _promo_pct) // 100
-                fee_c = hub_fee_c(price_c); payout_c = price_c - fee_c
-                price = price_c / 100.0; fee = fee_c / 100.0; payout = payout_c / 100.0
-                # C12 (SPEC §19a): booking = acceptance of the listing's payment
-                # terms. Default-terms bookings stay friction-free; custom terms
-                # (instant rail / custom window / deposit) require the buyer to
-                # echo the terms object exactly — API-enforced consent.
-                _pt = listing.get("payment_terms") or _default_payment_terms(v)
-                if price_c > 0 and _listing_is_custom_terms(listing):
-                    _echo = data.get("accepted_payment_terms")
-                    if _echo != _pt:
-                        return self._json(409, {"error": "this listing uses custom payment terms - confirm by echoing them exactly",
-                            "payment_terms": _pt,
-                            "how": "re-send the booking with accepted_payment_terms set to exactly the payment_terms object shown here"})
-                # B3c-waiver: free listings need no payment rail — escrow state WAIVED
-                # (verified-human gate still applies; ledger stays complete).
-                # C12: instant rail = settled at booking -> DIRECT (no escrow,
-                # no refund window, no confirm/cancel money step).
-                escrow_state = "WAIVED" if price_c == 0 else (
-                    "DIRECT" if _pt.get("rail") == "instant" else "HELD")
-                # M5: an on-chain escrow ref on a free booking is a contradiction —
-                # free listings waive the payment rail entirely. Same for instant:
-                # DIRECT means no escrow exists for this booking.
-                if er is not None and escrow_state in ("WAIVED", "DIRECT"):
-                    return self._json(409, {"error": "escrow_ref requires an escrow-rail paid booking (free listings waive the rail; instant bookings settle directly without escrow)"})
-                # W2 #1: abuse-resistant sponsorship gate (owner-approved). When
-                # sponsor-relay mode is on, the hub covers the organizer's chain
-                # fees for this escrow lifecycle - subject to the three
-                # anti-abuse rules in sponsorship.py (window limit, pool cap,
-                # stake threshold). Refusals are honest 402s with the reason.
-                if SPONSOR_RELAY and escrow_state == "HELD":
-                    import sponsorship as _sp
-                    _funded = sum(1 for x in BOOKINGS
-                                  if x.get("listing_id") == listing["id"]
-                                  and x.get("escrow") == "RELEASED")
-                    _ok, _why = _sp.check(listing.get("owner", "unknown"), _funded)
-                    if not _ok:
-                        return self._json(402, {"error": "sponsored fee relay refused",
-                                                "reason": _why,
-                                                "sponsorship": _sp.stats()})
-                # LEVEL-1 chain gate - INTAKE ASSERTIONS (in-LOCK, no network;
-                # the chain read happened outside above). Under gating an
-                # escrow-rail paid booking MUST carry a chain-verified
-                # escrow_ref (E3: no zero-money HELD->RELEASED farming), the
-                # on-chain amount must cover the booking total exactly, and
-                # the escrow's claim deadline must not have passed (D2
-                # anchored to the CHAIN deadline, not just hub terms).
-                if CHAIN_GATE and escrow_state == "HELD":
-                    if er is None:
-                        return self._json(400, {
-                            "error": "escrow_ref required for paid escrow-rail bookings (chain gating enabled)",
-                            "note": "book with escrow_ref {contract, escrow_id, tx} pointing at a live HELD escrow on the hub's configured indexer"})
-                    try:
-                        _camt = float(str(_chain_v.get("amount")))
-                    except (TypeError, ValueError):
-                        _camt = None
-                    if _camt is None or int(round(_camt * 100)) != price_c:
-                        return self._json(409, {
-                            "error": "escrow amount does not match the booking total",
-                            "chain_amount": _chain_v.get("amount"),
-                            "booking_total": price,
-                            "note": "the on-chain escrow must cover the booking exactly (price x quantity, minor units)"})
-                    try:
-                        _cdl = float(str(_chain_v.get("deadline")))
-                    except (TypeError, ValueError):
-                        _cdl = None
-                    if _cdl is not None and time.time() > _cdl:
-                        return self._json(409, {
-                            "error": "escrow claim deadline already passed on-chain",
-                            "deadline": _chain_v.get("deadline"),
-                            "note": "a spent or expiring escrow cannot back a new booking"})
-                # S1 red-team 3: duplicate (contract, escrow_id) would let two
-                # bookings claim the same on-chain escrow (double-claim / squat
-                # before the real buyer books) - wall lives inside the LOCK
-                if er is not None:
-                    dup = next((x for x in BOOKINGS if x.get("escrow_ref")
-                                and x["escrow_ref"]["contract"] == er["contract"]
-                                and x["escrow_ref"]["escrow_id"] == er["escrow_id"]), None)
-                    if dup is not None:
-                        return self._json(409, {"error": "escrow_ref already claimed by booking %s" % dup["id"]})
-                # S6-L1 + P0 human paid bookings (spec 2026-09-29): payment
-                # evidence (testnet). A valid X-PAYMENT header binds the
-                # buyer's wallet to this booking (self-pay review walls,
-                # interlock detection). P0 widens this from instant-rail-only
-                # to EVERY paid booking: humans in the webchat pay the same
-                # way agents do. Absent header -> booking proceeds, rating
-                # later weights at the floor.
-                _payer6 = _pvalue6 = _pnonce6 = None
-                _paysettle = None
-                if price_c > 0 and PAY_MODE == "testnet":
-                    _phdr = self.headers.get("X-PAYMENT", "")
-                    if _phdr:
-                        _recv6 = str(listing.get("receive_addr") or PAYTO).lower()
-                        _units6 = int(round(price * 1_000_000))
-                        _info6, _perr6 = x402verify.verify_payment(
-                            _phdr, network="base-sepolia", pay_to=_recv6,
-                            max_amount_units=_units6)
-                        if _perr6:
-                            return self._json(402, {"x402Version": 1, "error": "invalid payment",
-                                                    "detail": _perr6, "mode": "TESTNET"})
-                        _payer6 = str(_info6["from"]).lower()
-                        _pvalue6 = _info6["value"]
-                        _pnonce6 = _info6["nonce"]
-                        # N7 replay-across-restart + D4 crash safety: persist
-                        # the used nonce and the pending marker IMMEDIATELY.
-                        _persist_locked()
-                        if SETTLE_MODE == "auto":
-                            _fp6 = x402facilitate.payment_fingerprint(
-                                {"from": _info6["from"], "to": _recv6,
-                                 "value": _info6["value"], "nonce": _info6["nonce"]})
-                            SETTLEMENTS.mark_pending(_fp6)
-                            _persist_locked()
-                            _paysettle = (_fp6, _info6, _recv6)
-                # H2: unguessable booking IDs (no sequential enumeration)
-                bid = "bk-" + secrets.token_hex(12)
-                secret = secrets.token_hex(16)
-                # I1: server-owned fields ONLY; client data enters via explicit allowlist
-                _idf = VERTICAL_SCHEMAS[v]["booking"]["identity"]  # H15: schema-declared
-                priv_fields = {k: d for k, d in data.items() if k == _idf}
-                pub = {k: (anon_ref() if k == _idf else d)
-                       for k, d in data.items() if k in CLIENT_BOOKING_FIELDS[v]}
-                if _promo_pcode is not None:  # commit the redemption (same LOCK as the booking append)
-                    listing["promo_uses_left"] = int(listing.get("promo_uses_left") or 0) - 1
-                booking = {"id": bid, "listing_id": lid, "vertical": v,
-                    "escrow": escrow_state, "amount": price, "hub_fee": fee,
-                    "owner_payout": payout, "quantity": qty, "created": time.time(),
-                    "booked_by": principal,
-                    "payment_terms": _pt,  # C12: server-copied snapshot of the terms IN FORCE at booking time; later listing edits never rewrite a done deal
-                    **pub}
-                if _promo_pct:
-                    booking["promo_applied"] = {"pct": _promo_pct}  # server-derived; the raw code is never stored
-                # M14: bookings carry verification provenance SERVER-SIDE only
-                # (verified_by is reserved - clients can never claim it)
-                if principal.startswith("acct-"):
-                    _acct = ACCOUNTS.get(principal)
-                    if _acct and _acct.get("human_verified"):
-                        booking["verified_by"] = _acct.get("verified_by") or "midnight-zk"
-                if _payer6:
-                    # S6: server-verified payment evidence (never client-claimed)
-                    booking["payment_payer"] = _payer6
-                    booking["payment_value"] = _pvalue6
-                    booking["payment_nonce"] = _pnonce6
-                if er is not None:
-                    booking["escrow_ref"] = er  # M5: chain pointer, verbatim after validation
-                # real identity stored ONLY here, retrievable only with the secret
-                SECRETS[bid] = {"secret": secret, "private": priv_fields}
-                BOOKINGS.append(booking)
-                LEDGER.append({"ts": time.time(), "booking": bid, "amount": price,
-                    "hub_fee": fee, "owner_payout": payout, "escrow": escrow_state})
-                if VERTICAL_SCHEMAS[v].get("tracks_capacity"):
-                    listing["registered"] = listing.get("registered", 0) + qty
-                _persist_locked()
-            _notify_booking("created", booking, listing)
-            # P0 human paid bookings (spec 2026-09-29): settle the verified
-            # payment OUTSIDE the global LOCK (the settlement lesson — one
-            # facilitator hop must never serialize the hub). The x402 nonce
-            # is already marked used + persisted and SETTLEMENTS.settle() is
-            # fingerprint-idempotent, so this is safe unlocked. Booking ships
-            # immediately; settlement lands in the ledger either way.
-            if _paysettle is not None:
-                _fp6, _info6, _recv6 = _paysettle
-                _srec6 = SETTLEMENTS.settle(
-                    _fp6, _info6["payload"],
-                    {"scheme": "exact", "network": "base-sepolia",
-                     "asset": BASE_SEPOLIA_USDC, "payTo": _recv6,
-                     "maxAmountRequired": str(_info6["value"])},
-                    FACIL)
-                with LOCK:
-                    if _srec6["status"] == "settled":
-                        LEDGER.append({"kind": "x402_settlement", "ts": time.time(),
-                                       "detail": {"fingerprint": _fp6, "tx": _srec6["tx"],
-                                                   "value": _info6["value"], "payer": _info6["from"],
-                                                   "network": _srec6.get("network", "base-sepolia"),
-                                                   "booking": bid}})
-                    _persist_locked()
-            # C12: per-rail flow lines (plain list building — no starred unpacks)
-            if escrow_state == "DIRECT":
-                _flow = ["instant rail — payment settled at booking (DIRECT, no refund window)"]
-            elif escrow_state == "WAIVED":
-                _flow = ["free listing — payment WAIVED (no escrow rail)",
-                         "confirm: owner POST /book/{id}/confirm with X-Hub-Token (mint via POST /admin/tokens, act=confirm)",
-                         f"cancel: buyer POST /book/{bid}/cancel with X-Hub-Token: cancel_token before fulfillment -> full refund"]
-            else:
-                _flow = ["escrow HELD (funds locked)",
-                         "confirm: owner POST /book/{id}/confirm with X-Hub-Token (mint via POST /admin/tokens, act=confirm)",
-                         f"cancel: buyer POST /book/{bid}/cancel with X-Hub-Token: cancel_token before fulfillment -> full refund"]
-            resp = {**booking,
-                "booking_secret": secret, "secret_note": "shown ONCE; required to view private details",
-                "cancel_token": hublib.mint_token(BOOKING_KEY, "cancel", bid,
-                    # S7: TTL must outlive the advertised refund window — a buyer
-                    # on a 30-day window loses their only self-refund credential
-                    # at day 7 with a fixed 7d token.
-                    ttl=max(7 * 24 * 3600,
-                            int((_pt or {}).get("refund_window_hours", 0) or 0) * 3600 + 48 * 3600)),
-                "flow": _flow}
-            if idem_key:
-                with LOCK:
-                    IDEMPOTENCY[idem_key] = {"hash": hashlib.sha256(canon.encode()).hexdigest(),
-                                             "response": resp}
-                    _persist_locked()
-            return self._json(201, resp)
+            # E2/E3 (TRACK E): engine extracted to _book_core (verbatim);
+            # this route is now a thin HTTP wrapper over the shared core.
+            code, body, eh = self._book_core(data)
+            return self._json(code, body, extra_headers=eh)
         if path.startswith("/book/") and path.endswith("/confirm"):
             bid = path.split("/")[2]
             cred = self.headers.get("X-Hub-Token", "")  # I2: owner token required

@@ -52,7 +52,7 @@ _API_URL = os.environ.get("EVERLIST_PHRASE_API_URL",
 _API_KEY = os.environ.get("EVERLIST_PHRASE_API_KEY",
                           os.environ.get("EVERLIST_NLU_API_KEY", ""))
 _MODEL = os.environ.get("EVERLIST_PHRASE_MODEL",
-                        os.environ.get("EVERLIST_BRAIN_MODEL", "mercury-2-5"))
+                        os.environ.get("EVERLIST_BRAIN_MODEL", "z-ai-glm-5-3-flash"))
 _TIMEOUT = float(os.environ.get("EVERLIST_PHRASE_TIMEOUT", "10"))
 _ENABLED = os.environ.get("EVERLIST_PHRASE", "0") == "1"
 _DISABLED = bool(os.environ.get("EVERLIST_BRAIN_DISABLED"))
@@ -212,6 +212,16 @@ def _guard_ok(authored: str, template: str):
     # filler around it ('say ...') may be paraphrased/translated freely.
     if "book <n>" in t and "book <n>" not in a:
         return False, ["missing marker: book <n>"]
+    # never-longer law (owner call 2026-10-19): the voice may trim wording,
+    # never bloat it — the audition measured +3..+215-char bloat with praise
+    # openers and emoji additions when unchecked. Normalized length (emoji
+    # already stripped), small tolerance for punctuation reshuffles.
+    # proportional cap: the §9.8 policy pin (+34% paraphrase, every fact
+    # intact) is approved voice and must keep passing; the 2026-10-19
+    # audition measured real bloat at +60%..+566%. 1.5x + slack separates
+    # the two with margin — bloat still fails the guard, retries, floors.
+    if len(a) > int(len(t) * 1.5) + 12:
+        return False, ["too-long: authored %d vs template %d" % (len(a), len(t))]
     if not a.strip():
         return False, ["empty"]
     return True, []
@@ -229,8 +239,11 @@ _SYSTEM = (
     "any; keep every line that starts with 🔑 or contains a secret "
     "placeholder untouched; keep ASCII tables and 'book <n>' markers; no "
     "markdown; emoji only as status (✅ ⏳ ❌ 🔑). Reply in the user's "
-    "language. Keep it 1-3 short paragraphs max. Output ONLY the rewritten "
-    "reply text.")
+    "language. LENGTH LAW: keep the rewrite SHORTER than or equal to the "
+    "original — trim filler; NEVER add sentences, greetings, praise openers "
+    "(like 'Great pick!'), reassurance lines, or emoji beyond status. If the "
+    "original is one line, the rewrite is one line. Output ONLY the "
+    "rewritten reply text.")
 
 
 def _call(messages: list):

@@ -431,6 +431,31 @@ class SiteState(unittest.TestCase):
         self.assertEqual(brain._site_state(chatlib, "st-none"), "")
 
 
+
+
+class NoShadowedDefs(unittest.TestCase):
+    """2026-10-19 _fmt_price incident: a second top-level def with the SAME
+    name later in chatlib.py silently replaced the card formatter at import
+    (last def wins) — every listing card rendered a dict repr instead of
+    '· €15', and this suite was NOT gate-wired, so three gates shipped it.
+    This AST guard fails on ANY duplicate top-level function name in
+    chatlib.py, so same-name shadowing can never land silently again."""
+
+    def test_no_duplicate_top_level_defs(self):
+        import ast
+        src = open(os.path.join(HERE, "chatlib.py"), encoding="utf-8").read()
+        tree = ast.parse(src)
+        seen, dups = {}, []
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name in seen:
+                    dups.append("%s (lines %d and %d)" % (node.name, seen[node.name], node.lineno))
+                seen[node.name] = node.lineno
+        self.assertEqual(dups, [],
+                         "duplicate top-level defs in chatlib.py (last def wins "
+                         "at import and silently shadows earlier ones): " + "; ".join(dups))
+
+
 class CardFormat(unittest.TestCase):
     """C9: the canonical listing card — fixed shape on every surface."""
 

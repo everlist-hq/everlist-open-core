@@ -1229,9 +1229,15 @@ def _session(sender: str):
 
 
 
-def _fmt_price(p) -> str:
+def _fmt_price_val(p) -> str:
     """€18 from 18.0, €5 from 5, strings pass through (owner 2026-10-18:
-    '€5.0' reads like a spreadsheet — prices in chat must be human)."""
+    '€5.0' reads like a spreadsheet — prices in chat must be human).
+    RENAMED 2026-10-19: this VALUE formatter silently shadowed the card
+    formatter _fmt_price(l: dict) (~line 511) — same name, different
+    signature, last def wins at import — so every listing card rendered a
+    dict repr where '· €15' belongs (caught by test_brain.CardFormat,
+    which was ungated). Distinct names now; duplicate-def AST guard added
+    to the suite, test_brain wired into the gate."""
     try:
         f = float(p)
         return str(int(f)) if f == int(f) else ("%g" % f)
@@ -5007,14 +5013,14 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                     # resume the exact booking (promo rides through the gate)
                     _pending_book_put(sender, lid, str(target.get("title") or ""),
                                       "need_account", who=who or "", promo=promo_code or "")
-                    return (f"'{target.get('title')}' is €{_fmt_price(target.get('price'))} — pay right here "
+                    return (f"'{target.get('title')}' is €{_fmt_price_val(target.get('price'))} — pay right here "
                             "in chat, wallet to escrow."
                             + _wpt + "\n"
                             "One-time setup: paste your email and I'll set you up.")
                 _PAY_INTENTS[sender] = {"lid": str(target.get("id") or ""),
                                         "who": who or "", "ts": time.time(),
                                         **({"promo_code": promo_code} if promo_code else {})}
-                return (f"'{target.get('title')}' is €{_fmt_price(target.get('price'))} (paid listing).\n"
+                return (f"'{target.get('title')}' is €{_fmt_price_val(target.get('price'))} (paid listing).\n"
                         "[[pay:" + str(target.get("id")) + "]]"
                         "Tap Pay to pay from your wallet \u2014 same protected flow agents use "
                         "(pilot: real flow, test money)." + _wpt)

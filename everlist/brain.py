@@ -24,8 +24,11 @@ JSON, executor error) returns None and chatlib falls back to its
   deterministic keyword search — real searches never die with the LLM.
 Rate limit: 30 brain calls / 5 min / sender (same law the old router had).
 Env: same .secrets/llm.env contract as the retired nlu.py (EVERLIST_*), plus
-EVERLIST_BRAIN_MODEL (default qwen3-vl-235b-a22b; probed 2026-09-16: 4/5
-mini-eval, ~1.0s avg; mercury/glm-5-3-flash returned empty content).
+EVERLIST_BRAIN_MODEL (default z-ai-glm-5-3-flash; owner pick 2026-10-19 after
+a 19-config tournament on the prod endpoint: 22/28 routing combined, median
+0.81s, zero provider errors — prod's mercury-2-5 placed #11 at 4.10s median
+with 5 provider 500s. The old 'glm empty content' note referred to a stale
+model id/route; re-verified live via the phrase.py audition).
 Stdlib only, like the rest of the chat brain.
 """
 
@@ -58,12 +61,14 @@ _load_env()
 
 _API_URL = os.environ.get("EVERLIST_NLU_API_URL", "https://api.agent-zero.ai/venice/v1")
 _API_KEY = os.environ.get("EVERLIST_NLU_API_KEY", "")
-_MODEL = os.environ.get("EVERLIST_BRAIN_MODEL", "mercury-2-5")
+_MODEL = os.environ.get("EVERLIST_BRAIN_MODEL", "z-ai-glm-5-3-flash")
 _TIMEOUT = float(os.environ.get("EVERLIST_BRAIN_TIMEOUT", "12"))
-_MAX_TOKENS = 1200  # mercury is a reasoning model: tokens are spent on internal
-                     # reasoning BEFORE the JSON (measured ~190) — 220 emptied the
-                     # budget and returned "" with finish_reason=length (2026-09-17
-                     # probe: 14/14 correct at 1200+, ~1.9s avg).
+_MAX_TOKENS = 1200  # default glm-5.3-flash is non-thinking (~60-200 output
+                     # tokens). Budget stays generous ON PURPOSE: mercury model
+                     # overrides are reasoning models that spend internal
+                     # reasoning BEFORE the answer — 220 emptied the budget and
+                     # returned "" with finish_reason=length (2026-09-17 probe:
+                     # mercury 14/14 correct at 1200+, ~1.9s avg).
 _DISABLED = bool(os.environ.get("EVERLIST_BRAIN_DISABLED"))  # hermetic gates
 _FB_URL = os.environ.get("EVERLIST_FALLBACK_API_URL", "https://openrouter.ai/api/v1")
 _FB_KEY = os.environ.get("EVERLIST_FALLBACK_API_KEY", "")
