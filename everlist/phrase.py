@@ -297,7 +297,7 @@ def phrase(reply: str, user_text: str, sender: str = "", history=None) -> str:
     redacted, secrets = _redact(template)
     hist_block = ""
     if history:
-        hist = [str(h)[:200] for h in list(history)[-3:] if str(h or "").strip()]
+        hist = [str(h)[:200] for h in list(history)[-60:] if str(h or "").strip()]
         if hist:
             hist_txt = "\n".join("- " + h for h in hist)
             hist_block = ("\n\nRECENT CONVERSATION (context only — helps you "

@@ -70,9 +70,10 @@ _MAX_TOKENS = 1200  # default glm-5.3-flash is non-thinking (~60-200 output
                      # returned "" with finish_reason=length (2026-09-17 probe:
                      # mercury 14/14 correct at 1200+, ~1.9s avg).
 _DISABLED = bool(os.environ.get("EVERLIST_BRAIN_DISABLED"))  # hermetic gates
-_FB_URL = os.environ.get("EVERLIST_FALLBACK_API_URL", "https://openrouter.ai/api/v1")
-_FB_KEY = os.environ.get("EVERLIST_FALLBACK_API_KEY", "")
-_FB_MODEL = os.environ.get("EVERLIST_FALLBACK_MODEL", "inception/mercury-2.5")
+_FB_URL = os.environ.get("EVERLIST_FALLBACK_API_URL", "https://api.agent-zero.ai/venice/v1")
+# owner 2026-10-19: fallback is the e2ee glm-5.3 twin on the same proxy — NEVER mercury
+_FB_KEY = os.environ.get("EVERLIST_FALLBACK_API_KEY", os.environ.get("EVERLIST_NLU_API_KEY", ""))
+_FB_MODEL = os.environ.get("EVERLIST_FALLBACK_MODEL", "e2ee-glm-5-3-flash")
 
 _STAT = {"ok": 0, "off_topic": 0, "errors": 0, "last_error": "", "model": _MODEL}
 # last LLM call info for the chat log (chatlog._brain_info reads this):
@@ -90,7 +91,7 @@ def status() -> dict:
 # ---- per-sender conversation context (bounded, stdlib) -------------------
 
 _CTX: dict = {}          # sender -> (ts, [ {role, content}, ... ])
-_CTX_CAP = 16            # last 8 turns (user+assistant) — enough for 'actually cheaper'
+_CTX_CAP = 120           # owner 2026-10-19: full-history memory (~60 turns kept, 600-char/msg bound)
 _CTX_TTL = 24 * 3600.0
 _CTX_SENDERS_CAP = 10_000  # M-C: cap law — every client-keyed dict gets a cap
 
