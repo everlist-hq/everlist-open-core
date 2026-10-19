@@ -5,6 +5,7 @@ Run: python3 test_brain.py
 import json
 import os
 import sys
+import time
 import unittest
 from unittest import mock
 
@@ -15,6 +16,7 @@ import brain
 import chatlib
 
 os.environ["EVERLIST_BRAIN_DISABLED"] = "1"  # hermetic: no live LLM in this suite
+brain._ZAI_UNTIL = 0.0  # C9j hermetic: judging-window z.ai leg must never dial out here
 
 
 class Screen(unittest.TestCase):
@@ -110,6 +112,67 @@ class RateLimit(unittest.TestCase):
         brain._RL["s1"] = ([1.0] * brain._RL_CAP, win)  # tuples are immutable — replace whole
         self.assertFalse(brain._rate_ok("s1"))
         brain._RL.clear()
+
+
+class ZaiLeg(unittest.TestCase):
+    """C9j judging-window z.ai leg: chain order, time-box gating, failover.
+    Hermetic — no live calls, mirrors the FailOpen patch style."""
+
+    def _leg_env(self, until=None, key="zk"):
+        return (
+            mock.patch.object(brain, "_ZAI_UNTIL", until if until is not None else time.time() + 3600),
+            mock.patch.object(brain, "_ZAI_KEY", key),
+            mock.patch.object(brain, "_ZAI_URL", "https://zai.test/v4"),
+            mock.patch.object(brain, "_ZAI_MODEL", "glm-5.3-flash"),
+            mock.patch.object(brain, "_API_KEY", "k"),
+            mock.patch.object(brain, "_API_URL", "https://a0t.test/v1"),
+            mock.patch.object(brain, "_MODEL", "a-model"),
+            mock.patch.object(brain, "_FB_KEY", "fk"),
+            mock.patch.object(brain, "_FB_URL", "https://or.test/v1"),
+            mock.patch.object(brain, "_FB_MODEL", "fb-model"),
+        )
+
+    def test_chain_order_inside_window(self):
+        ps = self._leg_env()
+        with ps[0], ps[1], ps[2], ps[3], ps[4], ps[5], ps[6], ps[7], ps[8], ps[9]:
+            chain = brain._providers()
+            self.assertEqual([n for n, *_ in chain], ["primary", "zai", "fallback"])
+            self.assertEqual(chain[1], ("zai", "https://zai.test/v4", "zk", "glm-5.3-flash"))
+
+    def test_window_expired_no_zai(self):
+        ps = self._leg_env(until=time.time() - 10)
+        with ps[0], ps[1], ps[2], ps[3], ps[4], ps[5], ps[6], ps[7], ps[8], ps[9]:
+            self.assertEqual([n for n, *_ in brain._providers()], ["primary", "fallback"])
+
+    def test_unkeyed_or_zero_until_no_zai(self):
+        ps = self._leg_env(key="")
+        with ps[0], ps[1], ps[2], ps[3], ps[4], ps[5], ps[6], ps[7], ps[8], ps[9]:
+            self.assertFalse(brain._zai_active())
+        ps = self._leg_env(until=0)
+        with ps[0], ps[1], ps[2], ps[3], ps[4], ps[5], ps[6], ps[7], ps[8], ps[9]:
+            self.assertFalse(brain._zai_active())
+
+    def test_failover_walks_primary_then_zai(self):
+        ps = self._leg_env()
+        seen = []
+        resp_a0t_err = OSError("HTTP Error 402: Payment Required")
+        resp_zai = json.dumps({"choices": [{"message": {
+            "content": json.dumps({"action": "ack", "say": "hi"})}}]}).encode()
+
+        def fake_urlopen(req, timeout=0):
+            seen.append(req.full_url)
+            if req.full_url.startswith("https://a0t.test"):
+                raise resp_a0t_err
+            return mock.mock_open(read_data=resp_zai)()
+
+        with ps[0], ps[1], ps[2], ps[3], ps[4], ps[5], ps[6], ps[7], ps[8], ps[9]:
+            with mock.patch.object(brain, "_DISABLED", False), mock.patch(
+                    "urllib.request.urlopen", side_effect=fake_urlopen):
+                obj = brain._call("jazz", [])
+        self.assertEqual(seen, ["https://a0t.test/v1/chat/completions",
+                                "https://zai.test/v4/chat/completions"])
+        self.assertIsNotNone(obj)
+        self.assertEqual(obj.get("action"), "ack")
 
 
 class FailOpen(unittest.TestCase):

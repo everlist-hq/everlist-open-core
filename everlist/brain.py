@@ -75,6 +75,18 @@ _FB_URL = os.environ.get("EVERLIST_FALLBACK_API_URL", "https://api.agent-zero.ai
 _FB_KEY = os.environ.get("EVERLIST_FALLBACK_API_KEY", os.environ.get("EVERLIST_NLU_API_KEY", ""))
 _FB_MODEL = os.environ.get("EVERLIST_FALLBACK_MODEL", "e2ee-glm-5-3-flash")
 
+# C9j: judging-window z.ai leg (owner 2026-10-20): when the a0 proxy runs dry
+# during Akindo judging, serve via z.ai BEFORE the OpenRouter last resort.
+# Time-boxed by EVERLIST_ZAI_UNTIL (epoch seconds); 0/absent disables the leg,
+# so the window expires automatically with no redeploy needed.
+_ZAI_URL = os.environ.get("EVERLIST_ZAI_API_URL", "https://api.z.ai/api/coding/paas/v4")
+_ZAI_KEY = os.environ.get("EVERLIST_ZAI_API_KEY", "")
+_ZAI_MODEL = os.environ.get("EVERLIST_ZAI_MODEL", "glm-5.3-flash")
+try:
+    _ZAI_UNTIL = float(os.environ.get("EVERLIST_ZAI_UNTIL", "0") or 0)
+except ValueError:
+    _ZAI_UNTIL = 0.0
+
 _STAT = {"ok": 0, "off_topic": 0, "errors": 0, "last_error": "", "model": _MODEL}
 # last LLM call info for the chat log (chatlog._brain_info reads this):
 # {"provider": primary|fallback, "action": <action>, "ms": float}
@@ -400,10 +412,19 @@ def _perr(name: str, err: str) -> None:
     _STAT["last_error"] = (name + ": " + err)[:120]
 
 
+def _zai_active() -> bool:
+    """Judging-window leg: on only while the window is open AND keyed."""
+    return bool(_ZAI_KEY) and _ZAI_UNTIL > 0 and time.time() < _ZAI_UNTIL
+
+
 def _providers() -> list:
     chain = []
     if _API_KEY:
         chain.append(("primary", _API_URL, _API_KEY, _MODEL))
+    if _zai_active():
+        # C9j: a0 quota may be 0 during judging — z.ai serves BEFORE the
+        # OpenRouter last resort, only inside the owner's time window.
+        chain.append(("zai", _ZAI_URL, _ZAI_KEY, _ZAI_MODEL))
     if _FB_KEY:
         chain.append(("fallback", _FB_URL, _FB_KEY, _FB_MODEL))
     return chain
