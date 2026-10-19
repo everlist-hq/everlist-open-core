@@ -492,6 +492,17 @@ def _load_state():
         ACCOUNTS.update(snap.get("accounts", {}))
         CHECKOUT_SESSIONS.update(snap.get("checkout", {}))  # TRACK E: durable checkout sessions
         ID_COUNTERS.update(snap.get("id_counters", {}))
+        # Incident 2026-10-19 (prod 502s): persisted counters can run stale
+        # behind real listing ids (even:36 while even-71 existed) — a fresh
+        # mint then collides, duplicates ride into RAM, and EVERY persist
+        # dies on UNIQUE(listings.id). Reconcile counters to restored reality
+        # at boot; the mint guard below is the second layer.
+        for _l in LISTINGS:
+            _lid = str(_l.get("id") or "")
+            if "-" in _lid:
+                _pfx, _, _sfx = _lid.rpartition("-")
+                if _sfx.isdigit():
+                    ID_COUNTERS[_pfx] = max(int(ID_COUNTERS.get(_pfx, 0)), int(_sfx))
         # B3c-email + B1 migration: legacy accounts predate email/gen fields
         _EFIELDS = {"email": None, "email_verified": False, "notify_email": True, "marketing_email": True, "pending_email": None,
                     "pending_code_hash": None, "pending_exp": 0,
@@ -3774,6 +3785,12 @@ class Handler(BaseHTTPRequestHandler):
                              if l["id"].startswith(_pref + "-") and l["id"].rsplit("-", 1)[1].isdigit()]
                     _n = max(_nums) if _nums else 0
                 _n += 1
+                # Incident 2026-10-19 layer 2: a stale counter (behind real
+                # listing ids) must never mint an existing id — duplicates in
+                # RAM would crash every later persist on UNIQUE(listings.id).
+                _existing = {str(l["id"]) for l in LISTINGS}
+                while f"{_pref}-{_n}" in _existing:
+                    _n += 1
                 ID_COUNTERS[_pref] = _n
                 lid = f"{_pref}-{_n}"  # monotonic: never reused, even after deletes
                 data["id"] = lid
