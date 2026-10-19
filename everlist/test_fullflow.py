@@ -270,7 +270,7 @@ def main():
     c = C()
     c.say("any events in vienna?")
     d = c.say(f'Please book "Vinyl & Coffee Market — October Crates" for me ({L_VINYL})')
-    check("C1 anon paid gate", "paid listing" in (d.get("reply") or "").lower()
+    check("C1 anon paid gate", "wallet to escrow" in (d.get("reply") or "").lower()
           and "email" in (d.get("reply") or "").lower() and not is_pay_gate(d),
           (d.get("reply") or "")[:90])
     d = c.say("signup cara@example.com")
@@ -369,10 +369,11 @@ def main():
     check("E7 notify off confirmed", "OFF" in (d.get("reply") or ""), (d.get("reply") or "")[:90])
     d = e.say("email-bind egon2@example.com")
     r = d.get("reply") or ""
-    check("E8 email-bind sends code", "Verification code sent to" in r
-          and "email-code" in r, r[:110])
+    check("E8 email-bind sends code", "Code sent to" in r
+          and "Paste the 6-digit code here" in r, r[:110])
     d = e.say("email-code 000000")
-    check("E9 wrong email-code honest", "invalid or expired" in (d.get("reply") or "").lower(),
+    check("E9 wrong email-code honest + recovery path", "didn't take" in (d.get("reply") or "").lower()
+          and "paste your email again" in (d.get("reply") or "").lower(),
           (d.get("reply") or "")[:100])
     seed_e = ""
     # capture egon's seed from signup reply via log-independent path: re-login

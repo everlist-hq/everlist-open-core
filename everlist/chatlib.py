@@ -1361,14 +1361,11 @@ def _signup(hub_url: str, sender: str, email: str = "") -> str:
     _email_note = ""
     if email and _EMAIL_FULL_RX.match(email.strip()):
         _b = _email_bind(hub_url, sender, email.strip())
-        if _b.startswith("Verification code sent") and "delivery mode: off" in _b:
+        if _b.startswith("✉️ Code sent") and "delivery mode: off" in _b:
             _email_note = (f"✉️ {email.strip()} noted — but this hub has email switched "
                            f"off, so recovery isn't active yet. Retry 'email-bind <email>' once it is.")
-        elif _b.startswith("Verification code sent"):
-            _dev = "dev mode: code visible in hub log" in _b
-            _email_note = (f"✉️ Code sent to {email.strip()}"
-                           + (" (dev mode: in the hub log)" if _dev else "")
-                           + " — paste the 6-digit code here to finish.")
+        elif _b.startswith("✉️ Code sent"):
+            _email_note = _b  # bind reply is already the short paste-the-code line
         else:
             _reason = _b.split(chr(10))[0]
             if "already" in _reason.lower():
@@ -1446,10 +1443,13 @@ def _email_bind(hub_url: str, sender: str, email: str) -> str:
         return f"Email bind rejected: {res.get('error', 'unknown reason')}"
     s["pending_email"] = res.get("email")  # remember for email-code confirmation
     mode = res.get("delivery", "")
-    note = ("(dev mode: code visible in hub log)" if mode == "logged" else
-            "check your inbox" if mode == "sent" else f"delivery mode: {mode}")
-    return (f"Verification code sent to {res.get('email')} - {note}. "
-            "Confirm with: email-code <6-char code>")
+    if mode == "logged":
+        return (f"✉️ Code sent to {res.get('email')} (dev mode: in the hub log). "
+                "Paste the 6-digit code here.")
+    if mode == "sent":
+        return f"✉️ Code sent to {res.get('email')} — check your inbox. Paste the 6-digit code here."
+    return (f"✉️ {res.get('email')} noted — but this hub has email switched off, "
+            "so no code could go out. Retry once mail is on.")
 
 
 def _email_code(hub_url: str, sender: str, code: str) -> str:
@@ -1464,7 +1464,12 @@ def _email_code(hub_url: str, sender: str, code: str) -> str:
     except Exception:
         return "Sorry - the EverList hub is unreachable right now. Try again shortly."
     if code2 != 200:
-        return f"{res.get('error', 'Invalid or expired code. Request a new one with email-bind <email>.')}"
+        # owner 2026-10-19: a dead-end error left the user stuck twice. Codes
+        # die when a newer bind supersedes them or after 15 min — so the reply
+        # names the cause and the one-step fix (re-paste email = fresh code).
+        return ("That code didn't take — a newer request or 15 minutes retires "
+                "old codes. Just paste your email again and I'll send a fresh "
+                "code. 📬")
     if res.get("account_id") != s.get("account_id"):
         return "That code verified a different chat's pending email. Do the bind from this chat."
     # owner GO 2026-10-03: the confirmed code IS the one-time human check
@@ -1472,10 +1477,7 @@ def _email_code(hub_url: str, sender: str, code: str) -> str:
     s["verified"] = bool(res.get("human_verified"))
     s["verified_by"] = res.get("verified_by")
     s["ts"] = time.time()
-    _base = ("✅ Email verified — recovery enabled AND your one-time human check is done."
-             " If you ever lose your account code:\n"
-             "  recover <your email>  -> code arrives by email\n"
-             "  recover-confirm <code>  -> new account code (old one dies)")
+    _base = "✅ Email verified — recovery is on, and your one-time human check is done."
     _pb = _pending_book_pop(sender)
     if _pb:
         _cmd = "book " + _pb["lid"]
@@ -4999,17 +5001,16 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                 if isinstance(pt, dict):
                     _wpt = ("\n\u26a1 Terms: instant rail \u2014 settled at booking, no refund window."
                             if pt.get("rail") == "instant" else
-                            "\n\ud83d\udee1 Terms: protected \u00b7 refund window %sh" % pt.get("refund_window_hours", "?"))
+                            "\n🛡 Terms: protected \u00b7 refund window %sh" % pt.get("refund_window_hours", "?"))
                 if not _wp:
                     # anon paid booking: stash lid/who/promo so 'signup' can
                     # resume the exact booking (promo rides through the gate)
                     _pending_book_put(sender, lid, str(target.get("title") or ""),
                                       "need_account", who=who or "", promo=promo_code or "")
-                    return (f"'{target.get('title')}' is a paid listing (€{_fmt_price(target.get('price'))}) — pay right here "
-                            "in chat, wallet to escrow.\n"
-                            "One-time setup: just paste your email and I'll create "
-                            "your account (the code I send is your backup + human check)."
-                            + _wpt)
+                    return (f"'{target.get('title')}' is €{_fmt_price(target.get('price'))} — pay right here "
+                            "in chat, wallet to escrow."
+                            + _wpt + "\n"
+                            "One-time setup: paste your email and I'll set you up.")
                 _PAY_INTENTS[sender] = {"lid": str(target.get("id") or ""),
                                         "who": who or "", "ts": time.time(),
                                         **({"promo_code": promo_code} if promo_code else {})}

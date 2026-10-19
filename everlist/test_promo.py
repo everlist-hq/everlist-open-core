@@ -56,7 +56,9 @@ def check(name, cond, detail=""):
     if cond:
         PASS += 1; print(f"PASS {name}")
     else:
-        FAIL += 1; print(f"FAIL {name} {str(detail)[:160]}")
+        FAIL += 1
+        _d = str(detail)[:160].encode("utf-8", "backslashreplace").decode("utf-8")
+        print(f"FAIL {name} {_d}")
 
 
 def main():
@@ -186,7 +188,7 @@ def main():
     anon = "web-promo-anon-1"
     r11 = chatlib.handle_text(hub, f"book {lid} Zoe promo CHAT10", sender=anon)
     _st = chatlib._PENDING_BOOK.get(anon) or {}
-    check("P11 anon paid gate holds", "email" in r11.lower() and "paid listing" in r11.lower(), r11[:100])
+    check("P11 anon paid gate holds", "email" in r11.lower() and "wallet to escrow" in r11.lower(), r11[:100])
     check("P11 stash carries who+promo", _st.get("who") == "Zoe" and _st.get("promo") == "CHAT10", str(_st))
 
     # --- P12: signup resumes the SAME paid booking with the promo intact ---

@@ -131,7 +131,7 @@ def main():
 
     d2 = c.say('Please book \u201cVinyl & Coffee Market \u2014 October Crates\u201d for me (even-1)')
     r2 = d2.get("reply") or ""
-    check("T2 CTA hits the account gate", "paid listing" in r2.lower()
+    check("T2 CTA hits the account gate", "wallet to escrow" in r2.lower()
           and "email" in r2.lower(), r2[:90])
     _want_after_t2 = {k: v for k, v in webchat.chatlib._LAST_BOOK_WANT.items()
                       if v.get("lid") == "even-1"}
@@ -169,7 +169,7 @@ def main():
     r2b = d2b.get("reply") or ""
     check("stash-loss anomaly: 'go ahead' keeps the thread (anon gate re-render)",
           "Vinyl" in r2b and "email" in r2b.lower()
-          and "paid listing" in r2b.lower() and not is_name_steer(r2b), r2b[:90])
+          and "wallet to escrow" in r2b.lower() and not is_name_steer(r2b), r2b[:90])
 
     # ------------------------------------------------------------------
     # 3) changed-mind guard: a NEWER search after the gate means the human
@@ -193,7 +193,7 @@ def main():
     d4a = c4.say("never mind")
     r4a = d4a.get("reply") or ""
     check("dismissal never books", "Vinyl & Coffee Market" not in r4a
-          or "paid listing" not in r4a.lower() or not is_pay_gate(d4a), r4a[:90])
+          or "wallet to escrow" not in r4a.lower() or not is_pay_gate(d4a), r4a[:90])
 
     # ------------------------------------------------------------------
     # 5) German go-ahead after the gate: thread survives at the need_account
