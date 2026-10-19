@@ -502,3 +502,53 @@ enabling would fail-close live money ops with nothing to verify — flip ON by
 setting HUB_INDEXER_URL when the first real contract lands. (3) HUB_ADMIN_KEY
 dev default retired 2026-09-21: real key in gitignored .secrets/admin.env
 (0600), wired into make up / webchat-up, dev key now rejected.
+
+## 25. Embeddable checkout sessions ("EverList as Stripe", owner direction 2026-10-19)
+
+Principle: **any website can sell an EverList listing; the hub stays the
+register.** The merchant's site is a storefront, never a money handler.
+Booking flows through the SAME `_book_core` engine (zero drift from /book
+gates); checkout only adds a browser front door.
+
+- **Sessions:** `POST /checkout/sessions` mints a `chk-` capability URL
+  (128-bit, TTL 24h, hub cap 5000, per-source rate limit) for a PUBLIC,
+  **FREE** listing. Paid listings refuse at create with the TRACK E4/E5
+  fiat-provider pointer (contract honesty; the demo rail moves no money).
+  Terms + total are snapshotted at create.
+- **Stale detection (lazy):** archive, make-private, re-price, or re-terms
+  under a live session -> honest 409 `listing changed`; the verified email
+  and account stay bound. Capacity races are NOT pre-judged: they resolve
+  through the real engine at booking (the engine 409 passes through, the
+  session reopens for retry).
+- **Pay step:** `POST /checkout/sessions/{sid}/pay {email, name}` binds the
+  buyer and emails a 6-digit code. Walls: 60s resend cooldown, max 3
+  verification mails per address per hour (GLOBAL across sessions —
+  sessions are mintable, mailboxes are not), masked email faces everywhere.
+- **Verify step:** `POST .../verify {code}` proves mailbox control
+  (sha256 compare; 5-attempt wall that blocks even the correct code once
+  exhausted). Bind-or-create account per the Tier-1 email law
+  (`verified_by=email-code`). The Tier-2 `require_verified_buyer` gate is
+  NOT satisfied by checkout email verification — fail-closed as everywhere.
+- **Booking:** internally minted, gen-bound book token + sid idempotency
+  key call `_book_core`. Free listings settle escrow-WAIVED. The 201 body
+  carries the one-time booking credentials — buyer channel ONLY; the
+  merchant postMessage learns `booking_id` and nothing else.
+- **Faces:** GET on the capability URL returns status, masked email,
+  listing snapshot, total — NO secrets, ever. Static assets (`/checkout`,
+  `/checkout.js`, `/checkout.css`, `/book.js`) ship from a
+  strict-allowlist server with CSP `default-src 'none'` and
+  textContent-only DOM rendering (XSS law).
+- **Embed contract:** `book.js` derives the hub origin from its own script
+  src, opens the hosted window, and listens for an origin-checked
+  postMessage (`everlist:checkout`, booking_id only). No cross-origin API
+  calls exist.
+- **Knobs:** `HUB_CHECKOUT_TTL`, `HUB_CHECKOUT_PENDING_TTL` (code window,
+  15 min), `HUB_CHECKOUT_RESEND_COOLDOWN`, `HUB_CHECKOUT_CAP`,
+  `HUB_LIMIT_CHECKOUT`, `HUB_LIMIT_CHECKOUT_PAY`.
+- **Real money:** gated on TRACK E4/E5 (licensed fiat on-ramp widget inside
+  the hosted window; refund-to-original-card as a hard provider criterion).
+  The demo rail is the honest v1; nothing else changes when E4 lands.
+
+Regression: `test_checkout.py` (58 checks: honest walls, genuine capacity
+race, secrets-never-on-capability-face, mail/attempts walls, stale matrix,
+assets+CSP, embed contract) wired into the gate as the TRACK E cluster.

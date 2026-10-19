@@ -40,6 +40,22 @@ discover → search → register & pay (escrow) → confirm/cancel → transpare
 | testnet | `HUB_PAY_MODE=testnet` | real signed EIP-3009 verification vs official USDC domains |
 | settlement | `HUB_SETTLE_MODE=off\|auto` | off: verify only · auto: settle via facilitator (idempotent, `HUB_FACILITATOR_URL`) |
 
+## Embed anywhere ("EverList as Stripe")
+
+Any website can sell an EverList listing with two lines — buyers check out in a
+hosted EverList window (email + 6-digit verification, escrow-protected, one-time
+booking credentials by email) without visiting the marketplace first:
+
+```html
+<script src="https://everlist.network/book.js" async></script>
+<button data-everlist-book="LISTING-ID" data-qty="1">Book with EverList</button>
+```
+
+The merchant page learns a `booking_id` and nothing else (origin-checked
+postMessage; booking secrets never cross to the merchant site). v1 runs the
+honestly-labeled demo rail — bookings are real, no money moves; real fiat lands
+with the licensed provider rail. Normative contract: [SPEC.md §25](SPEC.md).
+
 ## Quickstart (10 minutes, SDK)
 
 ```bash

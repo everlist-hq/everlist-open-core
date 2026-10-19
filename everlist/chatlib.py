@@ -1451,9 +1451,10 @@ def _email_bind(hub_url: str, sender: str, email: str) -> str:
     mode = res.get("delivery", "")
     if mode == "logged":
         return (f"✉️ Code sent to {res.get('email')} (dev mode: in the hub log). "
-                "Paste the 6-digit code here.")
+                "Paste the 6-digit code here. Newest email wins — an older code dies once a new one goes out.")
     if mode == "sent":
-        return f"✉️ Code sent to {res.get('email')} — check your inbox. Paste the 6-digit code here."
+        return (f"✉️ Code sent to {res.get('email')} — check your inbox. Paste the 6-digit code here. "
+                "Newest email wins — an older code dies once a new one goes out.")
     return (f"✉️ {res.get('email')} noted — but this hub has email switched off, "
             "so no code could go out. Retry once mail is on.")
 
