@@ -4465,6 +4465,22 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
             and "?" not in text
             and not re.search(r"\b(yes|no|yeah|nope|ok|okay|please|bitte|danke|dank|thanks|thx|gern|book|buchen)\b", low))
     )
+    # owner 2026-10-19 hammer H2d: a go-ahead ('now book', 'book it', 'what
+    # i said before') with NOTHING staged gets an honest one-liner - never a
+    # fake keyword search, and never an LLM misroute. Runs BEFORE the brain
+    # so the answer is deterministic with the LLM up OR down. Thread-live
+    # go-aheads and search-stash affirmations are untouched (their tiers own
+    # them); pure-ack shapes ('yes', 'ok') stay with the social layers.
+    if ((_BOOK_AFFIRM_RX.match(low) or _BOOK_REFERENTIAL_RX.match(low))
+            and not _SUGGEST_ACK_ONLY_RX.match(low)
+            and not _pending_book_get(sender) and not _book_want_get(sender)
+            and not (_LAST_RESULTS.get(sender) or [])
+            and not _LAST_BOOK_DONE.get(sender)  # gate 2026-10-19: a completed booking owns the turn -- the pinned 'already booked' honesty (fullflow B3) outranks the threadless line
+            and not storage.draft_get(sender) and not _INTAKE.get(sender)):
+        return ("Nothing lined up to book just yet - tell me what you are in "
+                "the mood for ('jazz tonight', 'free yoga') and I will find it, "
+                "then we book it together.")
+
     if _LLM_FIRST and not _skip_brain:
         try:
             import brain as _brain_early
@@ -4613,6 +4629,10 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
             and not _BOOK_REFERENTIAL_RX.match(_ns_full)  # owner 2026-10-17: go-aheads never become names ('lol ok' still steers)
             and not re.match(r"^(search|find|show|book|cancel|booking|help|my-bookings|my-listings|bookings|more|next|all|edit|delete|archive|list|fee|whoami|dashboard|signup|login|logout|notify|recover|back|go back)\b", _ns_full)  # r4 gate 2026-10-04: typed commands are not names — 'search pizza' re-run must search, not steer; fullflow 2026-10-18: +booking/my-listings
             and not ((_LAST_SEARCH.get(sender) or {}).get("suggest") and not _SUGGEST_ACK_ONLY_RX.match(_ns_full))  # owner 2026-10-18: a no-match suggestion stash is NOT a pick question — content words ('pizzeria') search; social acks ('lol ok') keep the steer (conversation C3.3)
+            and not (not _SUGGEST_ACK_ONLY_RX.match(_ns_full)  # owner 2026-10-19 hammer: SAME law for real-result stashes — a bare word that overlaps NO stashed title is a new search ('pizzeria' after pizza results), never a pick prompt
+                     and not any(_ns_full in str(r.get("title") or "").lower()
+                                 or _ns_full in " ".join(str(t) for t in (r.get("tags") or [])).lower()
+                                 for r in (_LAST_RESULTS.get(sender) or [])))
             and (_LAST_RESULTS.get(sender) or [])):
         return ("Which one would you like? Say 'the first one', 'the free one', "
                 "or its name - then I'll take the booking name.")
@@ -5206,7 +5226,6 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                     "another number." % str(_buy[0].get("title") or "the first one"))
         return ("Love it! Tell me what you're after — 'jazz tonight', "
                 "'free yoga', 'sushi' — and I'll pull up what's on offer.")
-
     if re.fullmatch(r"(no|not) ?(back|home|main page|dashboard|board)", _tl):
         return nav_reply(hub_url, "home", sender)
     if _tl in ("more", "next") and (_LAST_RESULTS.get(sender) or []):
