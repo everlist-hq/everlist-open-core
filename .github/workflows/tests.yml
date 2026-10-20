@@ -121,7 +121,7 @@ jobs:
         working-directory: everlist/midnight-contract
         run: python3 tools/transcript_guard.py
 
-      - name: "Midnight Compact contract tests (escrow + credential + mandate + indistinguishability + reputation + milestone + dispute, offline)"
+      - name: "Midnight Compact contract tests (escrow + credential + mandate + indistinguishability + reputation + milestone + dispute + earnings + batch, offline)"
         working-directory: everlist/midnight-contract
         run: |
           npm ci
@@ -132,6 +132,8 @@ jobs:
           npx tsx --test test/reputation.test.ts
           npx tsx --test test/milestone.test.ts
           npx tsx --test test/dispute.test.ts
+          npx tsx --test test/earnings.test.ts
+          npx tsx --test test/batch.test.ts
 
       - name: "Dependency audit (H6 - waivers reasoned in SPEC 17)"
         continue-on-error: true
