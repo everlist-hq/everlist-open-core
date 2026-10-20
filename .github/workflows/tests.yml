@@ -117,7 +117,11 @@ jobs:
       - name: "x402 settlement suite (C3b)"
         run: venv/bin/python test_x402_settle.py
 
-      - name: "Midnight Compact contract tests (escrow + credential + mandate + indistinguishability + reputation + milestone, offline)"
+      - name: "Transcript-law guard (W3.0 - no query() args in public transcript)"
+        working-directory: everlist/midnight-contract
+        run: python3 tools/transcript_guard.py
+
+      - name: "Midnight Compact contract tests (escrow + credential + mandate + indistinguishability + reputation + milestone + dispute, offline)"
         working-directory: everlist/midnight-contract
         run: |
           npm ci
@@ -127,6 +131,7 @@ jobs:
           npx tsx --test test/indistinguishability.test.ts
           npx tsx --test test/reputation.test.ts
           npx tsx --test test/milestone.test.ts
+          npx tsx --test test/dispute.test.ts
 
       - name: "Dependency audit (H6 - waivers reasoned in SPEC 17)"
         continue-on-error: true
