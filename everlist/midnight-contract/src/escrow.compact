@@ -528,3 +528,61 @@ export circuit isHeld(escrowId: Uint<64>): Boolean {
   const e = escrows.lookup(id);
   return e.state == 1; // HELD
 }
+
+/*
+ * W3.3 batch settlement circuit (2026-10-20):
+ * N escrows released in ONE circuit call = one proof/transaction instead of N.
+ * Pilot N=2 to prove mechanics (multi-coin spend in a single circuit).
+ * Walls: same organizer, both HELD, both custody match, both pass caller proof.
+ */
+export circuit batchRelease2(
+  escrowId1: Uint<64>,
+  escrowId2: Uint<64>,
+  spendCoin1: QualifiedShieldedCoinInfo,
+  spendCoin2: QualifiedShieldedCoinInfo
+): [] {
+  assert(escrowId1 != escrowId2, "escrow ids must differ");
+  const id1 = disclose(escrowId1);
+  assert(escrows.member(id1), "escrow 1 not found");
+  const e1 = escrows.lookup(id1);
+  assert(e1.state == 1, "escrow 1 not in HELD state");
+  assert(spendCoin1.nonce == e1.coinNonce, "coin 1 does not match escrow custody");
+  assert(spendCoin1.color == e1.coinColor, "coin 1 does not match escrow custody");
+  assert(spendCoin1.value == e1.amount, "coin 1 does not match escrow custody");
+  const id2 = disclose(escrowId2);
+  assert(escrows.member(id2), "escrow 2 not found");
+  const e2 = escrows.lookup(id2);
+  assert(e2.state == 1, "escrow 2 not in HELD state");
+  assert(spendCoin2.nonce == e2.coinNonce, "coin 2 does not match escrow custody");
+  assert(spendCoin2.color == e2.coinColor, "coin 2 does not match escrow custody");
+  assert(spendCoin2.value == e2.amount, "coin 2 does not match escrow custody");
+  // SAME-ORGANIZER wall, privacy-preserving (per-booking commitments)
+  const caller1 = organizerCommitment(organizerSecretKey(), e1.bookingRef);
+  assert(caller1 == e1.organizerCommitment, "only organizer can release escrow 1");
+  const caller2 = organizerCommitment(organizerSecretKey(), e2.bookingRef);
+  assert(caller2 == e2.organizerCommitment, "only organizer can release escrow 2");
+  sendShielded(disclose(spendCoin1), left<ZswapCoinPublicKey, ContractAddress>(organizerPks.lookup(id1)), e1.amount);
+  sendShielded(disclose(spendCoin2), left<ZswapCoinPublicKey, ContractAddress>(organizerPks.lookup(id2)), e2.amount);
+  escrows.insert(id1, Escrow {
+    amount: e1.amount,
+    agentCommitment: e1.agentCommitment,
+    organizerCommitment: e1.organizerCommitment,
+    state: 2, // RELEASED
+    bookingRef: e1.bookingRef,
+    deadline: e1.deadline,
+    claimDeadline: e1.claimDeadline,
+    coinNonce: e1.coinNonce,
+    coinColor: e1.coinColor
+  });
+  escrows.insert(id2, Escrow {
+    amount: e2.amount,
+    agentCommitment: e2.agentCommitment,
+    organizerCommitment: e2.organizerCommitment,
+    state: 2, // RELEASED
+    bookingRef: e2.bookingRef,
+    deadline: e2.deadline,
+    claimDeadline: e2.claimDeadline,
+    coinNonce: e2.coinNonce,
+    coinColor: e2.coinColor
+  });
+}
