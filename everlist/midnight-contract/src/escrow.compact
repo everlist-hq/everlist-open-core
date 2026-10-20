@@ -56,9 +56,18 @@ export ledger escrows: Map<Uint<64>, Escrow>;
 export ledger nextId: Counter;
 export ledger agentPks: Map<Uint<64>, ZswapCoinPublicKey>;
 export ledger organizerPks: Map<Uint<64>, ZswapCoinPublicKey>;
+// W3.1 dispute path: per-escrow arbiter record. LIVES SEPARATELY from the
+// Escrow struct so pre-dispute escrows (and the hub's fixture codec) are
+// untouched; absent = dispute rail not armed for that escrow.
+struct Arbiter {
+  commitment: Bytes<32>,
+  deadline: Uint<64>
+}
+export ledger arbiters: Map<Uint<64>, Arbiter>;
 
 witness agentSecretKey(): Bytes<32>;
 witness organizerSecretKey(): Bytes<32>;
+witness arbiterSecretKey(): Bytes<32>; // W3.1: never leaves the arbiter's machine
 
 /**
  * Commitment of an agent (buyer). sk never leaves the agent's machine.
@@ -77,6 +86,14 @@ export circuit agentCommitment(sk: Bytes<32>, bookingRef: Bytes<32>): Bytes<32> 
  */
 export circuit organizerCommitment(sk: Bytes<32>, bookingRef: Bytes<32>): Bytes<32> {
   return persistentHash<Vector<3, Bytes<32>>>([pad(32, "everlist:organizer:"), sk, bookingRef]);
+}
+
+/**
+ * Arbiter commitment (W3.1 dispute path), bound to the booking like the
+ * party tags (W2 Tell fix pattern) — no cross-escrow linkage.
+ */
+export circuit arbiterCommitment(sk: Bytes<32>, bookingRef: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<3, Bytes<32>>>([pad(32, "everlist:arbiter:"), sk, bookingRef]);
 }
 
 /**
@@ -304,6 +321,195 @@ export circuit autoRelease(escrowId: Uint<64>, spendCoin: QualifiedShieldedCoinI
     agentCommitment: e.agentCommitment,
     organizerCommitment: e.organizerCommitment,
     state: 2, // RELEASED
+    bookingRef: e.bookingRef,
+    deadline: e.deadline,
+    claimDeadline: e.claimDeadline,
+    coinNonce: e.coinNonce,
+    coinColor: e.coinColor
+  });
+}
+
+/**
+ * W3.1 — DISPUTE PATH (P2 #5, milestone.compact pattern ported).
+ *
+ * States: 4 = DISPUTED (frozen, only the arbiter or the timeout hatch
+ * moves funds), 5 = ARB_RELEASED (final), 6 = ARB_REFUNDED (final).
+ *
+ * The arbiter is fixed per-escrow via setArbiter (agent-only, once, while
+ * HELD, BEFORE any dispute): commitment + deadline land on-chain. Pilot:
+ * the hub operates the arbiter key; the mechanism itself is trustless —
+ * a vanished arbiter can never freeze funds (arbiterTimeoutRefund).
+ *
+ * While DISPUTED, release/refund/timeout/autoRelease all stay blocked
+ * (they assert state == 1) — the freeze is structural, not a convention.
+ */
+export circuit setArbiter(
+  escrowId: Uint<64>,
+  arbiterCommitmentInput: Bytes<32>,
+  arbiterDeadline: Uint<64>
+): [] {
+  const id = disclose(escrowId);
+  assert(escrows.member(id), "escrow not found");
+  const e = escrows.lookup(id);
+  assert(e.state == 1, "escrow not in HELD state");
+  assert(!(arbiters.member(id)), "arbiter already set");
+  const caller = agentCommitment(agentSecretKey(), e.bookingRef);
+  assert(caller == e.agentCommitment, "only agent can set the arbiter");
+  assert(arbiterDeadline > e.claimDeadline, "arbiter deadline must be after claim deadline");
+
+  arbiters.insert(id, Arbiter {
+    commitment: disclose(arbiterCommitmentInput),
+    deadline: disclose(arbiterDeadline)
+  });
+}
+
+/** Agent freezes the escrow for arbitration (HELD -> DISPUTED). */
+export circuit agentOpenDispute(escrowId: Uint<64>): [] {
+  const id = disclose(escrowId);
+  assert(escrows.member(id), "escrow not found");
+  const e = escrows.lookup(id);
+  assert(e.state == 1, "escrow not in HELD state");
+  assert(arbiters.member(id), "no arbiter set for this escrow");
+  const caller = agentCommitment(agentSecretKey(), e.bookingRef);
+  assert(caller == e.agentCommitment, "only agent can open this dispute");
+
+  escrows.insert(id, Escrow {
+    amount: e.amount,
+    agentCommitment: e.agentCommitment,
+    organizerCommitment: e.organizerCommitment,
+    state: 4, // DISPUTED
+    bookingRef: e.bookingRef,
+    deadline: e.deadline,
+    claimDeadline: e.claimDeadline,
+    coinNonce: e.coinNonce,
+    coinColor: e.coinColor
+  });
+}
+
+/** Organizer freezes the escrow for arbitration (HELD -> DISPUTED). */
+export circuit organizerOpenDispute(escrowId: Uint<64>): [] {
+  const id = disclose(escrowId);
+  assert(escrows.member(id), "escrow not found");
+  const e = escrows.lookup(id);
+  assert(e.state == 1, "escrow not in HELD state");
+  assert(arbiters.member(id), "no arbiter set for this escrow");
+  const caller = organizerCommitment(organizerSecretKey(), e.bookingRef);
+  assert(caller == e.organizerCommitment, "only organizer can open this dispute");
+
+  escrows.insert(id, Escrow {
+    amount: e.amount,
+    agentCommitment: e.agentCommitment,
+    organizerCommitment: e.organizerCommitment,
+    state: 4, // DISPUTED
+    bookingRef: e.bookingRef,
+    deadline: e.deadline,
+    claimDeadline: e.claimDeadline,
+    coinNonce: e.coinNonce,
+    coinColor: e.coinColor
+  });
+}
+
+/**
+ * Arbiter rules for the organizer (DISPUTED -> ARB_RELEASED): custody
+ * coin pays the organizer's stored key. Only the arbiter.
+ */
+export circuit arbiterRelease(escrowId: Uint<64>, spendCoin: QualifiedShieldedCoinInfo): [] {
+  const id = disclose(escrowId);
+  assert(escrows.member(id), "escrow not found");
+  const e = escrows.lookup(id);
+  assert(e.state == 4, "escrow not in DISPUTED state");
+  assert(arbiters.member(id), "no arbiter set for this escrow");
+  const a = arbiters.lookup(id);
+  const caller = arbiterCommitment(arbiterSecretKey(), e.bookingRef);
+  assert(caller == a.commitment, "only arbiter can rule");
+  assert(spendCoin.nonce == e.coinNonce, "coin does not match escrow custody");
+  assert(spendCoin.color == e.coinColor, "coin does not match escrow custody");
+  assert(spendCoin.value == e.amount, "coin does not match escrow custody");
+
+  sendShielded(
+    disclose(spendCoin),
+    left<ZswapCoinPublicKey, ContractAddress>(organizerPks.lookup(id)),
+    e.amount
+  );
+
+  escrows.insert(id, Escrow {
+    amount: e.amount,
+    agentCommitment: e.agentCommitment,
+    organizerCommitment: e.organizerCommitment,
+    state: 5, // ARB_RELEASED
+    bookingRef: e.bookingRef,
+    deadline: e.deadline,
+    claimDeadline: e.claimDeadline,
+    coinNonce: e.coinNonce,
+    coinColor: e.coinColor
+  });
+}
+
+/**
+ * Arbiter rules for the agent (DISPUTED -> ARB_REFUNDED): custody coin
+ * pays the agent's stored key. Only the arbiter.
+ */
+export circuit arbiterRefund(escrowId: Uint<64>, spendCoin: QualifiedShieldedCoinInfo): [] {
+  const id = disclose(escrowId);
+  assert(escrows.member(id), "escrow not found");
+  const e = escrows.lookup(id);
+  assert(e.state == 4, "escrow not in DISPUTED state");
+  assert(arbiters.member(id), "no arbiter set for this escrow");
+  const a = arbiters.lookup(id);
+  const caller = arbiterCommitment(arbiterSecretKey(), e.bookingRef);
+  assert(caller == a.commitment, "only arbiter can rule");
+  assert(spendCoin.nonce == e.coinNonce, "coin does not match escrow custody");
+  assert(spendCoin.color == e.coinColor, "coin does not match escrow custody");
+  assert(spendCoin.value == e.amount, "coin does not match escrow custody");
+
+  sendShielded(
+    disclose(spendCoin),
+    left<ZswapCoinPublicKey, ContractAddress>(agentPks.lookup(id)),
+    e.amount
+  );
+
+  escrows.insert(id, Escrow {
+    amount: e.amount,
+    agentCommitment: e.agentCommitment,
+    organizerCommitment: e.organizerCommitment,
+    state: 6, // ARB_REFUNDED
+    bookingRef: e.bookingRef,
+    deadline: e.deadline,
+    claimDeadline: e.claimDeadline,
+    coinNonce: e.coinNonce,
+    coinColor: e.coinColor
+  });
+}
+
+/**
+ * Arbiter-liveness hatch (never weaker than the base contract): a
+ * DISPUTED escrow past the arbiter deadline can be refunded to the
+ * agent's stored key by ANYONE — a vanished arbiter can never freeze
+ * buyer funds forever. The organizer's remedy is a timely ruling.
+ */
+export circuit arbiterTimeoutRefund(escrowId: Uint<64>, spendCoin: QualifiedShieldedCoinInfo): [] {
+  const id = disclose(escrowId);
+  assert(escrows.member(id), "escrow not found");
+  const e = escrows.lookup(id);
+  assert(e.state == 4, "escrow not in DISPUTED state");
+  assert(arbiters.member(id), "no arbiter set for this escrow");
+  const a = arbiters.lookup(id);
+  assert(blockTimeGte(a.deadline), "arbiter deadline not yet passed");
+  assert(spendCoin.nonce == e.coinNonce, "coin does not match escrow custody");
+  assert(spendCoin.color == e.coinColor, "coin does not match escrow custody");
+  assert(spendCoin.value == e.amount, "coin does not match escrow custody");
+
+  sendShielded(
+    disclose(spendCoin),
+    left<ZswapCoinPublicKey, ContractAddress>(agentPks.lookup(id)),
+    e.amount
+  );
+
+  escrows.insert(id, Escrow {
+    amount: e.amount,
+    agentCommitment: e.agentCommitment,
+    organizerCommitment: e.organizerCommitment,
+    state: 6, // ARB_REFUNDED
     bookingRef: e.bookingRef,
     deadline: e.deadline,
     claimDeadline: e.claimDeadline,

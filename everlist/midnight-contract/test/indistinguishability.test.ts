@@ -38,6 +38,7 @@ const b32 = (s: string) => {
 const mkWitnesses = (agentSk: Uint8Array, orgSk: Uint8Array) => ({
   agentSecretKey: (ctxt) => [ctxt.privateState, agentSk],
   organizerSecretKey: (ctxt) => [ctxt.privateState, orgSk],
+  arbiterSecretKey: (ctxt) => [ctxt.privateState, new Uint8Array(32).fill(5)], // W3.1 (unused by these flows)
 });
 
 const AGENT_SK = new Uint8Array(32).fill(1);   // agent #1 (both worlds)

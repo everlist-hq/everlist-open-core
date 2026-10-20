@@ -1161,7 +1161,7 @@ _SCHEMAS = {
             "id": {"type": "string", "pattern": "^bk-"},
             "listing_id": {"type": "string"},
             "vertical": {"type": "string"},
-            "escrow": {"type": "string", "enum": ["HELD", "WAIVED", "DIRECT", "RELEASED", "REFUNDED"]},
+            "escrow": {"type": "string", "enum": ["HELD", "WAIVED", "DIRECT", "RELEASED", "REFUNDED", "DISPUTED", "ARB_RELEASED", "ARB_REFUNDED"]},
             "amount": {"type": "number", "description": "total in major units; 0 = free booking"},
             "hub_fee": {"type": "number"},
             "owner_payout": {"type": "number"},
@@ -1271,7 +1271,7 @@ _SCHEMAS = {
             "amount": {"type": "number"},
             "hub_fee": {"type": "number"},
             "owner_payout": {"type": "number"},
-            "escrow": {"type": "string", "enum": ["HELD", "WAIVED", "DIRECT", "RELEASED", "REFUNDED"]},
+            "escrow": {"type": "string", "enum": ["HELD", "WAIVED", "DIRECT", "RELEASED", "REFUNDED", "DISPUTED", "ARB_RELEASED", "ARB_REFUNDED"]},
             "released_to": {"type": "string"},
             "detail": {"type": "object", "description": "x402_settlement: {fingerprint, tx, value, payer (pseudonymized anon-*), network}"},
             "from": {"type": "string", "description": "escrow_sync: prior hub state"},
@@ -1403,6 +1403,7 @@ def _openapi_spec():
                                  note="Idempotency-Key supported; verified-human gate applies; optional escrow_ref {contract, escrow_id, tx} links the on-chain escrow (escrow-rail paid bookings only; REQUIRED for escrow-rail paid bookings when chain gating is enabled via HUB_INDEXER_URL - SPEC section 24). Custom payment terms (SPEC §19): paid bookings on listings with non-default terms must echo accepted_payment_terms exactly (409 otherwise; the error returns the terms). Listings with require_verified_buyer accept ONLY Tier-2-verified accounts (server-side; the human_verified stub never counts, SPEC section 22)")},
             "/book/{id}/confirm": {"post": op("Owner confirms booking (escrow RELEASE)", "bookings", sec=tok)},
             "/book/{id}/cancel": {"post": op("Buyer cancels pre-fulfillment (full refund)", "bookings", sec=tok)},
+            "/book/{id}/dispute": {"post": op("Either party freezes a HELD booking for arbitration (DISPUTED; no release or refund until resolved)", "bookings", sec=tok)},
             "/book/{id}/transfer": {"post": op("Buyer transfers booking to a new attendee name (pre-fulfillment; rotates secret + cancel token)", "bookings", sec=tok)},
             "/book/{id}/rate": {"post": op("Buyer rates a settled booking 1-5 (once)", "bookings", sec=tok,
                                 note="buyer's own book token; escrow must be RELEASED, WAIVED or DIRECT (instant = settled at booking); free (amount 0; channel set by economic value, not the mutable escrow label - run #5) ratings go to a separate free-feedback channel, paid aggregates are amount-weighted, self-reviews rejected (S6); ledger untouched")},
@@ -1467,6 +1468,7 @@ def _openapi_spec():
         ("post", "/checkout/sessions/{sid}/verify", "201", "CheckoutBooked", "Checkout booking created"),
         ("post", "/book/{id}/confirm", "200", "ConfirmResponse", "Owner confirmed (escrow RELEASED)"),
         ("post", "/book/{id}/cancel", "200", "CancelResponse", "Buyer cancelled (full refund)"),
+        ("post", "/book/{id}/dispute", "200", "CancelResponse", "Dispute opened (funds frozen for arbitration)"),
         ("post", "/book/{id}/rate", "200", "RateResponse", "Rating recorded"),
         ("get", "/ledger", "200", "Ledger", "Public money ledger"),
         ("get", "/verticals", "200", "Verticals", "Vertical schema registry"),
@@ -4259,6 +4261,68 @@ class Handler(BaseHTTPRequestHandler):
             # must never print 'nothing to pay')
             return self._json(200, {"ok": True, "id": bid, "escrow": "REFUNDED",
                                     "amount": b.get("amount", 0)})
+        if path.startswith("/book/") and path.endswith("/dispute"):
+            # W3.1 dispute path: either party (buyer or organizer) can freeze
+            # a HELD booking for arbitration. No money moves - the freeze IS
+            # the point. The hub mirrors the on-chain DISPUTED state; the
+            # escrow contract walls release/refund while DISPUTED.
+            bid = path.split("/")[2]
+            with LOCK:
+                if not _auth_allow("book", _source_of(self)):
+                    return self._json(429, {"error": "rate limit reached, retry later"})
+            cred = self.headers.get("X-Hub-Token", "")
+            manage_code = (data or {}).get("manage_code", "")
+            with LOCK:
+                _b = next((x for x in BOOKINGS if x["id"] == bid), None)
+            if _b is None:
+                return self._json(404, {"error": "no booking"})
+            _is_buyer = False
+            _is_owner = False
+            if cred:
+                # W3.1: single_use=False — a dispute is a freeze, not a terminal
+                # flip; the buyer's cancel credential must SURVIVE it (the
+                # escrow-state walls are the protection, not token burning).
+                p, err = hublib.verify_token(BOOKING_KEY, cred, "cancel", subject=bid, single_use=False)
+                if p and _gen_check(p)[0]:
+                    _is_buyer = True
+                else:
+                    p2, err2 = hublib.verify_token(BOOKING_KEY, cred, "book", single_use=False)
+                    if p2 and _gen_check(p2)[0] and p2.get("sub") == _b.get("booked_by"):
+                        _is_buyer = True
+            if manage_code and not _is_buyer:
+                _cl = next((x for x in LISTINGS if x["id"] == _b.get("listing_id")), None)
+                if _cl is not None and hmac.compare_digest(
+                        hashlib.sha256(manage_code.encode()).hexdigest(),
+                        str(_cl.get("manage_code_hash", ""))):
+                    _is_owner = True
+            if not _is_buyer and not _is_owner:
+                return self._json(401, {"error": "missing or invalid credentials",
+                    "hint": "buyer: send your cancel_token as X-Hub-Token; organizer: send manage_code in the body"})
+            # LEVEL-1 chain gate - verify-then-flip: hub may flip HELD->DISPUTED
+            # only when the chain still says HELD. Fail-closed on any doubt.
+            if CHAIN_GATE:
+                _cr = _b.get("escrow_ref")
+                if _cr is not None:
+                    _cv, _cv_err = _chain_gate_read(_cr, dual=True)
+                    if _cv is not None and _cv["state_name"] not in ("HELD", "DISPUTED"):
+                        return self._json(409, {
+                            "error": "chain escrow is %s - dispute refused (chain is source of truth)" % _cv["state_name"],
+                            "chain": {"state": _cv["state_name"], "escrow_id": _cr["escrow_id"]}})
+            with LOCK:
+                b = next((x for x in BOOKINGS if x["id"] == bid), None)
+                if b is None:
+                    return self._json(404, {"error": "no booking"})
+                if b["escrow"] != "HELD":
+                    return self._json(409, {"error": "escrow is %s - only HELD bookings can be disputed" % b["escrow"],
+                        "hint": "settled (RELEASED/REFUNDED/WAIVED/DIRECT) or already disputed (DISPUTED)"})
+                b["escrow"] = "DISPUTED"
+                LEDGER.append({"ts": time.time(), "kind": "escrow_sync",
+                               "booking": bid, "from": "HELD", "to": "DISPUTED",
+                               "dispute_opened_by": "buyer" if _is_buyer else "organizer"})
+                _persist_locked()
+            return self._json(200, {"ok": True, "id": bid, "escrow": "DISPUTED",
+                "note": "funds frozen for arbitration; no release or refund while DISPUTED",
+                "liveness": "if the arbiter vanishes, arbiterTimeoutRefund returns buyer funds after the arbiter deadline"})
         if path.startswith("/book/") and path.endswith("/rate"):
             # S2: mutating route - per-source backstop before any auth work
             with LOCK:
@@ -4459,11 +4523,18 @@ class Handler(BaseHTTPRequestHandler):
                 # legal forward transition - on-chain, RELEASED -> REFUNDED is
                 # reachable ONLY via mutualRefund (both role commitments proven
                 # in-circuit), so the chain truth is mirrored, not refused.
-                # The reverse (chain RELEASED, hub REFUNDED) is unreachable by
-                # any circuit and remains refused for operator investigation.
-                downward = ((chain_state == "HELD" and hub_state != "HELD")
-                            or (chain_state == "RELEASED" and hub_state == "REFUNDED"))
-                if downward:
+                # W3.1 dispute path: HELD -> DISPUTED (either party opens);
+                # DISPUTED -> {ARB_RELEASED, ARB_REFUNDED} (arbiter ruling or
+                # the arbiter-timeout liveness hatch). ARB_* are terminal.
+                # The reverse moves are unreachable by any circuit and remain
+                # refused for operator investigation.
+                _FWD = {
+                    "HELD": {"RELEASED", "REFUNDED", "DISPUTED"},
+                    "DISPUTED": {"ARB_RELEASED", "ARB_REFUNDED"},
+                    "RELEASED": {"REFUNDED"},  # M16 mutual refund carve-out
+                }
+                forward_ok = chain_state in _FWD.get(hub_state, set())
+                if not forward_ok:
                     results.append({"booking_id": snap["id"], "action": "refused",
                                     "hub_state": hub_state, "chain_state": chain_state,
                                     "reason": "downward/conflicting overwrite refused - divergence needs operator investigation (C7)"})

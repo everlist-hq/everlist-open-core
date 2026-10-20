@@ -44,6 +44,8 @@ const nextMt = (ctx) => BigInt(ctx.callContext.currentQueryContext.comIndices.si
 const witnesses = {
   agentSecretKey: (c) => [c.privateState, AGENT_SK],
   organizerSecretKey: (c) => [c.privateState, ORG_SK],
+
+  arbiterSecretKey: (c) => [c.privateState, new Uint8Array(32).fill(5)], // W3.1 junk arbiter (unused in legacy flows)
 };
 const honest = new Contract(witnesses);
 const attacker = new Contract({

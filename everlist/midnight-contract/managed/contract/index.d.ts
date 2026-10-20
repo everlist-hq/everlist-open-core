@@ -3,6 +3,7 @@ import type * as __compactRuntime from '@midnight-ntwrk/compact-runtime';
 export type Witnesses<PS> = {
   agentSecretKey(context: __compactRuntime.WitnessContext<Ledger, PS>): [PS, Uint8Array];
   organizerSecretKey(context: __compactRuntime.WitnessContext<Ledger, PS>): [PS, Uint8Array];
+  arbiterSecretKey(context: __compactRuntime.WitnessContext<Ledger, PS>): [PS, Uint8Array];
 }
 
 export type ImpureCircuits<PS> = {
@@ -51,6 +52,35 @@ export type ImpureCircuits<PS> = {
                              value: bigint,
                              mt_index: bigint
                            }): Promise<__compactRuntime.CircuitResults<PS, []>>;
+  setArbiter(context: __compactRuntime.CircuitContext<PS>,
+             escrowId_0: bigint,
+             arbiterCommitmentInput_0: Uint8Array,
+             arbiterDeadline_0: bigint): Promise<__compactRuntime.CircuitResults<PS, []>>;
+  agentOpenDispute(context: __compactRuntime.CircuitContext<PS>,
+                   escrowId_0: bigint): Promise<__compactRuntime.CircuitResults<PS, []>>;
+  organizerOpenDispute(context: __compactRuntime.CircuitContext<PS>,
+                       escrowId_0: bigint): Promise<__compactRuntime.CircuitResults<PS, []>>;
+  arbiterRelease(context: __compactRuntime.CircuitContext<PS>,
+                 escrowId_0: bigint,
+                 spendCoin_0: { nonce: Uint8Array,
+                                color: Uint8Array,
+                                value: bigint,
+                                mt_index: bigint
+                              }): Promise<__compactRuntime.CircuitResults<PS, []>>;
+  arbiterRefund(context: __compactRuntime.CircuitContext<PS>,
+                escrowId_0: bigint,
+                spendCoin_0: { nonce: Uint8Array,
+                               color: Uint8Array,
+                               value: bigint,
+                               mt_index: bigint
+                             }): Promise<__compactRuntime.CircuitResults<PS, []>>;
+  arbiterTimeoutRefund(context: __compactRuntime.CircuitContext<PS>,
+                       escrowId_0: bigint,
+                       spendCoin_0: { nonce: Uint8Array,
+                                      color: Uint8Array,
+                                      value: bigint,
+                                      mt_index: bigint
+                                    }): Promise<__compactRuntime.CircuitResults<PS, []>>;
   isHeld(context: __compactRuntime.CircuitContext<PS>, escrowId_0: bigint): Promise<__compactRuntime.CircuitResults<PS, boolean>>;
 }
 
@@ -100,12 +130,42 @@ export type ProvableCircuits<PS> = {
                              value: bigint,
                              mt_index: bigint
                            }): Promise<__compactRuntime.CircuitResults<PS, []>>;
+  setArbiter(context: __compactRuntime.CircuitContext<PS>,
+             escrowId_0: bigint,
+             arbiterCommitmentInput_0: Uint8Array,
+             arbiterDeadline_0: bigint): Promise<__compactRuntime.CircuitResults<PS, []>>;
+  agentOpenDispute(context: __compactRuntime.CircuitContext<PS>,
+                   escrowId_0: bigint): Promise<__compactRuntime.CircuitResults<PS, []>>;
+  organizerOpenDispute(context: __compactRuntime.CircuitContext<PS>,
+                       escrowId_0: bigint): Promise<__compactRuntime.CircuitResults<PS, []>>;
+  arbiterRelease(context: __compactRuntime.CircuitContext<PS>,
+                 escrowId_0: bigint,
+                 spendCoin_0: { nonce: Uint8Array,
+                                color: Uint8Array,
+                                value: bigint,
+                                mt_index: bigint
+                              }): Promise<__compactRuntime.CircuitResults<PS, []>>;
+  arbiterRefund(context: __compactRuntime.CircuitContext<PS>,
+                escrowId_0: bigint,
+                spendCoin_0: { nonce: Uint8Array,
+                               color: Uint8Array,
+                               value: bigint,
+                               mt_index: bigint
+                             }): Promise<__compactRuntime.CircuitResults<PS, []>>;
+  arbiterTimeoutRefund(context: __compactRuntime.CircuitContext<PS>,
+                       escrowId_0: bigint,
+                       spendCoin_0: { nonce: Uint8Array,
+                                      color: Uint8Array,
+                                      value: bigint,
+                                      mt_index: bigint
+                                    }): Promise<__compactRuntime.CircuitResults<PS, []>>;
   isHeld(context: __compactRuntime.CircuitContext<PS>, escrowId_0: bigint): Promise<__compactRuntime.CircuitResults<PS, boolean>>;
 }
 
 export type PureCircuits = {
   agentCommitment(sk_0: Uint8Array, bookingRef_0: Uint8Array): Uint8Array;
   organizerCommitment(sk_0: Uint8Array, bookingRef_0: Uint8Array): Uint8Array;
+  arbiterCommitment(sk_0: Uint8Array, bookingRef_0: Uint8Array): Uint8Array;
 }
 
 export type Circuits<PS> = {
@@ -115,6 +175,9 @@ export type Circuits<PS> = {
   organizerCommitment(context: __compactRuntime.CircuitContext<PS>,
                       sk_0: Uint8Array,
                       bookingRef_0: Uint8Array): Promise<__compactRuntime.CircuitResults<PS, Uint8Array>>;
+  arbiterCommitment(context: __compactRuntime.CircuitContext<PS>,
+                    sk_0: Uint8Array,
+                    bookingRef_0: Uint8Array): Promise<__compactRuntime.CircuitResults<PS, Uint8Array>>;
   createEscrow(context: __compactRuntime.CircuitContext<PS>,
                amount_0: bigint,
                organizerCommitmentInput_0: Uint8Array,
@@ -160,6 +223,35 @@ export type Circuits<PS> = {
                              value: bigint,
                              mt_index: bigint
                            }): Promise<__compactRuntime.CircuitResults<PS, []>>;
+  setArbiter(context: __compactRuntime.CircuitContext<PS>,
+             escrowId_0: bigint,
+             arbiterCommitmentInput_0: Uint8Array,
+             arbiterDeadline_0: bigint): Promise<__compactRuntime.CircuitResults<PS, []>>;
+  agentOpenDispute(context: __compactRuntime.CircuitContext<PS>,
+                   escrowId_0: bigint): Promise<__compactRuntime.CircuitResults<PS, []>>;
+  organizerOpenDispute(context: __compactRuntime.CircuitContext<PS>,
+                       escrowId_0: bigint): Promise<__compactRuntime.CircuitResults<PS, []>>;
+  arbiterRelease(context: __compactRuntime.CircuitContext<PS>,
+                 escrowId_0: bigint,
+                 spendCoin_0: { nonce: Uint8Array,
+                                color: Uint8Array,
+                                value: bigint,
+                                mt_index: bigint
+                              }): Promise<__compactRuntime.CircuitResults<PS, []>>;
+  arbiterRefund(context: __compactRuntime.CircuitContext<PS>,
+                escrowId_0: bigint,
+                spendCoin_0: { nonce: Uint8Array,
+                               color: Uint8Array,
+                               value: bigint,
+                               mt_index: bigint
+                             }): Promise<__compactRuntime.CircuitResults<PS, []>>;
+  arbiterTimeoutRefund(context: __compactRuntime.CircuitContext<PS>,
+                       escrowId_0: bigint,
+                       spendCoin_0: { nonce: Uint8Array,
+                                      color: Uint8Array,
+                                      value: bigint,
+                                      mt_index: bigint
+                                    }): Promise<__compactRuntime.CircuitResults<PS, []>>;
   isHeld(context: __compactRuntime.CircuitContext<PS>, escrowId_0: bigint): Promise<__compactRuntime.CircuitResults<PS, boolean>>;
 }
 
@@ -203,6 +295,13 @@ export type Ledger = {
     member(key_0: bigint): boolean;
     lookup(key_0: bigint): { bytes: Uint8Array };
     [Symbol.iterator](): Iterator<[bigint, { bytes: Uint8Array }]>
+  };
+  arbiters: {
+    isEmpty(): boolean;
+    size(): bigint;
+    member(key_0: bigint): boolean;
+    lookup(key_0: bigint): { commitment: Uint8Array, deadline: bigint };
+    [Symbol.iterator](): Iterator<[bigint, { commitment: Uint8Array, deadline: bigint }]>
   };
 }
 

@@ -245,6 +245,44 @@ def _cancel_booking(hub_url: str, sender: str, arg: str) -> str:
             + _escrow_journey(res.get("escrow", ""), res.get("amount")))
 
 
+def _dispute_booking(hub_url: str, sender: str, arg: str) -> str:
+    """W3.1: chat-level dispute. Either party can freeze a HELD booking for
+    arbitration - no money moves while DISPUTED; the arbiter (or the
+    arbiter timeout) decides. The hub owns the law; this is a thin client."""
+    bid = (arg or "").strip()
+    if not bid or " " in bid or "/" in bid or not bid.startswith("bk-"):
+        return ("To open a dispute: dispute <booking-id>\n"
+                "e.g. dispute bk-1a2b3c4d5e6f. Yours: 'my-bookings'. The money "
+                "freezes - no release, no refund - until the arbiter decides.")
+    s = _session(sender)
+    tok = (s or {}).get("cancel_tokens", {}).get(bid) if s else None
+    if not tok:
+        tok = (s or {}).get("tokens", {}).get("book") or (s or {}).get("tokens", {}).get("list")
+    if not tok:
+        try:
+            acc = _hub_post(hub_url, "/access", {"agent": sender, "acts": ["book"]})
+            tok = acc[1].get("tokens", {}).get("book")
+        except Exception:
+            pass
+    if not tok:
+        return ("I can only dispute bookings made in this chat (or while logged "
+                "in) - the dispute key stays with the booking owner. If you "
+                "booked on another device, that chat holds it.\n"
+                "A dispute freezes the money - neither side can release or "
+                "refund until it is resolved.")
+    code, res = _hub_post(hub_url, "/book/" + bid + "/dispute", {}, token=tok)
+    if code == 200:
+        return ("\u26a0 Dispute opened - booking " + bid + " is now DISPUTED.\n"
+                "The money is frozen: no release and no refund while disputed.\n"
+                "An arbiter will decide the outcome. If the arbiter goes "
+                "silent, the timeout hatch returns the buyer funds "
+                "automatically - nobody can lock them forever.")
+    if code == 409:
+        return "\u274c " + str(res.get("error", "this booking cannot be disputed"))
+    if code == 404:
+        return "No booking '" + bid + "' found."
+    return "\u274c " + str(res.get("error", "could not open the dispute"))
+
 def _booking_status(hub_url: str, sender: str, arg: str) -> str:
     """H10: poll one booking's status. Logged-in: session token. Anonymous:
     re-mint /access for this chat's own agent address (deterministic principal
@@ -3170,6 +3208,7 @@ _HELP = (
     "• archive <id> [code] / unarchive <id> [code] — hide/restore a listing (registrations kept)\n"
     "• show <id> — full listing details (description, url, availability)\n"
     "• booking <id> — check your booking's escrow status (buyer or owner)\n"
+    "• dispute <id> — freeze a HELD booking's funds for arbitration (no release, no refund until resolved; timeout hatch protects the buyer)\n"
     "• rate <booking_id> <1-5> — rate a settled booking (after confirm, or free listings)\n"
     "• book <n> <name> — book listing n from your last search (FREE = instant; paid = guidance)\n"
     "• fee — how our fee model stays fair"
@@ -4408,9 +4447,9 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
             _underm2 = re.search(r"\bunder\s+([a-zA-Z\u00c4\u00e4\u00d6\u00f6\u00dc\u00fc\u00df' .\-]{2,40})", low)
             _namem = (_underm2.group(1).strip() if _underm2 else
                       (low if re.fullmatch(r"[a-zA-Z\u00c4\u00e4\u00d6\u00f6\u00dc\u00fc\u00df' .\-]{2,60}", low) and len(low.split()) <= 2 and not _TOPIC_NOUN_RX.search(low)
-                       and not re.match(r"^(search|book|help|show|list|my|cancel|whoami|signup|login|yes|no|ok|lol)\b", low) else ""))  # P12 2026-10-04: command words ('signup') are not booking names — let them reach their handlers
+                       and not re.match(r"^(search|book|help|show|list|my|cancel|dispute|whoami|signup|login|yes|no|ok|lol)\b", low) else ""))  # P12 2026-10-04: command words ('signup') are not booking names — let them reach their handlers
             _namem = re.sub(r"\s+(?:please|bitte)[!., ]*$", "", _namem).strip()
-            if _namem and not re.match(r"^(search|book|help|show|list|my|cancel|whoami|signup|login|yes|no|ok|lol)\b", _namem):
+            if _namem and not re.match(r"^(search|book|help|show|list|my|cancel|dispute|whoami|signup|login|yes|no|ok|lol)\b", _namem):
                 _pbq["who"] = _namem.title()
                 _PENDING_BOOK[sender] = _pbq
             if _underm2 or (_namem and _underm2 is None and _NAME_RX.match(_namem)):
@@ -4439,7 +4478,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                         or re.search(r"\b(find|search|looking|show|what|anything|something|any)\b", low)
                         or len(low.split()) > 2)
             if _NAME_RX.match(low) and not _searchy and not re.match(
-                    r"^(search|book|help|show|list|my|cancel|whoami|signup|login)\b", low) \
+                    r"^(search|book|help|show|list|my|cancel|dispute|whoami|signup|login)\b", low) \
                     and not _BOOK_AFFIRM_RX.match(low) \
                     and not _BOOK_REFERENTIAL_RX.match(low):  # owner 2026-10-17: go-aheads never become names ('lol ok' still steers)
                 _pending_book_pop(sender)
@@ -4458,7 +4497,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     if not _pbq:
         _bw = _book_want_get(sender)
         if (_bw and (_BOOK_AFFIRM_RX.match(low) or _BOOK_REFERENTIAL_RX.match(low))
-                and not re.match(r"^(book|search|show|cancel|help|my-bookings|bookings|whoami|logout"
+                and not re.match(r"^(book|search|show|cancel|dispute|help|my-bookings|bookings|whoami|logout"
                                  r"|fee|more|next|all|list|signup|login|dashboard|edit|delete|archive"
                                  r"|unarchive|notify|recover|lang|email-|verify-|set-payout)\b", low)):
             _ls = _LAST_SEARCH.get(sender) or {}
@@ -4489,7 +4528,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     # R4b battery: chained commands ('book 1 then show my bookings') are two
     # turns in one -- answer both, never leak the tail into booking args.
     # Guarded: command-word start only, and AFTER intake (titles eat this).
-    if re.match(r"^(book|search|show|cancel|help|my-bookings|bookings|whoami|logout|more|fee)\b", low) \
+    if re.match(r"^(book|search|show|cancel|dispute|help|my-bookings|bookings|whoami|logout|more|fee)\b", low) \
             and "|" not in text:
         _parts = re.split(r"\s+(?:then|and then|after that|and also|also)\s+",
                           text.strip(), maxsplit=1, flags=re.I)
@@ -4557,7 +4596,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     _skip_brain = (
         "|" in text
         or _fb_soc is not None            # pure-social/battery shapes: never LLM (120-input law)
-        or re.match(r"^(book|search|show|help|cancel|signup|login|logout|login-seed|whoami|list|listings|more|next|all|fee|my-bookings|bookings|my-listings|dashboard|edit|delete|archive|unarchive|verify-|set-payout|notify|lang|email-|recover|delete-account)\b", low)
+        or re.match(r"^(book|search|show|help|cancel|dispute|signup|login|logout|login-seed|whoami|list|listings|more|next|all|fee|my-bookings|bookings|my-listings|dashboard|edit|delete|archive|unarchive|verify-|set-payout|notify|lang|email-|recover|delete-account)\b", low)
         or re.match(r"^\d[\d\s,\-]*$", low)
         # deterministic-law shapes (owner 2026-10-02): pasted bare email =
         # signup/bind in ONE turn; bare 6-hex with pending email = confirm.
@@ -4734,7 +4773,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
             and not _TOPIC_NOUN_RX.search(_ns_full)
             and not _BOOK_AFFIRM_RX.match(_ns_full)
             and not _BOOK_REFERENTIAL_RX.match(_ns_full)  # owner 2026-10-17: go-aheads never become names ('lol ok' still steers)
-            and not re.match(r"^(search|find|show|book|cancel|booking|help|my-bookings|my-listings|bookings|more|next|all|edit|delete|archive|list|fee|whoami|dashboard|signup|login|logout|notify|recover|back|go back)\b", _ns_full)  # r4 gate 2026-10-04: typed commands are not names — 'search pizza' re-run must search, not steer; fullflow 2026-10-18: +booking/my-listings
+            and not re.match(r"^(search|find|show|book|cancel|dispute|booking|help|my-bookings|my-listings|bookings|more|next|all|edit|delete|archive|list|fee|whoami|dashboard|signup|login|logout|notify|recover|back|go back)\b", _ns_full)  # r4 gate 2026-10-04: typed commands are not names — 'search pizza' re-run must search, not steer; fullflow 2026-10-18: +booking/my-listings
             and not ((_LAST_SEARCH.get(sender) or {}).get("suggest") and not _SUGGEST_ACK_ONLY_RX.match(_ns_full))  # owner 2026-10-18: a no-match suggestion stash is NOT a pick question — content words ('pizzeria') search; social acks ('lol ok') keep the steer (conversation C3.3)
             and not (not _SUGGEST_ACK_ONLY_RX.match(_ns_full)  # owner 2026-10-19 hammer: SAME law for real-result stashes — a bare word that overlaps NO stashed title is a new search ('pizzeria' after pizza results), never a pick prompt
                      and not any(_ns_full in str(r.get("title") or "").lower()
@@ -4759,7 +4798,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     # (transfer/dog/refund/resale...); CAN entries answer only when the turn
     # is question-shaped ('can i', 'how do i', 'does everlist'), so real
     # commands ('book 2', 'edit even-1 ...') are never swallowed.
-    if (not re.match(r"^(book|search|show|help|cancel|signup|login|logout|whoami|list|more|next|all|fee|my-bookings|bookings|dashboard|edit|delete|archive|unarchive|notify|lang|recover)\b", low)
+    if (not re.match(r"^(book|search|show|help|cancel|dispute|signup|login|logout|whoami|list|more|next|all|fee|my-bookings|bookings|dashboard|edit|delete|archive|unarchive|notify|lang|recover)\b", low)
             # dedicated deterministic handlers own these intents - catalog stays out:
             and not re.search(r"\bmidnight\b", low)
             and not re.search(r"\b(list|post|create|make|add)\b[^?\n]*\b(gig|event|listing|class|service|workshop|concert|course)\b", low)
@@ -4994,6 +5033,8 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
         return _transfer_cmd(hub_url, sender, text.strip()[len("transfer"):].strip())
     if low.startswith("cancel "):
         return _cancel_booking(hub_url, sender, text.strip()[7:].strip())
+    if low.startswith("dispute "):
+        return _dispute_booking(hub_url, sender, text.strip()[8:].strip())
     if low == "booking" or low.startswith("booking "):
         return _booking_status(hub_url, sender, text.strip()[8:].strip())
     # C4: buyer rates a settled booking (its own command — 'book' would swallow 'rate' otherwise never)

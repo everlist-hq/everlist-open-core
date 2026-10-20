@@ -7,30 +7,70 @@
     "type": "directory",
     "contract-info.json": {
       "type": "file",
-      "size": 13947,
-      "hash": "67abc9a7ebdaf0674015073e4e23ffccafd3e5b86b8b499d439692997c72e537"
+      "size": 20711,
+      "hash": "b5b67f56f432c8793a0849f0a02cd14a984b55ba0f15b2dd2c09e8cfed339c03"
     }
   },
   "contract": {
     "type": "directory",
     "index.d.ts": {
       "type": "file",
-      "size": 10577,
-      "hash": "57905f32455f958ec9635aee2d30a1d01f6935a1a2759a491086139c3fa83f1a"
+      "size": 16416,
+      "hash": "2112d22b071f27cdc14bf2871c580dc91a9ee482585aea3ea38c113fb4099deb"
     },
     "index.js": {
       "type": "file",
-      "size": 156836,
-      "hash": "728549ba5f8257e6f7d928b3adf13ba0d0eb0fc7cc551c3ea8d0d4e7d3a2dcb1"
+      "size": 255663,
+      "hash": "745eccd14acb870e5d299c60a778b5755f24b20f921a6969330f720bc9dadd5b"
     },
     "index.js.map": {
       "type": "file",
-      "size": 7084,
-      "hash": "2c8b0e76c15a7b55a9179bf1ddd8ffa0f34809edb3444a914970080b41d6a809"
+      "size": 11250,
+      "hash": "5fb2d1ef4f25eb99629238845388c9608b23f88f38ad12e8083f140c52d40c4d"
     }
   },
   "zkir": {
     "type": "directory",
+    "agentOpenDispute.bzkir": {
+      "type": "file",
+      "size": 441,
+      "hash": "170c9e31a0704acfc387a62683f767856bdf2f9bdc7bacf7c65ed30cb1eeca01"
+    },
+    "agentOpenDispute.zkir": {
+      "type": "file",
+      "size": 7916,
+      "hash": "94339170c8bdd8b16e891f22fd2d5c7067fc573ed35f41e057a4f10847163102"
+    },
+    "arbiterRefund.bzkir": {
+      "type": "file",
+      "size": 1287,
+      "hash": "7454efa6c4021180099bd7175d980f1c5ed56a2e6e2f81c456044157f0ec132a"
+    },
+    "arbiterRefund.zkir": {
+      "type": "file",
+      "size": 19186,
+      "hash": "166ccc967a482db82517d6a9e841f4baef6f384df5ed6529d3ceafabb3ccad96"
+    },
+    "arbiterRelease.bzkir": {
+      "type": "file",
+      "size": 1290,
+      "hash": "702d80a9f9653ae9374558707248a698b2299b8e3fb43a97ee74213afec4c36c"
+    },
+    "arbiterRelease.zkir": {
+      "type": "file",
+      "size": 19226,
+      "hash": "a6e4bda5e2fc10f3443ef3c86bfb2911b2e399e877d2e27e33a5eb2db25bfe04"
+    },
+    "arbiterTimeoutRefund.bzkir": {
+      "type": "file",
+      "size": 1269,
+      "hash": "9dffa868e8d6b8d2353d9e9d1f665d0f7ab46a7acf02ea588fd8220e2ea3acdc"
+    },
+    "arbiterTimeoutRefund.zkir": {
+      "type": "file",
+      "size": 19523,
+      "hash": "e09e9a7d98d52ea2496a93ed0e9ea8d225fa53b813afdae74b504dc8c8c87ec3"
+    },
     "autoRelease.bzkir": {
       "type": "file",
       "size": 1154,
@@ -71,6 +111,16 @@
       "size": 19844,
       "hash": "831976d3076d454f92b94d7cb3a700b523fdf132c6849a9e708c936fee9b35e7"
     },
+    "organizerOpenDispute.bzkir": {
+      "type": "file",
+      "size": 445,
+      "hash": "47fe1dfbc3e7accd35edd9257475d42e88fd2299aee20dc748bb17ba4490e559"
+    },
+    "organizerOpenDispute.zkir": {
+      "type": "file",
+      "size": 7924,
+      "hash": "368ebb7540d295aeb66970d6adb4817ac001db0e20030116d967b0aa7e483f07"
+    },
     "refundEscrow.bzkir": {
       "type": "file",
       "size": 1212,
@@ -91,6 +141,16 @@
       "size": 17078,
       "hash": "5ed8ce9c936a5a73999a958d3f9b8d1a0801a1c6d853a85df2370f2bdb3f1148"
     },
+    "setArbiter.bzkir": {
+      "type": "file",
+      "size": 429,
+      "hash": "f02467dfee3692bb199fb00e7f1d5039292f09c16abc8d7e288d941986fa8a3b"
+    },
+    "setArbiter.zkir": {
+      "type": "file",
+      "size": 7443,
+      "hash": "e6898292ca3bcfce34f517a9fd68337a9c3cb0eb8de0d974d94db1e56e61fd3c"
+    },
     "timeoutRefund.bzkir": {
       "type": "file",
       "size": 1209,
@@ -104,6 +164,46 @@
   },
   "keys": {
     "type": "directory",
+    "agentOpenDispute.prover": {
+      "type": "file",
+      "size": 2820510,
+      "hash": "2e5d103984831689490e1d287959e60ee3a58b8c779f9197bacd5106e57e6679"
+    },
+    "agentOpenDispute.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "bde4a33a1d8c587238aff767abda677b91cdf236e75d7bb69343f39720976322"
+    },
+    "arbiterRefund.prover": {
+      "type": "file",
+      "size": 10000345,
+      "hash": "930290e013c60f7447529e022a5c631503bf49f76a61423b3fb091bbb53825cb"
+    },
+    "arbiterRefund.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "7d869a324cf31d2d0d7ad8cfe5a25e8aaa3ba9ce98b324ecc02946b04464bfc5"
+    },
+    "arbiterRelease.prover": {
+      "type": "file",
+      "size": 10000339,
+      "hash": "10d5a4e6dda02c1e504ffc59764612f643ff82c55346675bc3c0a43cb957b411"
+    },
+    "arbiterRelease.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "cd98ede84b9744d1792e830543607ebc47256e7fe1bd12b7425e44d1654124f7"
+    },
+    "arbiterTimeoutRefund.prover": {
+      "type": "file",
+      "size": 9993771,
+      "hash": "287ddfc84d766dc2f71f39b4d4e860c61d0a76039301e7b55bb0e3d0357953c1"
+    },
+    "arbiterTimeoutRefund.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "a7e87a49295f95c7a2e84260e6edc2c38d4a0b0c50570ff9e0fe5673714e1131"
+    },
     "autoRelease.prover": {
       "type": "file",
       "size": 9993733,
@@ -144,6 +244,16 @@
       "size": 2119,
       "hash": "56c33ae5d959d418c44fd64eef7daa319ee6b2f3ddd5a83d6ac23daa22e7d5ec"
     },
+    "organizerOpenDispute.prover": {
+      "type": "file",
+      "size": 2820511,
+      "hash": "de02a6a7f5b567c9230ab033471cee05ee1fec3899a63a58860aaa3c16d5f560"
+    },
+    "organizerOpenDispute.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "c9890170921af2e4ca3237acff4103a52108909191b2c35107e367474e3b9954"
+    },
     "refundEscrow.prover": {
       "type": "file",
       "size": 10000325,
@@ -163,6 +273,16 @@
       "type": "file",
       "size": 2119,
       "hash": "2feb2f6971f1a50eaccc2c79bb5089663b28d123d8f174a7dca6a7a22841dc86"
+    },
+    "setArbiter.prover": {
+      "type": "file",
+      "size": 2820994,
+      "hash": "b2dbf29c8737223628c35fb294f8781520479341bc4262e6cdb74302d8a3a227"
+    },
+    "setArbiter.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "91fdd28e179953318768d6eab9bf48eb0eab330331de0d496eb9c17b109f00f5"
     },
     "timeoutRefund.prover": {
       "type": "file",

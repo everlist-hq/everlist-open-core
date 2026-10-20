@@ -19,7 +19,7 @@ import json
 import urllib.error
 import urllib.request
 
-STATE_NAMES = {1: "HELD", 2: "RELEASED", 3: "REFUNDED"}
+STATE_NAMES = {1: "HELD", 2: "RELEASED", 3: "REFUNDED", 4: "DISPUTED", 5: "ARB_RELEASED", 6: "ARB_REFUNDED"}  # 4-6: W3.1 dispute path
 
 # Primary shape: connection + edges/node + pageInfo (local devnet / newer
 # indexer builds). Preprod v4 (2026-09-21 live introspection) instead serves

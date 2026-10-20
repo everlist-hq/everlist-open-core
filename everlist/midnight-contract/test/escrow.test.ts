@@ -34,9 +34,10 @@ const b32 = (s) => {
 };
 
 // witness sets: honest parties + attacker (different secrets)
-const mkWitnesses = (agentSk, orgSk) => ({
+const mkWitnesses = (agentSk, orgSk, arbSk = new Uint8Array(32).fill(5)) => ({
   agentSecretKey: (ctxt) => [ctxt.privateState, agentSk],
   organizerSecretKey: (ctxt) => [ctxt.privateState, orgSk],
+  arbiterSecretKey: (ctxt) => [ctxt.privateState, arbSk], // W3.1 dispute rail
 });
 
 const AGENT_SK = new Uint8Array(32).fill(1);
