@@ -7,26 +7,26 @@
     "type": "directory",
     "contract-info.json": {
       "type": "file",
-      "size": 20711,
-      "hash": "b5b67f56f432c8793a0849f0a02cd14a984b55ba0f15b2dd2c09e8cfed339c03"
+      "size": 23212,
+      "hash": "51aba90345bd8c81e90db84c5092b057e6b030875040930387cff3f3225d1f61"
     }
   },
   "contract": {
     "type": "directory",
     "index.d.ts": {
       "type": "file",
-      "size": 16416,
-      "hash": "2112d22b071f27cdc14bf2871c580dc91a9ee482585aea3ea38c113fb4099deb"
+      "size": 18363,
+      "hash": "73196fb593209c8eee5f1b59709b843291b3da774122d6fa72b07970eae1dc88"
     },
     "index.js": {
       "type": "file",
-      "size": 255663,
-      "hash": "745eccd14acb870e5d299c60a778b5755f24b20f921a6969330f720bc9dadd5b"
+      "size": 280931,
+      "hash": "011662c0b12a5c554b8a1e9a2f385516d8f00381e9bd03e819f28e0fd750aa8a"
     },
     "index.js.map": {
       "type": "file",
-      "size": 11250,
-      "hash": "5fb2d1ef4f25eb99629238845388c9608b23f88f38ad12e8083f140c52d40c4d"
+      "size": 12507,
+      "hash": "7b35c541de82fc0c1f15a4f49dd5958800fb1aebf045905b6a1955884a4d5ec5"
     }
   },
   "zkir": {
@@ -80,6 +80,16 @@
       "type": "file",
       "size": 17411,
       "hash": "bc03eae944c3daad17dd5c7356c1f8c5c3510d034bdee8b0110d84e0e6f2c332"
+    },
+    "batchRelease2.bzkir": {
+      "type": "file",
+      "size": 2355,
+      "hash": "ceff93264445958f6ca057833c7a7214fdc6a4c1b02ff0a9a49a5f884a35dab3"
+    },
+    "batchRelease2.zkir": {
+      "type": "file",
+      "size": 33668,
+      "hash": "f1f7187d14dad8f8f9e9341bfc5b92b69cba1f606e59a854d35c17d49f9895b1"
     },
     "createEscrow.bzkir": {
       "type": "file",
@@ -213,6 +223,16 @@
       "type": "file",
       "size": 2119,
       "hash": "f842a867731250008b358daa00f07fda34be4c621641317d1901d07d23be05e7"
+    },
+    "batchRelease2.prover": {
+      "type": "file",
+      "size": 19562380,
+      "hash": "ba35f1cd72f860345a1e225ceb621484ebf2ed52dddd1c2a2cefdeaaf370bcdc"
+    },
+    "batchRelease2.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "2344194d9ece89114f97cf52c018eb745d71fbd388be5e0034524fd43efd9d65"
     },
     "createEscrow.prover": {
       "type": "file",

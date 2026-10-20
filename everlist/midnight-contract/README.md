@@ -32,6 +32,9 @@ npx tsx --test test/mandate.test.ts             # delegated spending mandate: 18
 npx tsx --test test/indistinguishability.test.ts # privacy indistinguishability: 7/7
 npx tsx --test test/reputation.test.ts            # reputation from settled escrows: 22/22
 npx tsx --test test/milestone.test.ts             # milestone escrow + dispute path: 45/45
+npx tsx --test test/dispute.test.ts               # W3.1 dispute path on simple escrow: 27/27
+npx tsx --test test/earnings.test.ts              # W3.4 revenue-floor proofs: 24/24
+npx tsx --test test/batch.test.ts                 # W3.3 batch settlement (2 releases, 1 proof): 7/7
 ```
 
 The circuits executed by these tests are the same compiled artifacts in

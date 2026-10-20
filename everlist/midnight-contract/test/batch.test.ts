@@ -1,5 +1,18 @@
 /**
- * W3.3 batch settlement - OFFLINE tests (batchRelease2).
+ * W3.3 batch settlement spike - OFFLINE tests (batchRelease2).
+ *
+ * Runs the REAL compiled circuits (managed-batch/contract) against a
+ * simulated ledger via compact-runtime. No proof server, no network.
+ *
+ * Walls pinned here:
+ *   - two HELD escrows, SAME organizer -> one call releases BOTH
+ *   - different organizers -> rejected (a payout run pays one organizer)
+ *   - DISPUTED escrow inside the pair -> rejected (freeze wall holds)
+ *   - attacker (wrong secret) -> rejected
+ *   - same escrow twice -> rejected
+ *   - single releaseEscrow still works after batch (no state corruption)
+ *
+ * Run: npx tsx --test test/batch.test.ts (from /tmp/batch-src after copy)
  */
 import { test, describe, before } from 'node:test';
 import assert from 'node:assert/strict';
@@ -24,10 +37,12 @@ const mkWitnesses = (agentSk, orgSk, arbSk = new Uint8Array(32).fill(5)) => ({
 
 const AGENT_SK = new Uint8Array(32).fill(1);
 const ORG_SK = new Uint8Array(32).fill(2);
+const ORG2_SK = new Uint8Array(32).fill(3);
 const ATTACKER_SK = new Uint8Array(32).fill(9);
 
 const AGENT_PK = { bytes: new Uint8Array(32).fill(11) };
 const ORG_PK = { bytes: new Uint8Array(32).fill(12) };
+const ORG2_PK = { bytes: new Uint8Array(32).fill(13) };
 
 const DEADLINE_FAR = 99999999999n;
 const ADDRESS = dummyContractAddress();
@@ -46,6 +61,8 @@ const mkCoin = (value) => {
   return { nonce, color: COLOR, value };
 };
 
+const SPEND = {};
+
 const call = async (instance, name, ...args) => {
   const r = await instance.impureCircuits[name](ctx, ...args);
   ctx = r.context;
@@ -53,21 +70,25 @@ const call = async (instance, name, ...args) => {
 };
 
 const readLedger = () => ledger(ctx.callContext.currentQueryContext.state);
+const comIndices = () => ctx.callContext.currentQueryContext.comIndices.size;
 
+/** organizer commitment for a booking (public, computable by anyone) */
 const orgComm = (sk, bookingRef) => pureCircuits.organizerCommitment(sk, bookingRef);
 
+/** Create a funded escrow; returns [id, spendCoin]. */
 const createEscrow = async (instance, amount, bookingRef, orgCommIn) => {
-  const id = readLedger().escrows.size();
+  const before = comIndices();
   await call(instance, 'createEscrow', amount, orgCommIn, bookingRef,
     DEADLINE_FAR, DEADLINE_FAR + 1000n, mkCoin(amount), AGENT_PK, ORG_PK);
-  const e = readLedger().escrows.lookup(id + 1n);
+  const id = readLedger().escrows.size();
+  const e = readLedger().escrows.lookup(id);
   const spend = {
     nonce: e.coinNonce,
     color: e.coinColor,
     value: e.amount,
-    mt_index: BigInt(ctx.callContext.currentQueryContext.comIndices.size),
+    mt_index: BigInt(before),
   };
-  return [id + 1n, spend];
+  return [id, spend];
 };
 
 describe('W3.3 batchRelease2 (offline, real compiled circuits)', () => {
@@ -118,12 +139,15 @@ describe('W3.3 batchRelease2 (offline, real compiled circuits)', () => {
     test('different organizers -> rejected', async () => {
       const refA = b32('batch-ref-6a');
       const refB = b32('batch-ref-6b');
+      // escrow A: ORG organizer; escrow B: ORG2 organizer (different secret)
       const [idA, spendA] = await createEscrow(honest, 80n, refA, orgComm(ORG_SK, refA));
-      const [idB, spendB] = await createEscrow(honest, 90n, refB, orgComm(ORG_SK, refB));
+      const [idB, spendB] = await createEscrow(honest, 90n, refB, orgComm(ORG2_SK, refB));
       await assert.rejects(
         () => call(organizerOnly, 'batchRelease2', idA, idB, spendA, spendB),
         /only organizer can release escrow 2/
       );
+      // escrow B stays HELD (atomicity: nothing moved)
+      assert.equal(readLedger().escrows.lookup(idB).state, 1n);
     });
 
     test('ATTACKER wall: wrong secret cannot batch-release', async () => {
@@ -136,6 +160,30 @@ describe('W3.3 batchRelease2 (offline, real compiled circuits)', () => {
         /only organizer can release escrow 1/
       );
       assert.equal(readLedger().escrows.lookup(idA).state, 1n); // still HELD
+    });
+
+    test('DISPUTED escrow inside the pair -> rejected (freeze wall holds)', async () => {
+      const refA = b32('batch-ref-8a');
+      const refB = b32('batch-ref-8b');
+      const [idA, spendA] = await createEscrow(honest, 55n, refA, orgComm(ORG_SK, refA));
+      const [idB, spendB] = await createEscrow(honest, 65n, refB, orgComm(ORG_SK, refB));
+      // agent sets the arbiter first, then organizer freezes escrow A
+      const ARB_SK = new Uint8Array(32).fill(5);
+      const arbComm = pureCircuits.arbiterCommitment(ARB_SK, refA);
+      await call(honest, 'setArbiter', idA, arbComm, DEADLINE_FAR + 2000n);
+      await call(organizerOnly, 'organizerOpenDispute', idA);
+      await assert.rejects(
+        () => call(organizerOnly, 'batchRelease2', idA, idB, spendA, spendB),
+        /not in HELD/
+      );
+      assert.equal(readLedger().escrows.lookup(idB).state, 1n); // B still HELD
+    });
+
+    test('single releaseEscrow still works after batch (state machine intact)', async () => {
+      const ref = b32('batch-ref-9');
+      const [id, spend] = await createEscrow(honest, 25n, ref, orgComm(ORG_SK, ref));
+      await call(organizerOnly, 'releaseEscrow', id, spend);
+      assert.equal(readLedger().escrows.lookup(id).state, 2n);
     });
   });
 });

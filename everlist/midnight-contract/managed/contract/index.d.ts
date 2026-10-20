@@ -82,6 +82,19 @@ export type ImpureCircuits<PS> = {
                                       mt_index: bigint
                                     }): Promise<__compactRuntime.CircuitResults<PS, []>>;
   isHeld(context: __compactRuntime.CircuitContext<PS>, escrowId_0: bigint): Promise<__compactRuntime.CircuitResults<PS, boolean>>;
+  batchRelease2(context: __compactRuntime.CircuitContext<PS>,
+                escrowId1_0: bigint,
+                escrowId2_0: bigint,
+                spendCoin1_0: { nonce: Uint8Array,
+                                color: Uint8Array,
+                                value: bigint,
+                                mt_index: bigint
+                              },
+                spendCoin2_0: { nonce: Uint8Array,
+                                color: Uint8Array,
+                                value: bigint,
+                                mt_index: bigint
+                              }): Promise<__compactRuntime.CircuitResults<PS, []>>;
 }
 
 export type ProvableCircuits<PS> = {
@@ -160,6 +173,19 @@ export type ProvableCircuits<PS> = {
                                       mt_index: bigint
                                     }): Promise<__compactRuntime.CircuitResults<PS, []>>;
   isHeld(context: __compactRuntime.CircuitContext<PS>, escrowId_0: bigint): Promise<__compactRuntime.CircuitResults<PS, boolean>>;
+  batchRelease2(context: __compactRuntime.CircuitContext<PS>,
+                escrowId1_0: bigint,
+                escrowId2_0: bigint,
+                spendCoin1_0: { nonce: Uint8Array,
+                                color: Uint8Array,
+                                value: bigint,
+                                mt_index: bigint
+                              },
+                spendCoin2_0: { nonce: Uint8Array,
+                                color: Uint8Array,
+                                value: bigint,
+                                mt_index: bigint
+                              }): Promise<__compactRuntime.CircuitResults<PS, []>>;
 }
 
 export type PureCircuits = {
@@ -253,6 +279,19 @@ export type Circuits<PS> = {
                                       mt_index: bigint
                                     }): Promise<__compactRuntime.CircuitResults<PS, []>>;
   isHeld(context: __compactRuntime.CircuitContext<PS>, escrowId_0: bigint): Promise<__compactRuntime.CircuitResults<PS, boolean>>;
+  batchRelease2(context: __compactRuntime.CircuitContext<PS>,
+                escrowId1_0: bigint,
+                escrowId2_0: bigint,
+                spendCoin1_0: { nonce: Uint8Array,
+                                color: Uint8Array,
+                                value: bigint,
+                                mt_index: bigint
+                              },
+                spendCoin2_0: { nonce: Uint8Array,
+                                color: Uint8Array,
+                                value: bigint,
+                                mt_index: bigint
+                              }): Promise<__compactRuntime.CircuitResults<PS, []>>;
 }
 
 export type Ledger = {
