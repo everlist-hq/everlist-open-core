@@ -1,0 +1,138 @@
+{
+  "manifest-version": "1",
+  "compiler-version": "0.34.0",
+  "language-version": "0.26.0",
+  "runtime-version": "0.19.0",
+  "compiler": {
+    "type": "directory",
+    "contract-info.json": {
+      "type": "file",
+      "size": 4674,
+      "hash": "1894794bbe5198086e57bb6819c210cbb5ed570db1a4fde25a75ac894218b33a"
+    }
+  },
+  "contract": {
+    "type": "directory",
+    "index.d.ts": {
+      "type": "file",
+      "size": 5270,
+      "hash": "efb626642ca51802405b743eb2575405a21b5938f381593fb00243263427db0c"
+    },
+    "index.js": {
+      "type": "file",
+      "size": 75123,
+      "hash": "53e9778db17930baa2d055222c0fcc024e1cd7eb5969aaa786dd122b13dff54b"
+    },
+    "index.js.map": {
+      "type": "file",
+      "size": 2862,
+      "hash": "9dc54fe0c6f61be286b3d11a5eed89cc9146b891ed3a67459f88e16b5887d936"
+    }
+  },
+  "zkir": {
+    "type": "directory",
+    "getEarnings.bzkir": {
+      "type": "file",
+      "size": 166,
+      "hash": "a64be828cfa3a61c745686afa98e07cca133966af2d5d4235224bf7f22c489fe"
+    },
+    "getEarnings.zkir": {
+      "type": "file",
+      "size": 2751,
+      "hash": "d1c26dd6180985ddc9bfd427be1660fc445bd2b1cb2349ef7de026833e76d934"
+    },
+    "initializeEarningsIssuer.bzkir": {
+      "type": "file",
+      "size": 218,
+      "hash": "900eeb9801e2ff7a2617422f0c75e915f028cdc9c3acd951d9ca89e140dfc6c1"
+    },
+    "initializeEarningsIssuer.zkir": {
+      "type": "file",
+      "size": 3194,
+      "hash": "7b67518cd32d95c158c0dd3e6f8a2d0991bf86929c6bfe6a75d4aa06898a75ff"
+    },
+    "proveEarningsFloor.bzkir": {
+      "type": "file",
+      "size": 251,
+      "hash": "d76b6c1d9bcd4d6e6f2ce450706cca5d64277efab96b6e7157a0d00b125317cb"
+    },
+    "proveEarningsFloor.zkir": {
+      "type": "file",
+      "size": 3667,
+      "hash": "d2360e3406027fbef7edd7a2f63caa979b2a0ecab09b9aaeaa76a83f8038d3c9"
+    },
+    "recordEarnings.bzkir": {
+      "type": "file",
+      "size": 450,
+      "hash": "0bd741f948a6bea92b65476d7a96b6cee0a617192285dc7511f4ae0feab33224"
+    },
+    "recordEarnings.zkir": {
+      "type": "file",
+      "size": 7417,
+      "hash": "12d0b968b7725b3d0ea650c5373acac273e5ff3562d28f041b5f8ded3b8cdf7f"
+    },
+    "registerOrganizer.bzkir": {
+      "type": "file",
+      "size": 248,
+      "hash": "79a6259ad919020c0e3a83df7f524aacab6d3863d8da83824477119f62ab76d4"
+    },
+    "registerOrganizer.zkir": {
+      "type": "file",
+      "size": 3662,
+      "hash": "e90f2e6e9a0bf90f8a5379eed39bf4ce2acc249eebf2e152b1ef5e22cb83900c"
+    }
+  },
+  "keys": {
+    "type": "directory",
+    "getEarnings.prover": {
+      "type": "file",
+      "size": 146947,
+      "hash": "563a20e979572d13ef824e947bd020c2b419940bf69caa28d1d7b87b451a484e"
+    },
+    "getEarnings.verifier": {
+      "type": "file",
+      "size": 1351,
+      "hash": "9cec297517fca9d00644c3788f806d7823b1850e3a7b2374af348dc32131ebb3"
+    },
+    "initializeEarningsIssuer.prover": {
+      "type": "file",
+      "size": 2820210,
+      "hash": "ce314c9405e9e01cb11002d896fc92720b5a06e63ada902631b833cf891b0002"
+    },
+    "initializeEarningsIssuer.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "fc3f0e5fae8bc2f3350b5194ce8464d2ccb48ec28cd8c8dec6d2adf6b7409682"
+    },
+    "proveEarningsFloor.prover": {
+      "type": "file",
+      "size": 2820813,
+      "hash": "3df6a13bf1ef78f4aa894f32d1dc55310b2ff9b10d8e06606a54e8b0578b7fdc"
+    },
+    "proveEarningsFloor.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "74d318d26cd015a406b4693090fa43b1f9d4a4f05b4bbbc279251c78877e0308"
+    },
+    "recordEarnings.prover": {
+      "type": "file",
+      "size": 2823696,
+      "hash": "0eae76b1323922d907dfd45fb1f8be7e123f4b44806ed591c7fae1c39f031bc7"
+    },
+    "recordEarnings.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "31f869f1b34081f6d780ced612fd5921d6ec895ee8c46d7fb40761be5320cbc1"
+    },
+    "registerOrganizer.prover": {
+      "type": "file",
+      "size": 2820486,
+      "hash": "0de6a1a38cbd980b4cea67e57c8906c90c603d6223764e7d9b8bd1071bbcd151"
+    },
+    "registerOrganizer.verifier": {
+      "type": "file",
+      "size": 2119,
+      "hash": "336dcca083a3f982b000f9120627a2491907b0d8f6d0ec78d204d59fc695cca8"
+    }
+  }
+}

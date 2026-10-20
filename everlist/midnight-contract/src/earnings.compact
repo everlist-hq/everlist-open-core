@@ -1,0 +1,148 @@
+/**
+ * EverList Organizer Earnings Floor (W3.4, 2026-10-20).
+ *
+ * An organizer proves "I earned at least X across at least N settled
+ * bookings" (bank / tax / partner tiering) WITHOUT exposing a single
+ * per-booking amount, the book, or their real-world identity.
+ *
+ * Design (mirrors reputation.compact, organizer-side — techmining #16,
+ * Mask's revenue-floor pattern):
+ *   initializeEarningsIssuer() — the hub (first caller) becomes THE
+ *                         earnings recorder, singleton at map key 0
+ *   registerOrganizer()  — organizer anchors their earnings pseudonym;
+ *                         witness-walled (only the secret holder can)
+ *   recordEarnings()     — hub records count +1, volume += after the
+ *                         escrow was RELEASED on-chain (hub = trust
+ *                         anchor, same pilot pattern as reputation)
+ *   proveEarningsFloor() — the organizer's ZK ACT: pass/fail against
+ *                         PUBLIC thresholds; totals never disclosed
+ *   getEarnings()        — public read helper (the organizer's own
+ *                         dashboard polls it with their commitment)
+ *
+ * Privacy model (honest):
+ *   - The earnings pseudonym is ONE stable proving identity per organizer
+ *     (bank flow needs continuity), H(prefix || sk); deal-linkage stays
+ *     impossible because escrow.compact already enforces per-booking
+ *     unlinkable tags on the deal side — this ledger never sees bookings.
+ *   - Only RUNNING TOTALS ever exist here (count, totalVolume): no
+ *     per-booking amounts to leak in the first place.
+ *   - proveEarningsFloor reveals ONLY pass/fail for the verifier-chosen
+ *     bar; the actual totals stay secret inside the proof.
+ *   - Vacuous-proof wall: minSettlements >= 1 enforced, else any empty
+ *     ledger trivially passes any volume floor check against zero history
+ *     semantics we do not want to certify.
+ *
+ * Language: Compact 0.26 (compiler 0.34.0)
+ */
+
+pragma language_version 0.26;
+
+import CompactStandardLibrary;
+
+struct OrganizerEarnings {
+  settledCount: Uint<64>,
+  totalVolume:  Uint<128>
+}
+
+export ledger earningsIssuer: Map<Uint<64>, Bytes<32>>;        // key 0 = issuer commitment (singleton)
+export ledger organizerEarnings: Map<Bytes<32>, OrganizerEarnings>; // organizer pseudonym -> totals
+export ledger earningsCount: Counter;                          // global earnings-event counter (audit)
+
+witness organizerSecretKey(): Bytes<32>;      // the organizer's earnings pseudonym secret
+witness earningsIssuerSecretKey(): Bytes<32>; // the hub's recording authority
+
+/** Organizer earnings-pseudonym commitment. sk never leaves the organizer. */
+export circuit organizerEarningsCommitment(sk: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "everlist:earnings:organizer:"), sk]);
+}
+
+/** Hub issuer commitment. sk never leaves the hub. */
+export circuit earningsIssuerCommitment(sk: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "everlist:earnings:issuer:"), sk]);
+}
+
+/**
+ * First caller becomes THE earnings recorder. Singleton at key 0:
+ * a second call (by anyone, including an attacker) is rejected forever.
+ */
+export circuit initializeEarningsIssuer(): [] {
+  assert(!earningsIssuer.member(0), "issuer already initialized");
+  earningsIssuer.insert(0, disclose(earningsIssuerCommitment(earningsIssuerSecretKey())));
+}
+
+/**
+ * Organizer registers their earnings pseudonym. Witness-walled: only the
+ * secret holder can register the commitment (no front-running griefing).
+ * A fresh secret = a fresh earnings identity with zero history.
+ */
+export circuit registerOrganizer(orgComm: Bytes<32>): [] {
+  const mine = organizerEarningsCommitment(organizerSecretKey());
+  assert(mine == orgComm, "only the secret holder can register this commitment");
+  assert(!organizerEarnings.member(disclose(orgComm)), "organizer already registered");
+  organizerEarnings.insert(disclose(orgComm), OrganizerEarnings {
+    settledCount: 0,
+    totalVolume: 0
+  });
+}
+
+/**
+ * Hub records an earnings event against an organizer's pseudonym.
+ * Issuer-walled (witness -> hash -> assert against the singleton).
+ * The hub has ALREADY verified the escrow was RELEASED on-chain before
+ * calling — that verification is the trust anchor. volume must be > 0.
+ */
+export circuit recordEarnings(
+  orgComm: Bytes<32>,
+  volume: Uint<128>
+): [] {
+  assert(earningsIssuer.member(0), "issuer not initialized");
+  const caller = earningsIssuerCommitment(earningsIssuerSecretKey());
+  assert(caller == earningsIssuer.lookup(0), "only the issuer can record earnings");
+
+  assert(volume > 0, "volume must be positive");
+
+  const key = disclose(orgComm);
+  assert(organizerEarnings.member(key), "organizer not registered");
+  const earned = organizerEarnings.lookup(key);
+
+  organizerEarnings.insert(key, OrganizerEarnings {
+    settledCount: disclose((earned.settledCount + 1) as Uint<64>),
+    totalVolume: disclose((earned.totalVolume + volume) as Uint<128>)
+  });
+
+  earningsCount.increment(1);
+}
+
+/**
+ * The organizer's ZK PROOF ACT: proves their pseudonym's totals meet
+ * BOTH public thresholds without revealing them. The verifier (bank,
+ * tax office, partner tiering) chooses the bar:
+ *
+ *   minSettlements — prove at least this many settled bookings (>= 1
+ *                    enforced: a floor proof over zero history must not
+ *                    certify anything)
+ *   minVolume      — prove at least this much total settled volume
+ *
+ * The reply is pass/fail ONLY. Actual totals never leave the proof.
+ */
+export circuit proveEarningsFloor(
+  minSettlements: Uint<64>,
+  minVolume: Uint<128>
+): [] {
+  assert(minSettlements >= 1, "must demand at least one settlement (floor over zero history is vacuous)");
+
+  const comm = organizerEarningsCommitment(organizerSecretKey());
+  const key = disclose(comm); // the pseudonym commitment is public BY DESIGN (map key — same disclose pattern as reputation; the SECRET never leaves the organizer)
+  assert(organizerEarnings.member(key), "organizer not registered");
+  const earned = organizerEarnings.lookup(key);
+
+  assert(earned.settledCount >= minSettlements, "insufficient settlements");
+  assert(earned.totalVolume >= minVolume, "insufficient volume");
+}
+
+/** Public read helper: fetch a pseudonym's totals (organizer dashboard). */
+export circuit getEarnings(orgComm: Bytes<32>): OrganizerEarnings {
+  const key = disclose(orgComm);
+  assert(organizerEarnings.member(key), "organizer not registered");
+  return organizerEarnings.lookup(key);
+}

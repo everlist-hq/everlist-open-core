@@ -47,6 +47,7 @@ LISTINGS = [
 BOOKINGS = []   # booking records (pseudonymous)
 SECRETS = {}    # booking id -> secret (private detail access)
 LEDGER = []     # public, append-only transaction ledger
+EARNINGS = {}   # W3.4: owner principal -> {settledCount: int, totalVolume: float, events: [ts]} — PRIVATE mirror (never in LEDGER: recording owner+volume publicly would leak what the floor proof hides); the on-chain earnings.compact ledger is the real ZK ledger, this is the pilot mirror that feeds it
 IDEMPOTENCY = {}  # I4: Idempotency-Key -> {hash, response} (persisted with G1)
 IDEMPOTENCY_CAP = 50_000  # HARDENING: bound state.json growth (FIFO evict oldest)
 RATE_LIMITS = {}  # G4: principal -> [timestamps] for the 60s window
@@ -475,7 +476,8 @@ def _persist_locked():
             "x402_nonces": (x402verify.snapshot_used_nonces() if PAY_MODE == "testnet" else {}),
             "settlements": (SETTLEMENTS.snapshot() if PAY_MODE == "testnet" else {}),
             "cardano_settlements": CARDANO_SETTLEMENTS.snapshot(),   # C3c
-            "cardano_nonces": cardano_x402.snapshot_used_nonces()}   # C3c nonce wall
+            "cardano_nonces": cardano_x402.snapshot_used_nonces(),   # C3c nonce wall
+            "earnings": EARNINGS}   # W3.4: private earnings mirror (never public LEDGER)
     write_snapshot(snap)
 
 
@@ -492,6 +494,7 @@ def _load_state():
         ACCOUNTS.update(snap.get("accounts", {}))
         CHECKOUT_SESSIONS.update(snap.get("checkout", {}))  # TRACK E: durable checkout sessions
         ID_COUNTERS.update(snap.get("id_counters", {}))
+        EARNINGS.update(snap.get("earnings", {}))   # W3.4: private earnings mirror
         # Incident 2026-10-19 (prod 502s): persisted counters can run stale
         # behind real listing ids (even:36 while even-71 existed) — a fresh
         # mint then collides, duplicates ride into RAM, and EVERY persist
@@ -674,6 +677,29 @@ def _send_email(to, subject, body):
 def _listing_of(b):
     with LOCK:
         return next((l for l in LISTINGS if l["id"] == b.get("listing_id")), None)
+
+
+def _earnings_record_locked(b):
+    """W3.4: record an earnings event the moment money settles to the
+    listing owner (RELEASED via confirm, or DIRECT at booking). PRIVATE
+    mirror keyed by listing owner - deliberately NEVER appended to the
+    public LEDGER (recording owner+volume publicly would leak exactly
+    what proveEarningsFloor exists to hide). Paid rails only: payout <= 0
+    (WAIVED / zero-amount) is a no-op. Caller MUST hold LOCK."""
+    lst = next((x for x in LISTINGS if x["id"] == b.get("listing_id")), None)
+    if lst is None:
+        return
+    owner = lst.get("owner")
+    try:
+        payout = float(b.get("owner_payout") or 0)
+    except (TypeError, ValueError):
+        return
+    if not owner or payout <= 0:
+        return
+    e = EARNINGS.setdefault(owner, {'settledCount': 0, 'totalVolume': 0.0, 'events': []})
+    e['settledCount'] += 1
+    e['totalVolume'] = round(e['totalVolume'] + payout, 2)
+    e['events'].append(round(time.time(), 3))
 
 
 def _acct_email_of(principal):
@@ -1222,6 +1248,32 @@ _SCHEMAS = {
             "manage_note": {"type": "string"},
         },
     },
+    "EarningsView": {
+        "type": "object",
+        "description": "GET /organizer/earnings 200: private mirror of settled payouts (owner-only).",
+        "required": ["settledCount", "totalVolume"],
+        "properties": {
+            "settledCount": {"type": "integer"},
+            "totalVolume": {"type": "number"},
+            "events": {"type": "integer"},
+            "principal": {"type": "string"},
+            "note": {"type": "string"},
+            "zk": {"type": "string"},
+        },
+    },
+    "EarningsProof": {
+        "type": "object",
+        "description": "POST /organizer/earnings-proof 200: revenue-floor proof - pass/fail only, totals never disclosed.",
+        "required": ["met", "thresholds"],
+        "properties": {
+            "met": {"type": "boolean"},
+            "thresholds": {"type": "object", "properties": {
+                "min_settlements": {"type": "integer"},
+                "min_volume": {"type": "number"}}},
+            "protocol": {"type": "string"},
+            "zk_contract": {"type": "string"},
+        },
+    },
     "ConfirmResponse": {
         "type": "object",
         "description": "POST /book/{id}/confirm 200: owner fulfillment, escrow RELEASED (instant-rail bookings settle at booking and skip confirm).",
@@ -1404,6 +1456,10 @@ def _openapi_spec():
             "/book/{id}/confirm": {"post": op("Owner confirms booking (escrow RELEASE)", "bookings", sec=tok)},
             "/book/{id}/cancel": {"post": op("Buyer cancels pre-fulfillment (full refund)", "bookings", sec=tok)},
             "/book/{id}/dispute": {"post": op("Either party freezes a HELD booking for arbitration (DISPUTED; no release or refund until resolved)", "bookings", sec=tok)},
+            "/organizer/earnings": {"get": op("W3.4: organizer earnings view (private mirror of settled payouts; owner-only)", "bookings", sec=tok,
+                                   note="totals are exactly what proveEarningsFloor hides - owner token required")},
+            "/organizer/earnings-proof": {"post": op("W3.4: revenue-floor proof - PASS/FAIL only for verifier-chosen {min_volume, min_settlements}; actual totals never disclosed", "bookings", sec=tok,
+                                        note="pilot mirror check with the honesty of earnings.compact proveEarningsFloor; on-chain proof is the organizer act (M25/M26)")},
             "/book/{id}/transfer": {"post": op("Buyer transfers booking to a new attendee name (pre-fulfillment; rotates secret + cancel token)", "bookings", sec=tok)},
             "/book/{id}/rate": {"post": op("Buyer rates a settled booking 1-5 (once)", "bookings", sec=tok,
                                 note="buyer's own book token; escrow must be RELEASED, WAIVED or DIRECT (instant = settled at booking); free (amount 0; channel set by economic value, not the mutable escrow label - run #5) ratings go to a separate free-feedback channel, paid aggregates are amount-weighted, self-reviews rejected (S6); ledger untouched")},
@@ -1469,6 +1525,8 @@ def _openapi_spec():
         ("post", "/book/{id}/confirm", "200", "ConfirmResponse", "Owner confirmed (escrow RELEASED)"),
         ("post", "/book/{id}/cancel", "200", "CancelResponse", "Buyer cancelled (full refund)"),
         ("post", "/book/{id}/dispute", "200", "CancelResponse", "Dispute opened (funds frozen for arbitration)"),
+        ("get", "/organizer/earnings", "200", "EarningsView", "Organizer earnings view (private mirror)"),
+        ("post", "/organizer/earnings-proof", "200", "EarningsProof", "Revenue-floor proof (pass/fail only)"),
         ("post", "/book/{id}/rate", "200", "RateResponse", "Rating recorded"),
         ("get", "/ledger", "200", "Ledger", "Public money ledger"),
         ("get", "/verticals", "200", "Verticals", "Vertical schema registry"),
@@ -2235,6 +2293,8 @@ class Handler(BaseHTTPRequestHandler):
                 "hub_fee": fee, "owner_payout": payout, "escrow": escrow_state})
             if VERTICAL_SCHEMAS[v].get("tracks_capacity"):
                 listing["registered"] = listing.get("registered", 0) + qty
+            if escrow_state == "DIRECT":
+                _earnings_record_locked(booking)  # W3.4: instant rail settles at booking; WAIVED (payout 0) no-ops inside
             _persist_locked()
         _notify_booking("created", booking, listing)
         # P0 human paid bookings (spec 2026-09-29): settle the verified
@@ -2784,6 +2844,29 @@ class Handler(BaseHTTPRequestHandler):
                         verts.add(str(v))
             return self._json(200, {"q": sq, "tags": sorted(tags)[:100],
                 "categories": sorted(cats)[:100], "verticals": sorted(verts)[:100]})
+        if u.path == "/organizer/earnings":
+            # W3.4: organizer earnings view (private mirror; owner-only).
+            # NEVER public: totals are exactly what proveEarningsFloor hides.
+            cred = self.headers.get("X-Hub-Token", "")
+            if not cred:
+                return self._json(401, {"error": "missing X-Hub-Token",
+                    "hint": "log in (POST /accounts/login) and send your list token"})
+            p, err = hublib.verify_token(BOOKING_KEY, cred, "list", single_use=False)
+            if p:
+                p, err = _gen_check(p)
+            if not p:
+                return self._json(403, {"error": err or "token not valid for earnings",
+                    "hint": "send your list token (the owning account)"})
+            me = p.get("sub", "")
+            with LOCK:
+                e = EARNINGS.get(me) or {"settledCount": 0, "totalVolume": 0.0, "events": []}
+                ev = {"settledCount": e.get("settledCount", 0),
+                      "totalVolume": round(float(e.get("totalVolume", 0.0)), 2),
+                      "events": len(e.get("events", [])),
+                      "principal": me}
+            return self._json(200, {**ev,
+                "note": "private mirror of settled payouts (RELEASED + DIRECT, payout>0)",
+                "zk": "prove a floor without revealing totals: POST /organizer/earnings-proof {min_volume, min_settlements} (earnings.compact proveEarningsFloor is the on-chain ZK act)"})
         if u.path == "/bookings":
             cred = self.headers.get("X-Hub-Token", "")  # I2: token required, principal-scoped
             payload, err = None, "missing X-Hub-Token"
@@ -4118,6 +4201,7 @@ class Handler(BaseHTTPRequestHandler):
                 b["escrow"] = "RELEASED"
                 for t in LEDGER:
                     if t.get("booking") == bid: t["escrow"] = "RELEASED"; t["released_to"] = "owner"  # fullflow 2026-10-18: t.get - ledger rows without a booking key (x402_settlement wallet rows) must be skipped, not KeyError the hub
+                _earnings_record_locked(b)  # W3.4: payout>0 only; WAIVED no-ops inside
                 _persist_locked()
             _notify_booking("released", b, _listing_of(b))
             return self._json(200, {"ok": True, "id": bid, "escrow": "RELEASED",
@@ -4323,6 +4407,43 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True, "id": bid, "escrow": "DISPUTED",
                 "note": "funds frozen for arbitration; no release or refund while DISPUTED",
                 "liveness": "if the arbiter vanishes, arbiterTimeoutRefund returns buyer funds after the arbiter deadline"})
+        if path == "/organizer/earnings-proof":
+            # W3.4: revenue-floor proof (pilot). The hub checks its private
+            # mirror and answers PASS/FAIL ONLY for the verifier-chosen bar -
+            # the honest protocol shape of proveEarningsFloor. On-chain the
+            # organizer runs the circuit themselves (M25/M26 wallet-embedded);
+            # this endpoint is the demo/agent surface with the same honesty:
+            # never returns the actual totals.
+            cred = self.headers.get("X-Hub-Token", "")
+            if not cred:
+                return self._json(401, {"error": "missing X-Hub-Token",
+                    "hint": "log in (POST /accounts/login) and send your list token"})
+            p, err = hublib.verify_token(BOOKING_KEY, cred, "list", single_use=False)
+            if p:
+                p, err = _gen_check(p)
+            if not p:
+                return self._json(403, {"error": err or "token not valid for earnings proof",
+                    "hint": "send your list token (the owning account)"})
+            me = p.get("sub", "")
+            try:
+                mv = float((data or {}).get("min_volume", 0))
+                ms = int((data or {}).get("min_settlements", 0))
+            except (TypeError, ValueError):
+                return self._json(400, {"error": "min_volume must be a number, min_settlements an integer"})
+            if ms < 1:
+                return self._json(400, {"error": "min_settlements must be >= 1 (a floor over zero history is vacuous)",
+                    "hint": "the circuit enforces the same wall"})
+            if mv <= 0:
+                return self._json(400, {"error": "min_volume must be > 0"})
+            with LOCK:
+                e = EARNINGS.get(me) or {"settledCount": 0, "totalVolume": 0.0, "events": []}
+                cnt = int(e.get("settledCount", 0))
+                vol = float(e.get("totalVolume", 0.0))
+            met = (cnt >= ms) and (round(vol, 2) >= mv)
+            return self._json(200, {"met": met,
+                "thresholds": {"min_settlements": ms, "min_volume": round(mv, 2)},
+                "protocol": "pass/fail only - actual totals are never disclosed (same honesty as proveEarningsFloor)",
+                "zk_contract": "earnings.compact proveEarningsFloor(minSettlements, minVolume) - issuer-walled recorder, Grade-A-at-birth pattern"})
         if path.startswith("/book/") and path.endswith("/rate"):
             # S2: mutating route - per-source backstop before any auth work
             with LOCK:

@@ -283,6 +283,66 @@ def _dispute_booking(hub_url: str, sender: str, arg: str) -> str:
         return "No booking '" + bid + "' found."
     return "\u274c " + str(res.get("error", "could not open the dispute"))
 
+def _earnings_cmd(hub_url: str, sender: str, arg: str) -> str:
+    # W3.4: organizer earnings view + revenue-floor proof (pass/fail only).
+    s = _session(sender)
+    tok = (s or {}).get('tokens', {}).get('list') if s else None
+    if not tok:
+        out = [
+            "Earnings is for organizers - log in first (login) or create a",
+            "listing from this chat (list ...). Once paid bookings settle",
+            "you see your totals here, and you can prove a revenue floor",
+            "to a bank without revealing them: prove earnings >= 100.",
+        ]
+        return chr(10).join(out)
+    a = (arg or '').strip()
+    floor = ''
+    if a.startswith('earnings'):
+        rest = a[len('earnings'):].strip()
+        if rest.startswith('>='):
+            floor = rest[len('>='):].strip()
+    if floor:
+        try:
+            fv = float(floor)
+        except ValueError:
+            return "Floor must be a number, e.g. prove earnings >= 100."
+        if fv <= 0:
+            return "Floor must be greater than zero."
+        try:
+            code, res = _hub_post(hub_url, '/organizer/earnings-proof',
+                                  {'min_volume': fv, 'min_settlements': 1}, token=tok)
+        except Exception:
+            return "The hub is unreachable right now - try again shortly."
+        if code == 200 and res.get('met'):
+            out = [
+                "PROVEN: your settled earnings meet the floor (>= " + floor + ").",
+                "That is all anyone learns - your actual totals stay private",
+                "(same honesty as the on-chain proveEarningsFloor circuit:",
+                "pass/fail only).",
+            ]
+            return chr(10).join(out)
+        if code == 200:
+            out = [
+                "Not met: your settled earnings do not reach " + floor + " yet.",
+                "Nobody learns your actual totals - pass/fail only.",
+            ]
+            return chr(10).join(out)
+        return chr(0x274C) + ' ' + str(res.get('error', 'proof failed'))
+    try:
+        res = _hub_get(hub_url, '/organizer/earnings', token=tok)
+    except Exception:
+        return "The hub is unreachable right now - try again shortly."
+    cnt = res.get('settledCount', 0)
+    vol = res.get('totalVolume', 0)
+    plu = '' if cnt == 1 else 's'
+    out = [
+        'Your settled earnings: ' + str(cnt) + ' payout' + plu + ', ' + str(vol)
+        + " total (private - only you see this).",
+        "Prove a revenue floor to a bank without revealing totals:",
+        "prove earnings >= 100",
+    ]
+    return chr(10).join(out)
+
 def _booking_status(hub_url: str, sender: str, arg: str) -> str:
     """H10: poll one booking's status. Logged-in: session token. Anonymous:
     re-mint /access for this chat's own agent address (deterministic principal
@@ -3209,6 +3269,8 @@ _HELP = (
     "• show <id> — full listing details (description, url, availability)\n"
     "• booking <id> — check your booking's escrow status (buyer or owner)\n"
     "• dispute <id> — freeze a HELD booking's funds for arbitration (no release, no refund until resolved; timeout hatch protects the buyer)\n"
+    "• earnings — your settled payout totals (organizer, private to you)\n"
+    "• prove earnings >= 100 — prove a revenue floor to a bank WITHOUT revealing your totals (pass/fail only)\n"
     "• rate <booking_id> <1-5> — rate a settled booking (after confirm, or free listings)\n"
     "• book <n> <name> — book listing n from your last search (FREE = instant; paid = guidance)\n"
     "• fee — how our fee model stays fair"
@@ -4447,9 +4509,9 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
             _underm2 = re.search(r"\bunder\s+([a-zA-Z\u00c4\u00e4\u00d6\u00f6\u00dc\u00fc\u00df' .\-]{2,40})", low)
             _namem = (_underm2.group(1).strip() if _underm2 else
                       (low if re.fullmatch(r"[a-zA-Z\u00c4\u00e4\u00d6\u00f6\u00dc\u00fc\u00df' .\-]{2,60}", low) and len(low.split()) <= 2 and not _TOPIC_NOUN_RX.search(low)
-                       and not re.match(r"^(search|book|help|show|list|my|cancel|dispute|whoami|signup|login|yes|no|ok|lol)\b", low) else ""))  # P12 2026-10-04: command words ('signup') are not booking names — let them reach their handlers
+                       and not re.match(r"^(search|book|help|show|list|my|cancel|dispute|earnings|prove|whoami|signup|login|yes|no|ok|lol)\b", low) else ""))  # P12 2026-10-04: command words ('signup') are not booking names — let them reach their handlers
             _namem = re.sub(r"\s+(?:please|bitte)[!., ]*$", "", _namem).strip()
-            if _namem and not re.match(r"^(search|book|help|show|list|my|cancel|dispute|whoami|signup|login|yes|no|ok|lol)\b", _namem):
+            if _namem and not re.match(r"^(search|book|help|show|list|my|cancel|dispute|earnings|prove|whoami|signup|login|yes|no|ok|lol)\b", _namem):
                 _pbq["who"] = _namem.title()
                 _PENDING_BOOK[sender] = _pbq
             if _underm2 or (_namem and _underm2 is None and _NAME_RX.match(_namem)):
@@ -4478,7 +4540,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                         or re.search(r"\b(find|search|looking|show|what|anything|something|any)\b", low)
                         or len(low.split()) > 2)
             if _NAME_RX.match(low) and not _searchy and not re.match(
-                    r"^(search|book|help|show|list|my|cancel|dispute|whoami|signup|login)\b", low) \
+                    r"^(search|book|help|show|list|my|cancel|dispute|earnings|prove|whoami|signup|login)\b", low) \
                     and not _BOOK_AFFIRM_RX.match(low) \
                     and not _BOOK_REFERENTIAL_RX.match(low):  # owner 2026-10-17: go-aheads never become names ('lol ok' still steers)
                 _pending_book_pop(sender)
@@ -4497,7 +4559,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     if not _pbq:
         _bw = _book_want_get(sender)
         if (_bw and (_BOOK_AFFIRM_RX.match(low) or _BOOK_REFERENTIAL_RX.match(low))
-                and not re.match(r"^(book|search|show|cancel|dispute|help|my-bookings|bookings|whoami|logout"
+                and not re.match(r"^(book|search|show|cancel|dispute|earnings|prove|help|my-bookings|bookings|whoami|logout"
                                  r"|fee|more|next|all|list|signup|login|dashboard|edit|delete|archive"
                                  r"|unarchive|notify|recover|lang|email-|verify-|set-payout)\b", low)):
             _ls = _LAST_SEARCH.get(sender) or {}
@@ -4528,7 +4590,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     # R4b battery: chained commands ('book 1 then show my bookings') are two
     # turns in one -- answer both, never leak the tail into booking args.
     # Guarded: command-word start only, and AFTER intake (titles eat this).
-    if re.match(r"^(book|search|show|cancel|dispute|help|my-bookings|bookings|whoami|logout|more|fee)\b", low) \
+    if re.match(r"^(book|search|show|cancel|dispute|earnings|prove|help|my-bookings|bookings|whoami|logout|more|fee)\b", low) \
             and "|" not in text:
         _parts = re.split(r"\s+(?:then|and then|after that|and also|also)\s+",
                           text.strip(), maxsplit=1, flags=re.I)
@@ -4596,7 +4658,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     _skip_brain = (
         "|" in text
         or _fb_soc is not None            # pure-social/battery shapes: never LLM (120-input law)
-        or re.match(r"^(book|search|show|help|cancel|dispute|signup|login|logout|login-seed|whoami|list|listings|more|next|all|fee|my-bookings|bookings|my-listings|dashboard|edit|delete|archive|unarchive|verify-|set-payout|notify|lang|email-|recover|delete-account)\b", low)
+        or re.match(r"^(book|search|show|help|cancel|dispute|earnings|prove|signup|login|logout|login-seed|whoami|list|listings|more|next|all|fee|my-bookings|bookings|my-listings|dashboard|edit|delete|archive|unarchive|verify-|set-payout|notify|lang|email-|recover|delete-account)\b", low)
         or re.match(r"^\d[\d\s,\-]*$", low)
         # deterministic-law shapes (owner 2026-10-02): pasted bare email =
         # signup/bind in ONE turn; bare 6-hex with pending email = confirm.
@@ -4773,7 +4835,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
             and not _TOPIC_NOUN_RX.search(_ns_full)
             and not _BOOK_AFFIRM_RX.match(_ns_full)
             and not _BOOK_REFERENTIAL_RX.match(_ns_full)  # owner 2026-10-17: go-aheads never become names ('lol ok' still steers)
-            and not re.match(r"^(search|find|show|book|cancel|dispute|booking|help|my-bookings|my-listings|bookings|more|next|all|edit|delete|archive|list|fee|whoami|dashboard|signup|login|logout|notify|recover|back|go back)\b", _ns_full)  # r4 gate 2026-10-04: typed commands are not names — 'search pizza' re-run must search, not steer; fullflow 2026-10-18: +booking/my-listings
+            and not re.match(r"^(search|find|show|book|cancel|dispute|earnings|prove|booking|help|my-bookings|my-listings|bookings|more|next|all|edit|delete|archive|list|fee|whoami|dashboard|signup|login|logout|notify|recover|back|go back)\b", _ns_full)  # r4 gate 2026-10-04: typed commands are not names — 'search pizza' re-run must search, not steer; fullflow 2026-10-18: +booking/my-listings
             and not ((_LAST_SEARCH.get(sender) or {}).get("suggest") and not _SUGGEST_ACK_ONLY_RX.match(_ns_full))  # owner 2026-10-18: a no-match suggestion stash is NOT a pick question — content words ('pizzeria') search; social acks ('lol ok') keep the steer (conversation C3.3)
             and not (not _SUGGEST_ACK_ONLY_RX.match(_ns_full)  # owner 2026-10-19 hammer: SAME law for real-result stashes — a bare word that overlaps NO stashed title is a new search ('pizzeria' after pizza results), never a pick prompt
                      and not any(_ns_full in str(r.get("title") or "").lower()
@@ -4798,7 +4860,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     # (transfer/dog/refund/resale...); CAN entries answer only when the turn
     # is question-shaped ('can i', 'how do i', 'does everlist'), so real
     # commands ('book 2', 'edit even-1 ...') are never swallowed.
-    if (not re.match(r"^(book|search|show|help|cancel|dispute|signup|login|logout|whoami|list|more|next|all|fee|my-bookings|bookings|dashboard|edit|delete|archive|unarchive|notify|lang|recover)\b", low)
+    if (not re.match(r"^(book|search|show|help|cancel|dispute|earnings|prove|signup|login|logout|whoami|list|more|next|all|fee|my-bookings|bookings|dashboard|edit|delete|archive|unarchive|notify|lang|recover)\b", low)
             # dedicated deterministic handlers own these intents - catalog stays out:
             and not re.search(r"\bmidnight\b", low)
             and not re.search(r"\b(list|post|create|make|add)\b[^?\n]*\b(gig|event|listing|class|service|workshop|concert|course)\b", low)
@@ -5035,6 +5097,10 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
         return _cancel_booking(hub_url, sender, text.strip()[7:].strip())
     if low.startswith("dispute "):
         return _dispute_booking(hub_url, sender, text.strip()[8:].strip())
+    if low == "earnings":
+        return _earnings_cmd(hub_url, sender, "")
+    if low.startswith("prove earnings"):
+        return _earnings_cmd(hub_url, sender, text.strip()[6:].strip())
     if low == "booking" or low.startswith("booking "):
         return _booking_status(hub_url, sender, text.strip()[8:].strip())
     # C4: buyer rates a settled booking (its own command — 'book' would swallow 'rate' otherwise never)
