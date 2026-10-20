@@ -35,6 +35,7 @@ npx tsx --test test/milestone.test.ts             # milestone escrow + dispute p
 npx tsx --test test/dispute.test.ts               # W3.1 dispute path on simple escrow: 27/27
 npx tsx --test test/earnings.test.ts              # W3.4 revenue-floor proofs: 24/24
 npx tsx --test test/batch.test.ts                 # W3.3 batch settlement (2 releases, 1 proof): 7/7
+npx tsx --test test/differential.test.ts          # W3.5 differential fuzzing (seeded sweeps + controls): 27/27
 ```
 
 The circuits executed by these tests are the same compiled artifacts in
