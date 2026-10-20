@@ -1460,6 +1460,8 @@ def _openapi_spec():
                                    note="totals are exactly what proveEarningsFloor hides - owner token required")},
             "/organizer/earnings-proof": {"post": op("W3.4: revenue-floor proof - PASS/FAIL only for verifier-chosen {min_volume, min_settlements}; actual totals never disclosed", "bookings", sec=tok,
                                         note="pilot mirror check with the honesty of earnings.compact proveEarningsFloor; on-chain proof is the organizer act (M25/M26)")},
+            "/organizer/batch-settle": {"post": op("W3.3: organizer batch settle - release ALL your HELD/WAIVED bookings in ONE call (per-booking chain gate verify-then-flip; DISPUTED untouched)", "bookings", sec=tok,
+                                        note="pilot hub surface for the on-chain batchRelease2 circuit; per-booking walls all applied")},
             "/book/{id}/transfer": {"post": op("Buyer transfers booking to a new attendee name (pre-fulfillment; rotates secret + cancel token)", "bookings", sec=tok)},
             "/book/{id}/rate": {"post": op("Buyer rates a settled booking 1-5 (once)", "bookings", sec=tok,
                                 note="buyer's own book token; escrow must be RELEASED, WAIVED or DIRECT (instant = settled at booking); free (amount 0; channel set by economic value, not the mutable escrow label - run #5) ratings go to a separate free-feedback channel, paid aggregates are amount-weighted, self-reviews rejected (S6); ledger untouched")},
@@ -1527,6 +1529,7 @@ def _openapi_spec():
         ("post", "/book/{id}/dispute", "200", "CancelResponse", "Dispute opened (funds frozen for arbitration)"),
         ("get", "/organizer/earnings", "200", "EarningsView", "Organizer earnings view (private mirror)"),
         ("post", "/organizer/earnings-proof", "200", "EarningsProof", "Revenue-floor proof (pass/fail only)"),
+        ("post", "/organizer/batch-settle", "200", "BatchSettle", "Organizer batch settle: release ALL your HELD/WAIVED bookings in one call (per-booking chain gate; disputes untouched)"),
         ("post", "/book/{id}/rate", "200", "RateResponse", "Rating recorded"),
         ("get", "/ledger", "200", "Ledger", "Public money ledger"),
         ("get", "/verticals", "200", "Verticals", "Vertical schema registry"),
@@ -4444,6 +4447,72 @@ class Handler(BaseHTTPRequestHandler):
                 "thresholds": {"min_settlements": ms, "min_volume": round(mv, 2)},
                 "protocol": "pass/fail only - actual totals are never disclosed (same honesty as proveEarningsFloor)",
                 "zk_contract": "earnings.compact proveEarningsFloor(minSettlements, minVolume) - issuer-walled recorder, Grade-A-at-birth pattern"})
+        if path == "/organizer/batch-settle":
+            # W3.3 usage surface: settle ALL of an organizer's settleable
+            # bookings in ONE call (one chat command, one request). Money
+            # honesty is unchanged - this is the confirm path applied N times
+            # under the same walls: chain gate verify-then-flip per HELD
+            # booking, earnings hook per payout, per-booking results. The
+            # on-chain batchRelease2 circuit is the ZK act; this endpoint is
+            # the hub pilot surface with the same per-booking walls.
+            cred = self.headers.get("X-Hub-Token", "")
+            if not cred:
+                return self._json(401, {"error": "missing X-Hub-Token",
+                    "hint": "log in (POST /accounts/login) and send your list token"})
+            p, err = hublib.verify_token(BOOKING_KEY, cred, "list", single_use=False)
+            if p:
+                p, err = _gen_check(p)
+            if not p:
+                return self._json(403, {"error": err or "token not valid for batch settle",
+                    "hint": "send your list token (the owning account)"})
+            me = p.get("sub", "")  # same keying as /organizer/earnings: the token principal IS the organizer identity
+            with LOCK:
+                if not _auth_allow("manage", _source_of(self)):
+                    return self._json(429, {"error": "manage rate limit reached for your source, retry later"})
+                my_listings = {x["id"] for x in LISTINGS if x.get("owner") == me}
+                mine = [x for x in BOOKINGS
+                        if x.get("listing_id") in my_listings and x["escrow"] in ("HELD", "WAIVED")]
+                results = []
+                released_n = 0
+                total_payout = 0.0
+                for b in mine:
+                    bid = b["id"]
+                    try:
+                        if b["escrow"] == "HELD" and CHAIN_GATE:
+                            _fr = b.get("escrow_ref")
+                            if _fr is None:
+                                results.append({"id": bid, "ok": False, "error": "predates chain gating (no escrow_ref)"})
+                                continue
+                            _fv, _fe = _chain_gate_read(_fr, dual=True)
+                            if _fv is None:
+                                _fc, _fb = _fe
+                                results.append({"id": bid, "ok": False, "error": _fb.get("error", "chain gate refused")})
+                                continue
+                            if _fv["state_name"] != "HELD":
+                                results.append({"id": bid, "ok": False,
+                                    "error": "chain escrow is %s - not settleable from here" % _fv["state_name"]})
+                                continue
+                        if b["escrow"] == "HELD":
+                            b["escrow"] = "RELEASED"
+                            for t in LEDGER:
+                                if t.get("booking") == bid:
+                                    t["escrow"] = "RELEASED"
+                                    t["released_to"] = "owner"
+                            _earnings_record_locked(b)
+                            released_n += 1
+                            total_payout += float(b.get("owner_payout", 0) or 0)
+                        else:  # WAIVED: free booking - confirm marks it settled, no money moves
+                            b["escrow"] = "RELEASED"
+                            released_n += 1
+                        results.append({"id": bid, "ok": True, "escrow": "RELEASED",
+                                        "owner_received": b.get("owner_payout", 0)})
+                        _notify_booking("released", b, _listing_of(b))
+                    except Exception as _ex:
+                        results.append({"id": bid, "ok": False, "error": "settle failed"})
+                _persist_locked()
+            return self._json(200, {"ok": True, "settled": released_n,
+                "total_payout": round(total_payout, 2), "results": results,
+                "note": "per-booking walls all applied (chain gate verify-then-flip; disputes are never touched)"})
         if path.startswith("/book/") and path.endswith("/rate"):
             # S2: mutating route - per-source backstop before any auth work
             with LOCK:
