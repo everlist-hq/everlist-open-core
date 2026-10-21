@@ -18,7 +18,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 const { Contract, pureCircuits } = await import('./managed/contract/index.js');
 const cr = await import('@midnight-ntwrk/compact-runtime');
 const { dummyContractAddress } = await import('@midnightntwrk/onchain-runtime-v4');
-const l9 = await import('/tmp/ledger-v9-rc4/package/midnight_ledger_wasm_v9_fs.js');
+const l9 = await import('./deploy/node_modules/@midnight-ntwrk/ledger-v9/midnight_ledger_wasm_v9_fs.js');
 
 const b32 = (s) => {
   const a = new Uint8Array(32);
@@ -51,6 +51,7 @@ const honest = new Contract(witnesses);
 const attacker = new Contract({
   agentSecretKey: (c) => [c.privateState, new Uint8Array(32).fill(9)],
   organizerSecretKey: (c) => [c.privateState, new Uint8Array(32).fill(9)],
+  arbiterSecretKey: (c) => [c.privateState, new Uint8Array(32).fill(5)], // W3.1 witness shape (required on every Contract)
 });
 const ps = null;
 
@@ -101,6 +102,17 @@ await call(honest, 'createEscrow', 60n, pureCircuits.organizerCommitment(ORG_SK,
 console.log('escrow 4 HELD (claim deadline passed)');
 await call(attacker, 'autoRelease', 4n, { nonce: dep4.nonce, color: dep4.color, value: 60n, mt_index: mt4 });
 console.log('escrow 4 RELEASED via autoRelease (attacker-triggered, organizer paid)');
+
+// escrows 5+6: W3.3 BATCH settlement (two releases in ONE circuit call)
+const dep5 = mkCoin(100n); const mt5 = nextMt(ctx);
+await call(honest, 'createEscrow', 100n, pureCircuits.organizerCommitment(ORG_SK, b32('m11-e')), b32('m11-e'), 99999999999n, 100000000000n, dep5, AGENT_PK, ORG_PK);
+const dep6 = mkCoin(200n); const mt6 = nextMt(ctx);
+await call(honest, 'createEscrow', 200n, pureCircuits.organizerCommitment(ORG_SK, b32('m11-f')), b32('m11-f'), 99999999999n, 100000000000n, dep6, AGENT_PK, ORG_PK);
+console.log('escrows 5+6 HELD (same organizer)');
+await call(honest, 'batchRelease2', 5n, 6n,
+  { nonce: dep5.nonce, color: dep5.color, value: 100n, mt_index: mt5 },
+  { nonce: dep6.nonce, color: dep6.color, value: 200n, mt_index: mt6 });
+console.log('escrows 5+6 RELEASED via ONE batchRelease2');
 
 // --- /check each captured circuit against the native proof server ---
 const results = [];
