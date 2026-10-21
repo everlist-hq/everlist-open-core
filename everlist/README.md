@@ -146,3 +146,17 @@ was verified end-to-end against production on 2026-10-16.
 
 Licensing for the Wave-2 Midnight code: Apache License 2.0 — see `NOTICE` and
 `LICENSE-APACHE-2.0.txt` in the repo root; the pre-existing core stays MIT.
+
+## API standard & trademark
+
+The normative API spec lives in [`spec/everlist-api-v1.md`](spec/everlist-api-v1.md)
+(generated from the live OpenAPI contract by `tools/gen_spec.py` — do not hand-edit),
+and conformance is proven with [`spec/CONFORMANCE.md`](spec/CONFORMANCE.md) and the
+registry checker (`check_hub.py`). v1.x is additive-only; breaking changes require a
+new major version and a deprecation window.
+
+The name **EverList** and the "EverList Compatible" badge are trademarks of EverList,
+not granted by the Apache-2.0/MIT code licenses: you may run, modify, and redistribute
+the code freely, but marketing a hub as "EverList" or "EverList Compatible" requires
+verified conformance and EverList's permission. See `spec/CONFORMANCE.md` for how to
+get conformant and earn the badge.
