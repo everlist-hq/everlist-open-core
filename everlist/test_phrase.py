@@ -13,6 +13,10 @@ sys.path.insert(0, HERE)
 os.environ.setdefault("EVERLIST_PHRASE", "1")
 # tests must NOT pollute the production guard log (SLO lives there)
 os.environ["EVERLIST_PHRASE_LOG"] = os.path.join(HERE, ".run", "phrase-guard-test.jsonl")
+# CI checkouts have no .secrets/llm.env (gitignored): without a key the guard
+# short-circuits before the (mocked) author and the AI-path tests fail.
+# Hermetic dummy key; a real dev key set in the environment keeps precedence.
+os.environ.setdefault("EVERLIST_PHRASE_API_KEY", "test-hermetic-dummy-key")
 import phrase  # noqa: E402
 
 TEMPLATE = ("I found 4 matches - they're open on the board for you. "
