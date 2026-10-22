@@ -3,6 +3,10 @@
 Version: 0.2 · Date: 2026-09-09 · Status: matches `app.py` as of M1+C2 (no drift).
 This document is normative for hub implementations and clients. **MUST/SHOULD/MAY** per RFC 2119.
 
+Audience entry points (X3, 2026-10-22): **agents** → [docs/for-agents.md](docs/for-agents.md) ·
+**organizers/merchants** → [docs/for-organizers.md](docs/for-organizers.md) ·
+**operators** → docs/ops/runbook.md. This SPEC stays the single normative source.
+
 ## 1. Model & Principles
 
 - A **hub** is an HTTP+JSON server. No cookies, no HTML, no JS — agents only.
