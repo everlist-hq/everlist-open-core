@@ -412,12 +412,6 @@ def _booking_status(hub_url: str, sender: str, arg: str) -> str:
         return "Sorry - the EverList hub is unreachable right now. Try again shortly."
     qty = b.get("quantity", 1)
     qty_s = f" x{qty}" if qty > 1 else ""
-    tk = b.get("ticket") or {}
-    tk_line = ""
-    if tk.get("ticket_url"):
-        _tref = _secret_put(sender, "ticket", tk["ticket_url"])
-        tk_line = ("\n🎟 Your ticket: [[secret:ticket:" + _tref + "]]"
-                   + (" (already used)" if tk.get("redeemed") else ""))
     ref = b.get("escrow_ref") or {}
     chain_line = ""
     if ref.get("contract") and ref.get("escrow_id") is not None:
@@ -431,7 +425,7 @@ def _booking_status(hub_url: str, sender: str, arg: str) -> str:
     return (f"📋 Booking {b['id']}{note}\n"
             f"Listing: {b.get('listing_id')} | Status: {b.get('escrow', '?')} | "
             f"Amount: {b.get('amount', '?')} USD (fee {b.get('hub_fee', 0)}, payout {b.get('owner_payout', 0)}){qty_s}\n"
-            + _escrow_journey(b.get("escrow", "HELD"), b.get("amount")) + chain_line + tk_line + "\n"
+            + _escrow_journey(b.get("escrow", "HELD"), b.get("amount")) + chain_line + "\n"
             "Private details (name etc.) stay secret-gated: 'book {bid}' shows how they're retrieved.".format(bid=b["id"]))
 
 
@@ -5334,18 +5328,11 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                     _s.setdefault("cancel_tokens", {})[res["id"]] = res["cancel_token"]
             except Exception:
                 pass
-            _tt = res.get("ticket_token_once")
-            _tk_line = ""
-            if _tt:
-                _pub = os.environ.get("EVERLIST_PUBLIC_URL", "https://everlist.network").rstrip("/")
-                _tk_line = ("\n\n🎟 Your ticket (show it at the door): [[secret:ticket:"
-                            + _secret_put(sender, "ticket", _pub + "/t/" + _tt) + "]]\n")
             return (f"✅ Booked! '{target.get('title')}' — booking {res.get('id')}.\n"
                     "\n"
                     "💳 Money: " + ("your payment is locked in safely — the organizer "
                                      "can't touch it until the event has ended" if float(res.get('amount') or 0) > 0
                                     else "nothing to pay — this one's free") + ".\n"
-                    + _tk_line +
                     "\n"
                     "🔑 YOUR BOOKING SECRET — shown once, only here. This chat resets "
                     "if you reload the page, so copy it NOW:\n"

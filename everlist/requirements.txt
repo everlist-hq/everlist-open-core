@@ -4,3 +4,4 @@ eth-account==0.14.0
 cryptography==50.0.1
 jsonschema==4.26.0
 referencing==0.37.0
+segno==1.6.6
