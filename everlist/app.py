@@ -68,7 +68,11 @@ ACCOUNTS = {}
 # money interface stays honest everywhere.
 BRANDING = {}
 BRANDING_MAX = {"brand_name": 80, "tagline": 160, "hero_text": 400, "logo_url": 300,
-                "location": 120}
+                "location": 120, "about_text": 800, "site_url": 300, "instagram_url": 300,
+                "accent2": 7, "theme": 10}
+BRANDING_THEMES = ("dark", "light")
+BRANDING_IMG_FIELDS = ("logo_image", "hero_image")            # set ONLY via /branding/image
+BRANDING_IMG_CAPS = {"logo": ("logo_image", 90000), "hero": ("hero_image", 420000)}  # decoded bytes
 BRANDING_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 BRANDING_LANGS = ("de", "en")
 ACCOUNTS_CAP = int(os.environ.get("HUB_ACCOUNTS_CAP", "10000"))  # TOTAL anti-DoS cap (state.json atomically rewritten per mutation) - env-tunable, NOT per-day
@@ -493,7 +497,8 @@ def _persist_locked():
             "cardano_settlements": CARDANO_SETTLEMENTS.snapshot(),   # C3c
             "cardano_nonces": cardano_x402.snapshot_used_nonces(),   # C3c nonce wall
             "tickets": TICKETS,   # T5: QR tickets
-            "earnings": EARNINGS}   # W3.4: private earnings mirror (never public LEDGER)
+            "earnings": EARNINGS,   # W3.4: private earnings mirror (never public LEDGER)
+            "branding": BRANDING}   # v2: partner branding MUST survive restarts (was silently dropped)
     write_snapshot(snap)
 
 
@@ -512,6 +517,7 @@ def _load_state():
         ID_COUNTERS.update(snap.get("id_counters", {}))
         EARNINGS.update(snap.get("earnings", {}))   # W3.4: private earnings mirror
         TICKETS.update(snap.get("tickets", {}))     # T5: QR tickets
+        BRANDING.update(snap.get("branding", {}))   # v2: restore partner branding
         # Incident 2026-10-19 (prod 502s): persisted counters can run stale
         # behind real listing ids (even:36 while even-71 existed) — a fresh
         # mint then collides, duplicates ride into RAM, and EVERY persist
@@ -1517,7 +1523,9 @@ def _openapi_spec():
             "/book/{id}/dispute": {"post": op("Either party freezes a HELD booking for arbitration (DISPUTED; no release or refund until resolved)", "bookings", sec=tok)},
             "/branding": {"get": op("Public page branding (partner-editable fields only)", "discovery"),
                           "post": op("Update branding (owner acct- token ONLY; fixed rails rejected)", "bookings", sec=tok,
-                                     note="fields: brand_name, tagline, hero_text, logo_url(https), location, accent(#RRGGBB), lang(de|en)")},
+                                     note="fields: brand_name, tagline, hero_text, logo_url(https), location, accent(#RRGGBB), accent2(#RRGGBB), theme(dark|light), about_text, site_url(https), instagram_url(https, instagram.com host), lang(de|en); MERGE: absent=unchanged, empty=cleared")},
+            "/branding/image": {"post": op("Upload branding image (owner acct- token ONLY)", "bookings", sec=tok,
+                                          note="body {kind: logo|hero, data_url: data:image/png|jpeg|webp;base64,...}; SVG refused; decoded caps logo 90KB / hero 420KB; stored same-origin as data URL")},
             "/organizer/earnings": {"get": op("W3.4: organizer earnings view (private mirror of settled payouts; owner-only)", "bookings", sec=tok,
                                    note="totals are exactly what proveEarningsFloor hides - owner token required")},
             "/organizer/earnings-proof": {"post": op("W3.4: revenue-floor proof - PASS/FAIL only for verifier-chosen {min_volume, min_settlements}; actual totals never disclosed", "bookings", sec=tok,
@@ -3237,9 +3245,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         self._t0 = time.time()  # H12: latency start
         path = urlparse(self.path).path
-        # G4: global request-body cap (64KB) - reject before parsing
-        if int(self.headers.get("Content-Length", 0)) > 65536:
-            return self._json(413, {"error": "request body too large (max 64KB)"})
+        # G4: global request-body cap (64KB) - reject before parsing.
+        # Narrow exemption: owner-only /branding/image uploads (magic-byte
+        # sniffed, per-kind DECODED caps 90KB/420KB inside the endpoint).
+        _g4 = 1200000 if path == "/branding/image" else 65536
+        if int(self.headers.get("Content-Length", 0)) > _g4:
+            return self._json(413, {"error": "request body too large (max %d bytes)" % _g4})
         try:
             n = int(self.headers.get("Content-Length", 0))
             raw = self.rfile.read(n)
@@ -3514,7 +3525,8 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 if not _auth_allow("branding", _source_of(self)):
                     return self._json(429, {"error": "branding rate limit reached for your source, retry later"})
-            fields = ("brand_name", "tagline", "hero_text", "logo_url", "location", "accent", "lang")
+            fields = ("brand_name", "tagline", "hero_text", "logo_url", "location", "accent",
+                      "accent2", "theme", "about_text", "site_url", "instagram_url", "lang")
             clean = {}
             for k in fields:
                 if k not in data:
@@ -3534,6 +3546,42 @@ class Handler(BaseHTTPRequestHandler):
                     if len(v) > BRANDING_MAX[k]:
                         return self._json(400, {"error": "logo_url too long (max %d)" % BRANDING_MAX[k]})
                     clean[k] = v
+                elif k == "accent2":
+                    if not isinstance(v, str) or not BRANDING_COLOR_RE.match(v):
+                        return self._json(400, {"error": "accent2 must be #RRGGBB"})
+                    clean[k] = v.lower()
+                elif k == "theme":
+                    if v not in BRANDING_THEMES:
+                        return self._json(400, {"error": "theme must be one of " + ", ".join(BRANDING_THEMES)})
+                    clean[k] = v
+                elif k == "site_url":
+                    if not isinstance(v, str) or not (v.startswith("https://") or v == ""):
+                        return self._json(400, {"error": "site_url must be an https:// URL (or empty)"})
+                    if len(v) > BRANDING_MAX[k]:
+                        return self._json(400, {"error": "site_url too long (max %d)" % BRANDING_MAX[k]})
+                    clean[k] = v
+                elif k == "instagram_url":
+                    if not isinstance(v, str) or not (v.startswith("https://instagram.com/")
+                                                      or v.startswith("https://www.instagram.com/") or v == ""):
+                        return self._json(400, {"error": "instagram_url must be an https://instagram.com/ profile URL (or empty)"})
+                    if len(v) > BRANDING_MAX[k]:
+                        return self._json(400, {"error": "instagram_url too long (max %d)" % BRANDING_MAX[k]})
+                    clean[k] = v
+                elif k == "about_text":
+                    if not isinstance(v, str):
+                        return self._json(400, {"error": "about_text must be a string"})
+                    CR, LF = chr(13), chr(10)
+                    if CR in v or _BAD_CHARS_RE.search(v.replace(LF, "")):
+                        return self._json(400, {"error": "about_text must not contain control characters"})
+                    if len(v) > BRANDING_MAX[k]:
+                        return self._json(400, {"error": "about_text too long (max %d)" % BRANDING_MAX[k]})
+                    clean[k] = v.strip()
+                elif k in BRANDING_IMG_FIELDS:
+                    # clearing only - uploads go through POST /branding/image
+                    if v == "":
+                        clean[k] = ""
+                    else:
+                        return self._json(400, {"error": "%s is set via POST /branding/image (multipart-free data URL upload)" % k})
                 else:
                     if not isinstance(v, str):
                         return self._json(400, {"error": "%s must be a string" % k})
@@ -3547,10 +3595,58 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {"error": "unknown/fixed fields rejected: " + ", ".join(sorted(unknown)),
                     "note": "escrow badges, testnet labels, attribution and checkout UX are server-pinned"})
             with LOCK:
-                BRANDING.clear()
+                # v2 MERGE semantics (fixes latent wipe bug): absent field =
+                # unchanged, explicit "" = cleared. Old replace-semantics
+                # wiped unset fields (e.g. uploaded images) on partial saves.
                 BRANDING.update(clean)
                 _persist_locked()
             return self._json(200, {"ok": True, "branding": dict(BRANDING)})
+        if path == "/branding/image":
+            # v2: partner image UPLOAD (logo/hero). Same ownership law as
+            # /branding (acct- ONLY). Magic-byte MIME sniffing - SVG refused
+            # (script-capable), decoded-size caps per kind. Stored as data URL
+            # in BRANDING -> rendered same-origin, no external hosting.
+            cred = self.headers.get("X-Hub-Token", "")
+            p, err = None, "missing X-Hub-Token"
+            if cred:
+                p, err = hublib.verify_token(BOOKING_KEY, cred, "list", single_use=False)
+                if p:
+                    p, err = _gen_check(p)
+            if not p:
+                return self._json(401, {"error": err or "missing X-Hub-Token"})
+            if not str(p.get("sub", "")).startswith("acct-"):
+                return self._json(403, {"error": "branding images are owner-only (acct- account required)"})
+            with LOCK:
+                if not _auth_allow("branding", _source_of(self)):
+                    return self._json(429, {"error": "branding rate limit reached for your source, retry later"})
+            kind = str(data.get("kind", ""))
+            if kind not in BRANDING_IMG_CAPS:
+                return self._json(400, {"error": "kind must be logo or hero"})
+            field, cap = BRANDING_IMG_CAPS[kind]
+            du = str(data.get("data_url", ""))
+            m = re.match(r"^data:image/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)$", du)
+            if not m:
+                return self._json(400, {"error": "data_url must be data:image/png|jpeg|webp;base64,... (SVG refused)"})
+            try:
+                blob = base64.b64decode(m.group(2), validate=True)
+            except (binascii.Error, ValueError):
+                return self._json(400, {"error": "data_url base64 malformed"})
+            if len(blob) > cap:
+                return self._json(400, {"error": "%s image too large: %d bytes (max %d)" % (kind, len(blob), cap)})
+            PNGSIG = bytes([0x89]) + b"PNG" + bytes([0x0d, 0x0a, 0x1a, 0x0a])
+            JPEGSIG = bytes([0xff, 0xd8, 0xff])
+            if blob[:8] == PNGSIG:
+                mime = "image/png"
+            elif blob[:3] == JPEGSIG:
+                mime = "image/jpeg"
+            elif blob[:4] == b"RIFF" and blob[8:12] == b"WEBP":
+                mime = "image/webp"
+            else:
+                return self._json(400, {"error": "file content is not PNG/JPEG/WebP (magic-byte sniff failed)"})
+            with LOCK:
+                BRANDING[field] = "data:" + mime + ";base64," + m.group(2)
+                _persist_locked()
+            return self._json(200, {"ok": True, "field": field, "bytes": len(blob), "mime": mime})
         if path == "/accounts/payout":
             # M9: organizer payout key - a COIN PUBLIC key (64-hex, 32 bytes),
             # NEVER a secret. Escrow releases pay the key fixed at creation;
@@ -5071,8 +5167,9 @@ class Handler(BaseHTTPRequestHandler):
         # destroyed (bookers keep escrow resolution; owner can no longer be
         # relinked because the account is gone).
         path = urlparse(self.path).path
-        if int(self.headers.get("Content-Length", 0)) > 65536:
-            return self._json(413, {"error": "request body too large (max 64KB)"})
+        _g4 = 1200000 if path == "/branding/image" else 65536  # G4; exemption: owner image uploads
+        if int(self.headers.get("Content-Length", 0)) > _g4:
+            return self._json(413, {"error": "request body too large (max %d bytes)" % _g4})
         try:
             n = int(self.headers.get("Content-Length", 0))
             raw = self.rfile.read(n)
