@@ -921,6 +921,38 @@ VERTICAL_SCHEMAS = {
 }
 
 # I1: field ownership. Server-owned fields may never come from clients.
+def _escrow_guide(b):
+    """DL-3 (mining 2026-10-31, zkEscrow transaction-center checklist): per-state
+    plain-language next steps for an escrow-bearing booking, plus wallet-less
+    verification pointers. Server-derived ONLY (state/escrow_ref from the
+    booking row) - never client input. Present for every booking so agents get
+    a stable shape; non-escrow rails explain their own state honestly."""
+    state = str(b.get("escrow") or "HELD")
+    ref = b.get("escrow_ref") or {}
+    contract = ref.get("contract") or ""
+    eid = ref.get("escrow_id") or ""
+    verify = ("GET /escrow/%s/proof?contract=%s (verify-without-trust: dual-source"
+              " indexer read, fail-closed)" % (eid, contract) if contract and eid else None)
+    page = ("/verify?contract=%s&escrow=%s" % (contract, eid)) if contract and eid else None
+    STEPS = {
+        "HELD": "Funds are protected in escrow. Fulfillment happens next; after the refund window closes the organizer is paid. You can watch the chain state any time.",
+        "DISPUTED": "Booking is frozen for arbitration: no release and no refund until resolved. Both parties can contact the hub.",
+        "RELEASED": "Escrow released to the organizer - settlement is final and published on the public ledger.",
+        "REFUNDED": "Escrow refunded to the buyer - settlement is final and published on the public ledger.",
+        "WAIVED": "No money moves on this booking (free listing) - there is no escrow to watch.",
+        "DIRECT": "Instant rail: payment settled directly at booking time (no protected hold).",
+    }
+    return {
+        "state": state,
+        "what_now": STEPS.get(state, "Escrow state " + state + " - see /how for what states mean."),
+        "chain_verification": {
+            "endpoint": verify,
+            "wallet_less_page": page,
+            "available": bool(verify)},
+        "ledger": "GET /ledger or /transparency (public, pseudonymous)",
+    }
+
+
 RESERVED_BOOKING_FIELDS = {"id", "vertical", "escrow", "amount", "hub_fee",
     "owner_payout", "created", "booking_secret", "rail", "confirmation",
     "verified_by", "payment_terms", "claim", "promo_applied",
@@ -1430,6 +1462,10 @@ def _openapi_spec():
                  ("discovery", "listings", "bookings", "accounts", "payments", "registry", "admin")],
         "paths": {
             "/.well-known/agent-hub.json": {"get": op("Discovery manifest", "discovery")},
+            "/.well-known/x402.json": {"get": op("x402 payment discovery (DL-1)", "discovery",
+                                        note="machine-readable payment terms at the standard agents-probe location; built from the same constants as the live 402 on /premium/events")},
+            "/escrow/{id}/proof": {"get": op("Verify-without-trust escrow proof (DL-2)", "bookings",
+                                        note="?contract=<address> (or HUB_ESCROW_CONTRACT); escrow re-read from indexer(s), dual-source when configured, FAIL-CLOSED on disagreement; no booking details, pseudonymous booking_ref only")},
             "/manifest.json": {"get": op("Legacy manifest alias", "discovery")},
             "/openapi.json": {"get": op("This contract (OpenAPI 3.1)", "discovery")},
             "/verticals": {"get": op("Vertical schema registry", "discovery")},
@@ -2414,6 +2450,35 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(200, {"algo": "ed25519", "challenge": ch,
                         "ttl": 120, "msg": "sign b'everlist-login:' + challenge with your seed's private key; POST sig (128 hex) to /accounts/login with pubkey + agent"})
             return self._json(400, {"error": "kind must be signup or login"})
+        if u.path == "/.well-known/x402.json":
+            """DL-1 (mining 2026-10-31, x402-bazaar convention): machine-readable
+            x402 payment discovery at the standard agents-probe location.
+            Honest by construction: built from the SAME module constants that
+            power the live /premium/events 402, so this file cannot drift from
+            actual payment terms. Network-specific live terms (incl. the
+            Cardano rail when enabled) stay authoritative at the 402 itself."""
+            _x402 = {
+                "x402Version": 1,
+                "mode": PAY_MODE.upper(),
+                "accepts": [{
+                    "scheme": "exact", "network": "base-sepolia",
+                    "asset": BASE_SEPOLIA_USDC,
+                    "maxAmountRequired": str(int(round(PREMIUM_PRICE_USD * 1_000_000))),
+                    "payTo": PAYTO,
+                    "resource": "/premium/events",
+                    "description": "Premium events feed (agent-hub-v2)",
+                    "maxTimeoutSeconds": 300,
+                    "extra": {"name": "USD Coin", "version": "2"}}],
+                "discover": {
+                    "live_terms_402": "/premium/events (GET without X-PAYMENT returns per-network accepts)",
+                    "openapi": "/openapi.json", "manifest": "/.well-known/agent-hub.json"},
+                "note": ("TESTNET mode: real EIP-3009 verification."
+                         if PAY_MODE == "testnet" else
+                         "SIMULATED payment verification - no real settlement.")}
+            if CARDANO_ON:
+                _x402["cardano_rail"] = {"network": CARDANO_NET, "asset": CARDANO_ASSET,
+                                         "live_terms": "GET /premium/events without X-PAYMENT"}
+            return self._json(200, _x402)
         if u.path == "/.well-known/agent-hub.json":
             # standard discovery location - agents probe any domain for this
             return self._json(200, {
@@ -2468,6 +2533,14 @@ class Handler(BaseHTTPRequestHandler):
                     "earns_fet": "premium hub services sold to ASI-native agents (paid in FET -> converted to USDC at settlement)",
                     "stakes_fet": "optional verified-hub trust bond in registry (slashed on proven fraud)",
                     "never": "merchant settlement currency"},
+                "verification": {"why": "DL-adoption 2026-10-31: do not take our word for it - check the chain",
+                                  "escrow_proof": {"endpoint": "/escrow/{id}/proof?contract=<address>",
+                                                    "trust_model": "verify-without-trust: escrow re-read from configured indexer(s), dual-source when configured, fail-closed on disagreement"},
+                                  "wallet_less_verify_page": "/verify?contract=<address>&escrow=<id> (no wallet, no account)",
+                                  "payment_discovery": "/.well-known/x402.json",
+                                  "booking_status_field": "GET /bookings/{id} returns escrow_guide (per-state next steps + verification pointers)",
+                                  "attack_us": "/break-it (try-to-break-it sandbox; include the word BREAKIT in a chat report - routes to a human)",
+                                  "nullifier_law": "domain-tagged nullifiers (contract‖action‖phase‖era) - experiments/midnight-escrow/NULLIFIER_DOMAINS.md"},
                 "privacy": {"pseudonymous_ids": True,
                               "booking_details": "visible only with booking secret",
                               "note": "public ledger shows amounts + pseudonyms only"},
@@ -2965,6 +3038,7 @@ class Handler(BaseHTTPRequestHandler):
             if not allowed:
                 return self._json(404, {"error": f"no booking {bid} visible to you (unknown, or you are not the buyer/owner)"})
             return self._json(200, {**b, "view": "buyer" if b["booked_by"] == me else "owner",
+                "escrow_guide": _escrow_guide(b),
                 "note": "pseudonymous projection; private details remain secret-gated (GET /book/{id})"})
         if u.path == "/orders":
             """Merchant-scoped incoming orders (E1/E2 gap fix): bookings made

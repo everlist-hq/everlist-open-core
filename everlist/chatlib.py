@@ -412,10 +412,20 @@ def _booking_status(hub_url: str, sender: str, arg: str) -> str:
         return "Sorry - the EverList hub is unreachable right now. Try again shortly."
     qty = b.get("quantity", 1)
     qty_s = f" x{qty}" if qty > 1 else ""
+    ref = b.get("escrow_ref") or {}
+    chain_line = ""
+    if ref.get("contract") and ref.get("escrow_id") is not None:
+        # DL-3 adoption: humans get the PUBLIC site link (never the internal
+        # hub URL — webchat passes localhost in prod); agents also get the
+        # raw verify-without-trust endpoint path.
+        pub = os.environ.get("EVERLIST_PUBLIC_URL", "https://everlist.network").rstrip("/")
+        chain_line = (f"\n🔗 Verify on-chain (no wallet needed): "
+                      f"{pub}/verify?contract={ref['contract']}&escrow={ref['escrow_id']}"
+                      f"\n   (agent raw check: GET {hub_url}/escrow/{ref['escrow_id']}/proof?contract={ref['contract']})")
     return (f"📋 Booking {b['id']}{note}\n"
             f"Listing: {b.get('listing_id')} | Status: {b.get('escrow', '?')} | "
             f"Amount: {b.get('amount', '?')} USD (fee {b.get('hub_fee', 0)}, payout {b.get('owner_payout', 0)}){qty_s}\n"
-            + _escrow_journey(b.get("escrow", "HELD"), b.get("amount")) + "\n"
+            + _escrow_journey(b.get("escrow", "HELD"), b.get("amount")) + chain_line + "\n"
             "Private details (name etc.) stay secret-gated: 'book {bid}' shows how they're retrieved.".format(bid=b["id"]))
 
 
