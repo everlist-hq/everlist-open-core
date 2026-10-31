@@ -147,6 +147,13 @@ try:
           c == 200 and "/verify" in sx and "/break-it" in sx, sx[:200])
 
     print("== adoption surfaces (features are KNOWN, not dead code) ==")
+    # Principle 20 (owner 2026-10-31): chat speaks human-simple — one plain
+    # link, no endpoints/jargon; agents read the manifest/OpenAPI instead.
+    src_chat = open(os.path.join(HERE, "chatlib.py"), encoding="utf-8").read()
+    seg = src_chat[src_chat.find("chain_line = ("):]
+    check("chat verify hint is human-simple",
+          "/verify?contract=" in seg and "raw check" not in seg
+          and "{hub_url}/escrow/" not in seg, seg[:160])
     c, man = req("GET", HUB + "/.well-known/agent-hub.json")
     v = man.get("verification") or {}
     check("manifest verification block", c == 200 and
