@@ -381,6 +381,55 @@ def _payouts_cmd(hub_url: str, sender: str, arg: str) -> str:
     lines.append('Each release passed its own on-chain wall (chain gate; disputed bookings untouched).')
     return chr(10).join(lines)
 
+def _ticket_cmd(hub_url: str, sender: str, arg: str) -> str:
+    """T5: buyer ticket command, Principle-20 simple. 'ticket bk-x' re-shows
+    the QR link, 'ticket bk-x name Max Doe' sets the door name, 'ticket bk-x
+    private' hides it. Tokens ride the server-side session stash."""
+    arg = (arg or "").strip()
+    if not arg or not arg.startswith("bk-"):
+        return ("Your ticket came with your booking confirmation - the QR link. "
+                "You can say: ticket bk-abc123 (show it again), "
+                "ticket bk-abc123 name Max Doe (the door sees your name), or "
+                "ticket bk-abc123 private (the door sees no name).")
+    parts = arg.split()
+    bid = parts[0]
+    if not re.fullmatch(r"bk-[0-9a-f]{24}", bid):
+        return "That doesn't look like a booking id - they look like bk-abc123... (lowercase hex)."
+    s = _session(sender)
+    tok = ((s or {}).get("ticket_tokens") or {}).get(bid)
+    sub = parts[1].lower() if len(parts) > 1 else ""
+    if sub == "name":
+        name = " ".join(parts[2:]).strip()[:60]
+        if not tok:
+            return ("I don't hold that ticket's key in this chat - open your ticket "
+                    "link from the booking confirmation; the name form is on the page.")
+        st, res = _hub_post(hub_url, "/ticket/%s/name" % tok,
+                            {"display_name": name, "display_choice": "full"})
+        if st == 200:
+            return ("Done - the door will see \"" + str(res.get("guest") or name) + "\". "
+                    "Say 'ticket " + bid + " private' anytime to hide it again.")
+        return "Could not save the name right now - please try again shortly."
+    if sub == "private":
+        if not tok:
+            return ("I don't hold that ticket's key in this chat - open your ticket "
+                    "link from the booking confirmation; the privacy switch is on the page.")
+        st, res = _hub_post(hub_url, "/ticket/%s/name" % tok,
+                            {"display_name": "", "display_choice": "guest"})
+        if st == 200:
+            return ("Done - the door sees only \"" + str(res.get("guest") or "Guest")
+                    + "\", no name. 'ticket " + bid + " name Max Doe' brings the name back.")
+        return "Could not update the ticket right now - please try again shortly."
+    if sub in ("", "show", "link"):
+        if tok:
+            _pub = os.environ.get("EVERLIST_PUBLIC_URL", "https://everlist.network").rstrip("/")
+            _ref = _secret_put(sender, "ticket", _pub + "/t/" + tok)
+            return "Your ticket: [[secret:ticket:" + _ref + "]] - show the QR at the door."
+        return ("That booking has no ticket in this chat (tickets exist for events with "
+                "capacity). Its link lives in your booking confirmation and your Bookings view.")
+    return ("Say 'ticket bk-abc123' to see your ticket, 'ticket bk-abc123 name Max Doe' "
+            "or 'ticket bk-abc123 private' to choose what the door sees.")
+
+
 def _booking_status(hub_url: str, sender: str, arg: str) -> str:
     """H10: poll one booking's status. Logged-in: session token. Anonymous:
     re-mint /access for this chat's own agent address (deterministic principal
@@ -3347,6 +3396,7 @@ _FASTPATH_SKIP = {
     "book", "cancel", "signup", "login", "whoami", "logout", "fee", "help",
     "menu", "commands", "deal", "list", "edit", "delete", "rate", "archive",
     "unarchive", "recover", "verify", "payout", "notify", "deposit",
+    "ticket",
     "bookings", "listings", "escrow", "refund", "weather", "forecast",
     "joke", "jokes", "thanks", "thank", "ok", "okay", "cool", "nice",
     "great", "sorry", "bye", "hello", "hi", "yes", "yeah", "no", "welcome",
@@ -5158,6 +5208,8 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
         return _earnings_cmd(hub_url, sender, "")
     if low.startswith("prove earnings"):
         return _earnings_cmd(hub_url, sender, text.strip()[6:].strip())
+    if low == "ticket" or low.startswith("ticket "):
+        return _ticket_cmd(hub_url, sender, text.strip()[6:].strip())
     if low == "booking" or low.startswith("booking "):
         return _booking_status(hub_url, sender, text.strip()[8:].strip())
     # C4: buyer rates a settled booking (its own command — 'book' would swallow 'rate' otherwise never)
@@ -5332,6 +5384,8 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                 _s = _SESSIONS.get(sender)
                 if _s is not None and res.get("cancel_token") and res.get("id"):
                     _s.setdefault("cancel_tokens", {})[res["id"]] = res["cancel_token"]
+                if _s is not None and res.get("ticket_token_once") and res.get("id"):
+                    _s.setdefault("ticket_tokens", {})[res["id"]] = res["ticket_token_once"]
             except Exception:
                 pass
             _tt = res.get("ticket_token_once")
