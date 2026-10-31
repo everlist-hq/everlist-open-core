@@ -17,6 +17,7 @@ from urllib.parse import urlparse, parse_qs
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import hublib  # I2/G5: versioned, domain-separated HMAC action tokens
 from storage import configure, read_snapshot, write_snapshot, mode, search_ids
+import tickets as ticketing  # T5: QR tickets (door check-in)
 
 # fee is fully hub-declared; no protocol cap. Agents judge via the public ledger.
 
@@ -47,6 +48,11 @@ LISTINGS = [
 BOOKINGS = []   # booking records (pseudonymous)
 SECRETS = {}    # booking id -> secret (private detail access)
 LEDGER = []     # public, append-only transaction ledger
+TICKETS = {}    # QR tickets (T5 2026-10-31): token -> record. The token is a
+                # door bearer-capability (not a name): persisted hub-side so
+                # the buyer can re-show the QR anytime; re-delivered ONLY
+                # through buyer-authenticated surfaces (booking 201,
+                # /book/{id}, bookings projection, chat secret marker).
 EARNINGS = {}   # W3.4: owner principal -> {settledCount: int, totalVolume: float, events: [ts]} — PRIVATE mirror (never in LEDGER: recording owner+volume publicly would leak what the floor proof hides); the on-chain earnings.compact ledger is the real ZK ledger, this is the pilot mirror that feeds it
 IDEMPOTENCY = {}  # I4: Idempotency-Key -> {hash, response} (persisted with G1)
 IDEMPOTENCY_CAP = 50_000  # HARDENING: bound state.json growth (FIFO evict oldest)
@@ -57,6 +63,16 @@ ID_COUNTERS = {}  # per-vertical id counters - persisted, NEVER decremented (ids
 # The account CODE is the credential (shown ONCE, sha256-only); login mints tokens
 # with sub=acct-<id>; open /access can NEVER mint acct- principals (forgery wall).
 ACCOUNTS = {}
+# Self-service page branding (owner call 2026-10-31): partners customize THEIR
+# page themselves. GET /branding is public; PUT requires an acct- principal
+# (same ownership law as manage/confirm). FIXED rails are server-pinned and
+# NEVER customizable: demo/testnet labels, escrow wording, attribution — the
+# money interface stays honest everywhere.
+BRANDING = {}
+BRANDING_MAX = {"brand_name": 80, "tagline": 160, "hero_text": 400, "logo_url": 300,
+                "location": 120}
+BRANDING_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+BRANDING_LANGS = ("de", "en")
 ACCOUNTS_CAP = int(os.environ.get("HUB_ACCOUNTS_CAP", "10000"))  # TOTAL anti-DoS cap (state.json atomically rewritten per mutation) - env-tunable, NOT per-day
 # auth endpoints: global fixed-window limits (pilot-grade anti-bruteforce/DoS;
 # per-IP is unreliable behind relays, documented honestly in SPEC)
@@ -87,6 +103,7 @@ AUTH_LIMITS = {"signup": (30, 3600), "login": (120, 60), "rotate": (10, 3600),
                  "create": (int(os.environ.get("HUB_LIMIT_CREATE", "60")), 60),
                  "book": (int(os.environ.get("HUB_LIMIT_BOOK", "60")), 60),
                  "manage": (int(os.environ.get("HUB_LIMIT_MANAGE", "60")), 60),
+                 "branding": (int(os.environ.get("HUB_LIMIT_BRANDING", "60")), 60),   # self-service branding writes (2026-10-31)
                  "admin": (int(os.environ.get("HUB_LIMIT_ADMIN", "30")), 60),
                  "delete": (int(os.environ.get("HUB_LIMIT_DELETE", "30")), 60),
                  # S2 sweep: dedicated per-source kinds for the M9/M14 account
@@ -477,7 +494,9 @@ def _persist_locked():
             "settlements": (SETTLEMENTS.snapshot() if PAY_MODE == "testnet" else {}),
             "cardano_settlements": CARDANO_SETTLEMENTS.snapshot(),   # C3c
             "cardano_nonces": cardano_x402.snapshot_used_nonces(),   # C3c nonce wall
-            "earnings": EARNINGS}   # W3.4: private earnings mirror (never public LEDGER)
+            "tickets": TICKETS,   # T5: QR tickets (token hashes only)
+            "earnings": EARNINGS,   # W3.4: private earnings mirror (never public LEDGER)
+            "branding": BRANDING}   # self-service page branding (2026-10-31)
     write_snapshot(snap)
 
 
@@ -492,9 +511,11 @@ def _load_state():
         LEDGER[:] = snap.get("ledger", [])
         IDEMPOTENCY.update(snap.get("idempotency", {}))
         ACCOUNTS.update(snap.get("accounts", {}))
+        BRANDING.update(snap.get("branding", {}))   # self-service page branding (2026-10-31)
         CHECKOUT_SESSIONS.update(snap.get("checkout", {}))  # TRACK E: durable checkout sessions
         ID_COUNTERS.update(snap.get("id_counters", {}))
         EARNINGS.update(snap.get("earnings", {}))   # W3.4: private earnings mirror
+        TICKETS.update(snap.get("tickets", {}))   # T5: QR tickets
         # Incident 2026-10-19 (prod 502s): persisted counters can run stale
         # behind real listing ids (even:36 while even-71 existed) — a fresh
         # mint then collides, duplicates ride into RAM, and EVERY persist
@@ -1464,6 +1485,12 @@ def _openapi_spec():
             "/.well-known/agent-hub.json": {"get": op("Discovery manifest", "discovery")},
             "/.well-known/x402.json": {"get": op("x402 payment discovery (DL-1)", "discovery",
                                         note="machine-readable payment terms at the standard agents-probe location; built from the same constants as the live 402 on /premium/events")},
+            "/ticket/{token}": {"get": op("Ticket door status (bearer token)", "bookings",
+                                    note="minimal honest projection: event, date, qty, door name (buyer-chosen), redeemed state; you_are_owner only with the listing owner's token")},
+            "/book/{id}/ticket": {"post": op("Buyer sets ticket door-display name/choice", "bookings", sec=tok,
+                                    note="body display_name + display_choice full|first|guest; auth booking secret or buyer token; name is explicit UGC, never silently persisted identity")},
+            "/ticket/{token}/redeem": {"post": op("One-time door check-in (listing owner)", "bookings", sec=tok,
+                                    note="first scan wins; later scans honestly report first_time=false; owner proof as /confirm")},
             "/escrow/{id}/proof": {"get": op("Verify-without-trust escrow proof (DL-2)", "bookings",
                                         note="?contract=<address> (or HUB_ESCROW_CONTRACT); escrow re-read from indexer(s), dual-source when configured, FAIL-CLOSED on disagreement; no booking details, pseudonymous booking_ref only")},
             "/manifest.json": {"get": op("Legacy manifest alias", "discovery")},
@@ -1492,6 +1519,9 @@ def _openapi_spec():
             "/book/{id}/confirm": {"post": op("Owner confirms booking (escrow RELEASE)", "bookings", sec=tok)},
             "/book/{id}/cancel": {"post": op("Buyer cancels pre-fulfillment (full refund)", "bookings", sec=tok)},
             "/book/{id}/dispute": {"post": op("Either party freezes a HELD booking for arbitration (DISPUTED; no release or refund until resolved)", "bookings", sec=tok)},
+            "/branding": {"get": op("Public page branding (partner-editable fields only)", "discovery"),
+                          "post": op("Update branding (owner acct- token ONLY; fixed rails rejected)", "bookings", sec=tok,
+                                     note="fields: brand_name, tagline, hero_text, logo_url(https), location, accent(#RRGGBB), lang(de|en)")},
             "/organizer/earnings": {"get": op("W3.4: organizer earnings view (private mirror of settled payouts; owner-only)", "bookings", sec=tok,
                                    note="totals are exactly what proveEarningsFloor hides - owner token required")},
             "/organizer/earnings-proof": {"post": op("W3.4: revenue-floor proof - PASS/FAIL only for verifier-chosen {min_volume, min_settlements}; actual totals never disclosed", "bookings", sec=tok,
@@ -2327,6 +2357,17 @@ class Handler(BaseHTTPRequestHandler):
                 booking["escrow_ref"] = er  # M5: chain pointer, verbatim after validation
             # real identity stored ONLY here, retrievable only with the secret
             SECRETS[bid] = {"secret": secret, "private": priv_fields}
+            # T5: QR ticket mint for capacity verticals (door check-in).
+            # The raw token is a BEARER capability: returned ONCE in the 201
+            # and kept memory-only in SECRETS (privacy law - never persisted);
+            # only the hash lives in TICKETS and survives restarts.
+            _ticket_once = None
+            if VERTICAL_SCHEMAS[v].get("tracks_capacity"):
+                _tk = ticketing.mint(bid, listing.get("title"),
+                                     str(listing.get("date") or ""), qty)
+                TICKETS[_tk["token_hash"]] = _tk
+                SECRETS[bid]["ticket_token"] = _tk["token"]  # memory-only recovery path
+                _ticket_once = _tk["token"]
             BOOKINGS.append(booking)
             LEDGER.append({"ts": time.time(), "booking": bid, "amount": price,
                 "hub_fee": fee, "owner_payout": payout, "escrow": escrow_state})
@@ -2378,6 +2419,11 @@ class Handler(BaseHTTPRequestHandler):
                 ttl=max(7 * 24 * 3600,
                         int((_pt or {}).get("refund_window_hours", 0) or 0) * 3600 + 48 * 3600)),
             "flow": _flow}
+        if _ticket_once:
+            resp["ticket_token_once"] = _ticket_once
+            resp["ticket_note"] = ("QR ticket ready: open /t/<ticket_token_once> (or scan the QR "
+                                    "from your booking page). One-time entry. Buyer sets the "
+                                    "door-display name via POST /book/{id}/ticket.")
         if idem_key:
             with LOCK:
                 IDEMPOTENCY[idem_key] = {"hash": hashlib.sha256(canon.encode()).hexdigest(),
@@ -2548,6 +2594,8 @@ class Handler(BaseHTTPRequestHandler):
                                   "listings": "/listings", "book": "POST /book",
                                   "bookings": "/bookings", "orders": "/orders (merchant view, list token)",
                                   "ledger": "/ledger",
+                                  "ticket": {"status": "GET /ticket/<token>", "set_door_name": "POST /book/{id}/ticket",
+                                             "check_in": "POST /ticket/<token>/redeem (listing owner; one-time)"},
                                   "mcp": {"endpoint": "/mcp", "protocol": "MCP (JSON-RPC 2.0 over HTTP POST)",
                                           "tools": ["everlist_contract", "everlist_verticals", "everlist_search",
                                                     "everlist_listing", "everlist_book", "everlist_booking"],
@@ -2920,6 +2968,14 @@ class Handler(BaseHTTPRequestHandler):
                         verts.add(str(v))
             return self._json(200, {"q": sq, "tags": sorted(tags)[:100],
                 "categories": sorted(cats)[:100], "verticals": sorted(verts)[:100]})
+        if u.path == "/branding":
+            # Public read: the partner landing overlays its branding from here
+            # (self-service customization, owner call 2026-10-31). Server-pinned
+            # FIXED rails are NOT editable - they cannot be hidden or altered.
+            with LOCK:
+                return self._json(200, {"branding": dict(BRANDING), "hub": HUB_NAME,
+                    "fixed": ["escrow_badges", "testnet_label", "attribution", "checkout_ux"],
+                    "note": "partner-editable fields only; PUT requires the owning acct- account"})
         if u.path == "/organizer/earnings":
             # W3.4: organizer earnings view (private mirror; owner-only).
             # NEVER public: totals are exactly what proveEarningsFloor hides.
@@ -3037,8 +3093,22 @@ class Handler(BaseHTTPRequestHandler):
                     any(l.get("owner") == me and l["id"] == b.get("listing_id") for l in LISTINGS))
             if not allowed:
                 return self._json(404, {"error": f"no booking {bid} visible to you (unknown, or you are not the buyer/owner)"})
+            _tk = ticketing.lookup_by_bid(TICKETS, bid)
+            _tblock = None
+            if _tk is not None:
+                _tblock = {"available": True,
+                           "title": _tk.get("title"), "when": _tk.get("when"),
+                           "qty": _tk.get("qty"),
+                           "display_choice": _tk.get("display_choice"),
+                           "display_name_set": bool(str(_tk.get("display_name") or "").strip()),
+                           "redeemed": bool(_tk.get("redeemed_ts")),
+                           "redeemed_ts": _tk.get("redeemed_ts"),
+                           "ticket_token": _tk.get("token", ""),
+                           "ticket_url": PUBLIC_URL_DIGEST.rstrip("/") + "/t/" + _tk.get("token", ""),
+                           "note": "QR = link to ticket_url; one-time entry at the door; door name per buyer choice (POST /book/{id}/ticket)"}
             return self._json(200, {**b, "view": "buyer" if b["booked_by"] == me else "owner",
                 "escrow_guide": _escrow_guide(b),
+                "ticket": _tblock,
                 "note": "pseudonymous projection; private details remain secret-gated (GET /book/{id})"})
         if u.path == "/orders":
             """Merchant-scoped incoming orders (E1/E2 gap fix): bookings made
@@ -3094,6 +3164,43 @@ class Handler(BaseHTTPRequestHandler):
                 "hubs": [
                     {"url": "http://localhost:8802", "type": "universal-commerce", "tier": "verified",
                      "content_policy": "/policy"}]})
+        if u.path.startswith("/ticket/"):
+            # T5: ticket door status. The token IS the credential (bearer);
+            # response is intentionally minimal: what the door needs, nothing
+            # about money or identities. Unknown token = honest route-specific
+            # 404. Optional X-Hub-Token (webchat session bridge): when it
+            # proves the listing owner, you_are_owner lets the page offer the
+            # one-tap check-in.
+            _tokq = u.path[len("/ticket/"):].split("/")[0]
+            tk = ticketing.lookup_by_token(TICKETS, _tokq)
+            if tk is None or not _tokq:
+                return self._json(404, {"error": "no ticket"})
+            with LOCK:
+                b = next((x for x in BOOKINGS if x["id"] == tk["bid"]), None)
+                lst = next((x for x in LISTINGS if x["id"] == b.get("listing_id")), None) if b else None
+            _own = False
+            _cred = self.headers.get("X-Hub-Token", "")
+            if _cred and lst is not None:
+                _pp, _pe = hublib.verify_token(BOOKING_KEY, _cred, "list", single_use=False)
+                if _pp:
+                    _pp, _pe = _gen_check(_pp)  # B1: stale tokens never prove identity
+                if _pp and _pp.get("sub") == lst.get("owner"):
+                    _own = True
+            _buy = False
+            if _cred and b is not None:
+                _pb, _pe2 = hublib.verify_token(BOOKING_KEY, _cred, "book", single_use=False)
+                if _pb and _pb.get("sub") == b.get("booked_by"):
+                    _buy = True
+            return self._json(200, {"ok": True,
+                "title": tk.get("title"), "when": tk.get("when"),
+                "location": (lst or {}).get("location", ""),
+                "qty": tk.get("qty"),
+                "guest": ticketing.display_name_of(tk),
+                "booking": tk.get("bid"),
+                "redeemed": bool(tk.get("redeemed_ts")),
+                "redeemed_ts": tk.get("redeemed_ts"),
+                "you_are_owner": _own,
+                "you_are_buyer": _buy})
         if u.path.startswith("/book/"):
             parts = [p for p in u.path.split("/") if p]
             if len(parts) == 2:  # GET /book/{id} - private details
@@ -3109,7 +3216,11 @@ class Handler(BaseHTTPRequestHandler):
                 with LOCK:
                     b = next((x for x in BOOKINGS if x["id"] == bid), None)
                 if not b: return self._json(404, {"error": "no booking"})
-                return self._json(200, {"id": bid, "private_details": {**b, **rec["private"]}})
+                _tkr = ticketing.lookup_by_bid(TICKETS, bid)
+                _extra = {"ticket_token": rec.get("ticket_token")} if rec.get("ticket_token") else {}
+                if _tkr is not None and _extra:
+                    _extra["ticket_url"] = PUBLIC_URL_DIGEST.rstrip("/") + "/t/" + rec["ticket_token"]
+                return self._json(200, {"id": bid, "private_details": {**b, **rec["private"]}, **_extra})
         if u.path == "/admin/review-queue":
             # S6-L4: manual review queue. Same admin gate as /admin/tokens.
             cred = self.headers.get("X-Hub-Token", "")
@@ -3382,6 +3493,65 @@ class Handler(BaseHTTPRequestHandler):
                 "midnight_credential": ACCOUNTS[aid].get("midnight_credential"),
                 "tokens": toks, "ttl": 24*3600,
                 "note": "tokens act AS the account (sub=acct-<id>) for 24h; edit/delete need no per-listing codes"})
+        if path == "/branding":
+            # Self-service branding write (owner call 2026-10-31). OWNERSHIP LAW:
+            # acct- principal ONLY (same law as manage/confirm) - open /access
+            # tokens can never rebrand a hub. Validation walls: accent #RRGGBB,
+            # length caps, control chars refused (RTF2), lang whitelist.
+            # FIXED rails (escrow/testnet labels, attribution, checkout UX) are
+            # server-pinned and rejected if present.
+            cred = self.headers.get("X-Hub-Token", "")
+            p, err = None, "missing X-Hub-Token"
+            if cred:
+                p, err = hublib.verify_token(BOOKING_KEY, cred, "list", single_use=False)
+                if p:
+                    p, err = _gen_check(p)
+            if not p:
+                return self._json(401, {"error": err or "missing X-Hub-Token",
+                    "hint": "login via POST /accounts/login and send your list token"})
+            if not str(p.get("sub", "")).startswith("acct-"):
+                return self._json(403, {"error": "branding is owner-only (acct- account required)",
+                    "hint": "open /access tokens cannot rebrand a hub; use the organizer account"})
+            with LOCK:
+                if not _auth_allow("branding", _source_of(self)):
+                    return self._json(429, {"error": "branding rate limit reached for your source, retry later"})
+            fields = ("brand_name", "tagline", "hero_text", "logo_url", "location", "accent", "lang")
+            clean = {}
+            for k in fields:
+                if k not in data:
+                    continue
+                v = data[k]
+                if k == "accent":
+                    if not isinstance(v, str) or not BRANDING_COLOR_RE.match(v):
+                        return self._json(400, {"error": "accent must be #RRGGBB"})
+                    clean[k] = v.lower()
+                elif k == "lang":
+                    if v not in BRANDING_LANGS:
+                        return self._json(400, {"error": "lang must be one of " + ", ".join(BRANDING_LANGS)})
+                    clean[k] = v
+                elif k == "logo_url":
+                    if not isinstance(v, str) or not (v.startswith("https://") or v == ""):
+                        return self._json(400, {"error": "logo_url must be an https:// URL (or empty)"})
+                    if len(v) > BRANDING_MAX[k]:
+                        return self._json(400, {"error": "logo_url too long (max %d)" % BRANDING_MAX[k]})
+                    clean[k] = v
+                else:
+                    if not isinstance(v, str):
+                        return self._json(400, {"error": "%s must be a string" % k})
+                    if _BAD_CHARS_RE.search(v) or "\n" in v or "\r" in v:
+                        return self._json(400, {"error": "%s must not contain control characters" % k})
+                    if len(v) > BRANDING_MAX[k]:
+                        return self._json(400, {"error": "%s too long (max %d)" % (k, BRANDING_MAX[k])})
+                    clean[k] = v.strip()
+            unknown = set(data.keys()) - set(fields)
+            if unknown:
+                return self._json(400, {"error": "unknown/fixed fields rejected: " + ", ".join(sorted(unknown)),
+                    "note": "escrow badges, testnet labels, attribution and checkout UX are server-pinned"})
+            with LOCK:
+                BRANDING.clear()
+                BRANDING.update(clean)
+                _persist_locked()
+            return self._json(200, {"ok": True, "branding": dict(BRANDING)})
         if path == "/accounts/payout":
             # M9: organizer payout key - a COIN PUBLIC key (64-hex, 32 bytes),
             # NEVER a secret. Escrow releases pay the key fixed at creation;
@@ -4195,6 +4365,78 @@ class Handler(BaseHTTPRequestHandler):
                 listing.update(changes)
                 _persist_locked()
                 return self._json(200, {"ok": True, "edited": lid, "fields": sorted(changes)})
+        if path.startswith("/book/") and path.endswith("/ticket"):
+            # T5: buyer sets the DOOR-DISPLAY name/choice. Auth: booking
+            # secret header or a book token of the buyer principal. The name
+            # is explicit user-generated content (privacy law: real attendee
+            # names are never persisted silently).
+            bid = path.split("/")[2]
+            cred = self.headers.get("X-Hub-Token", "")
+            with LOCK:
+                rec = SECRETS.get(bid)
+                b = next((x for x in BOOKINGS if x["id"] == bid), None)
+                tk = ticketing.lookup_by_bid(TICKETS, bid)
+            if tk is None or b is None:
+                return self._json(404, {"error": "no ticket for this booking"})
+            ok = bool(rec) and bool(cred) and hmac.compare_digest(cred, rec["secret"])
+            if not ok:
+                pb, _e = hublib.verify_token(BOOKING_KEY, cred, "book", single_use=False)
+                ok = bool(pb) and pb.get("sub") == b.get("booked_by")
+            if not ok:
+                # capability law: whoever holds the ticket token IS the
+                # attendee - they may set their own door-display name
+                _tkh = ticketing.lookup_by_token(TICKETS, cred)
+                ok = _tkh is not None and _tkh.get("bid") == bid
+            if not ok:
+                return self._json(403, {"error": "invalid credential (booking secret, buyer token, or ticket token required)"})
+            ticketing.set_name(tk, str(data.get("display_name", "")),
+                               str(data.get("display_choice", "full")))
+            with LOCK:
+                _persist_locked()
+            return self._json(200, {"ok": True, "bid": bid,
+                "guest": ticketing.display_name_of(tk),
+                "display_choice": tk.get("display_choice")})
+        if path.startswith("/ticket/") and path.endswith("/redeem"):
+            # T5: ONE-TIME door check-in. Owner proof only (B3c model, same
+            # as /confirm): admin confirm token, or a list token whose
+            # acct- principal owns the booking's listing, or the listing
+            # manage_code. The owner token rides the BODY (`owner_token`)
+            # for no-JS form posts (headers die on plain form submits);
+            # X-Hub-Token stays the documented API path. First scan wins;
+            # later scans honestly report first_time=false with the
+            # ORIGINAL timestamp.
+            _tok = path[len("/ticket/"):-len("/redeem")]
+            cred = self.headers.get("X-Hub-Token", "") or str(data.get("owner_token", "")).strip()
+            manage_code = str(data.get("manage_code", "")).strip()
+            tk = ticketing.lookup_by_token(TICKETS, _tok)
+            if tk is None:
+                return self._json(404, {"error": "no ticket"})
+            with LOCK:
+                _cb = next((x for x in BOOKINGS if x["id"] == tk["bid"]), None)
+                _cl = next((x for x in LISTINGS if x["id"] == _cb.get("listing_id")), None) if _cb else None
+            _owner_ok = False
+            _by = ""
+            if _cl is not None:
+                if cred:
+                    pp, _pe = hublib.verify_token(ADMIN_KEY, cred, "confirm", subject=tk["bid"])
+                    if not pp:
+                        pp, _pe = hublib.verify_token(BOOKING_KEY, cred, "list", single_use=False)
+                        if pp:
+                            pp, _pe = _gen_check(pp)  # B1: stale tokens never prove identity
+                    if pp and str(pp.get("sub", "")).startswith("acct-") and pp["sub"] == _cl.get("owner"):
+                        _owner_ok = True
+                        _by = pp["sub"]
+                if not _owner_ok and manage_code and hmac.compare_digest(str(_cl.get("manage_code", "")), manage_code):
+                    _owner_ok = True
+                    _by = "manage_code:" + _cl.get("owner", "")
+            if not _owner_ok:
+                return self._json(403, {"error": "only the listing owner can check in tickets"})
+            with LOCK:
+                r = ticketing.redeem(tk, _by)
+                _persist_locked()
+            return self._json(200, {"ok": True, "bid": tk["bid"],
+                "guest": ticketing.display_name_of(tk), "qty": tk.get("qty"),
+                "first_time": r["first_time"], "redeemed_ts": r["ts"]})
         if path == "/book":
             # E2/E3 (TRACK E): engine extracted to _book_core (verbatim);
             # this route is now a thin HTTP wrapper over the shared core.
