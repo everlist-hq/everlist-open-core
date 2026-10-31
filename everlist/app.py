@@ -57,6 +57,16 @@ ID_COUNTERS = {}  # per-vertical id counters - persisted, NEVER decremented (ids
 # The account CODE is the credential (shown ONCE, sha256-only); login mints tokens
 # with sub=acct-<id>; open /access can NEVER mint acct- principals (forgery wall).
 ACCOUNTS = {}
+# Self-service page branding (owner call 2026-10-31): partners customize THEIR
+# page themselves. GET /branding is public; PUT requires an acct- principal
+# (same ownership law as manage/confirm). FIXED rails are server-pinned and
+# NEVER customizable: demo/testnet labels, escrow wording, attribution — the
+# money interface stays honest everywhere.
+BRANDING = {}
+BRANDING_MAX = {"brand_name": 80, "tagline": 160, "hero_text": 400, "logo_url": 300,
+                "location": 120}
+BRANDING_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+BRANDING_LANGS = ("de", "en")
 ACCOUNTS_CAP = int(os.environ.get("HUB_ACCOUNTS_CAP", "10000"))  # TOTAL anti-DoS cap (state.json atomically rewritten per mutation) - env-tunable, NOT per-day
 # auth endpoints: global fixed-window limits (pilot-grade anti-bruteforce/DoS;
 # per-IP is unreliable behind relays, documented honestly in SPEC)
@@ -87,6 +97,7 @@ AUTH_LIMITS = {"signup": (30, 3600), "login": (120, 60), "rotate": (10, 3600),
                  "create": (int(os.environ.get("HUB_LIMIT_CREATE", "60")), 60),
                  "book": (int(os.environ.get("HUB_LIMIT_BOOK", "60")), 60),
                  "manage": (int(os.environ.get("HUB_LIMIT_MANAGE", "60")), 60),
+                 "branding": (int(os.environ.get("HUB_LIMIT_BRANDING", "60")), 60),   # self-service branding writes (2026-10-31)
                  "admin": (int(os.environ.get("HUB_LIMIT_ADMIN", "30")), 60),
                  "delete": (int(os.environ.get("HUB_LIMIT_DELETE", "30")), 60),
                  # S2 sweep: dedicated per-source kinds for the M9/M14 account
@@ -1492,6 +1503,9 @@ def _openapi_spec():
             "/book/{id}/confirm": {"post": op("Owner confirms booking (escrow RELEASE)", "bookings", sec=tok)},
             "/book/{id}/cancel": {"post": op("Buyer cancels pre-fulfillment (full refund)", "bookings", sec=tok)},
             "/book/{id}/dispute": {"post": op("Either party freezes a HELD booking for arbitration (DISPUTED; no release or refund until resolved)", "bookings", sec=tok)},
+            "/branding": {"get": op("Public page branding (partner-editable fields only)", "discovery"),
+                          "post": op("Update branding (owner acct- token ONLY; fixed rails rejected)", "bookings", sec=tok,
+                                     note="fields: brand_name, tagline, hero_text, logo_url(https), location, accent(#RRGGBB), lang(de|en)")},
             "/organizer/earnings": {"get": op("W3.4: organizer earnings view (private mirror of settled payouts; owner-only)", "bookings", sec=tok,
                                    note="totals are exactly what proveEarningsFloor hides - owner token required")},
             "/organizer/earnings-proof": {"post": op("W3.4: revenue-floor proof - PASS/FAIL only for verifier-chosen {min_volume, min_settlements}; actual totals never disclosed", "bookings", sec=tok,
@@ -2920,6 +2934,14 @@ class Handler(BaseHTTPRequestHandler):
                         verts.add(str(v))
             return self._json(200, {"q": sq, "tags": sorted(tags)[:100],
                 "categories": sorted(cats)[:100], "verticals": sorted(verts)[:100]})
+        if u.path == "/branding":
+            # Public read: the partner landing overlays its branding from here
+            # (self-service customization, owner call 2026-10-31). Server-pinned
+            # FIXED rails are NOT editable - they cannot be hidden or altered.
+            with LOCK:
+                return self._json(200, {"branding": dict(BRANDING), "hub": HUB_NAME,
+                    "fixed": ["escrow_badges", "testnet_label", "attribution", "checkout_ux"],
+                    "note": "partner-editable fields only; PUT requires the owning acct- account"})
         if u.path == "/organizer/earnings":
             # W3.4: organizer earnings view (private mirror; owner-only).
             # NEVER public: totals are exactly what proveEarningsFloor hides.
@@ -3382,6 +3404,65 @@ class Handler(BaseHTTPRequestHandler):
                 "midnight_credential": ACCOUNTS[aid].get("midnight_credential"),
                 "tokens": toks, "ttl": 24*3600,
                 "note": "tokens act AS the account (sub=acct-<id>) for 24h; edit/delete need no per-listing codes"})
+        if path == "/branding":
+            # Self-service branding write (owner call 2026-10-31). OWNERSHIP LAW:
+            # acct- principal ONLY (same law as manage/confirm) - open /access
+            # tokens can never rebrand a hub. Validation walls: accent #RRGGBB,
+            # length caps, control chars refused (RTF2), lang whitelist.
+            # FIXED rails (escrow/testnet labels, attribution, checkout UX) are
+            # server-pinned and rejected if present.
+            cred = self.headers.get("X-Hub-Token", "")
+            p, err = None, "missing X-Hub-Token"
+            if cred:
+                p, err = hublib.verify_token(BOOKING_KEY, cred, "list", single_use=False)
+                if p:
+                    p, err = _gen_check(p)
+            if not p:
+                return self._json(401, {"error": err or "missing X-Hub-Token",
+                    "hint": "login via POST /accounts/login and send your list token"})
+            if not str(p.get("sub", "")).startswith("acct-"):
+                return self._json(403, {"error": "branding is owner-only (acct- account required)",
+                    "hint": "open /access tokens cannot rebrand a hub; use the organizer account"})
+            with LOCK:
+                if not _auth_allow("branding", _source_of(self)):
+                    return self._json(429, {"error": "branding rate limit reached for your source, retry later"})
+            fields = ("brand_name", "tagline", "hero_text", "logo_url", "location", "accent", "lang")
+            clean = {}
+            for k in fields:
+                if k not in data:
+                    continue
+                v = data[k]
+                if k == "accent":
+                    if not isinstance(v, str) or not BRANDING_COLOR_RE.match(v):
+                        return self._json(400, {"error": "accent must be #RRGGBB"})
+                    clean[k] = v.lower()
+                elif k == "lang":
+                    if v not in BRANDING_LANGS:
+                        return self._json(400, {"error": "lang must be one of " + ", ".join(BRANDING_LANGS)})
+                    clean[k] = v
+                elif k == "logo_url":
+                    if not isinstance(v, str) or not (v.startswith("https://") or v == ""):
+                        return self._json(400, {"error": "logo_url must be an https:// URL (or empty)"})
+                    if len(v) > BRANDING_MAX[k]:
+                        return self._json(400, {"error": "logo_url too long (max %d)" % BRANDING_MAX[k]})
+                    clean[k] = v
+                else:
+                    if not isinstance(v, str):
+                        return self._json(400, {"error": "%s must be a string" % k})
+                    if _BAD_CHARS_RE.search(v) or "\n" in v or "\r" in v:
+                        return self._json(400, {"error": "%s must not contain control characters" % k})
+                    if len(v) > BRANDING_MAX[k]:
+                        return self._json(400, {"error": "%s too long (max %d)" % (k, BRANDING_MAX[k])})
+                    clean[k] = v.strip()
+            unknown = set(data.keys()) - set(fields)
+            if unknown:
+                return self._json(400, {"error": "unknown/fixed fields rejected: " + ", ".join(sorted(unknown)),
+                    "note": "escrow badges, testnet labels, attribution and checkout UX are server-pinned"})
+            with LOCK:
+                BRANDING.clear()
+                BRANDING.update(clean)
+                _persist_locked()
+            return self._json(200, {"ok": True, "branding": dict(BRANDING)})
         if path == "/accounts/payout":
             # M9: organizer payout key - a COIN PUBLIC key (64-hex, 32 bytes),
             # NEVER a secret. Escrow releases pay the key fixed at creation;
