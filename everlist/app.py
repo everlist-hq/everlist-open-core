@@ -73,6 +73,7 @@ BRANDING_MAX = {"brand_name": 80, "tagline": 160, "hero_text": 400, "logo_url": 
 BRANDING_THEMES = ("dark", "light")
 BRANDING_IMG_FIELDS = ("logo_image", "hero_image")            # set ONLY via /branding/image
 BRANDING_IMG_CAPS = {"logo": ("logo_image", 90000), "hero": ("hero_image", 420000)}  # decoded bytes
+LISTING_IMG_CAP = 380000  # decoded bytes (listing photos; base64 stays under the G4 1.2M cap)
 BRANDING_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 BRANDING_LANGS = ("de", "en")
 ACCOUNTS_CAP = int(os.environ.get("HUB_ACCOUNTS_CAP", "10000"))  # TOTAL anti-DoS cap (state.json atomically rewritten per mutation) - env-tunable, NOT per-day
@@ -1035,7 +1036,8 @@ def normalize_tags(raw):
     return tags
 RESERVED_LISTING_FIELDS = {"id", "registered", "available", "owner", "manage_code_hash", "claim_code_hash",
     "rating_sum", "rating_count", "rating_avg", "free_rating_sum", "free_rating_count",
-    "rating_wsum", "rating_wtot", "review_flags", "rating_times"}  # owner = authenticated principal; manage_code_hash/claim_code_hash = server-only (anti-spoof, P2); rating aggregates = S6 server-owned (clients can never seed fake reputation)
+    "rating_wsum", "rating_wtot", "review_flags", "rating_times",
+    "image"}  # owner = authenticated principal; manage_code_hash/claim_code_hash = server-only (anti-spoof, P2); rating aggregates = S6 server-owned (clients can never seed fake reputation); image is upload-only (B2: set via POST /listings/{id}/image, never client-settable)
 
 # C12: payment-terms policy (SPEC §19, owner-pinned 2026-09-12). Terms live on
 # the LISTING; booking = acceptance (paid bookings echo custom terms via
@@ -1226,6 +1228,7 @@ _SCHEMAS = {
             "owner": {"type": "string", "description": "owner-anonymized: pseudonymous principal (agent name / acct- ref), never personal data"},
             "category": {"type": "string"},
             "tags": {"type": "array", "items": {"type": "string"}},
+            "image": {"type": "string", "description": "listing photo as data URL - set ONLY via POST /listings/{id}/image (B2 upload-only law)"},
             "description": {"type": "string"},
             "url": {"type": "string"},
             "merchant": {"type": "string"},
@@ -1537,6 +1540,8 @@ def _openapi_spec():
             "/listings/{id}": {"get": op("One listing, full rich record (private deals need ?claim= or X-Claim-Code)", "listings",
                                         note="404 unknown / 410 archived")},
             "/listings/{id}/manage": {"post": op("Edit/archive/unarchive/make_private/make_public/delete a listing", "listings", sec=tok)},
+            "/listings/{id}/image": {"post": op("Set or clear the listing photo (owning acct- token, or list token + manage_code; clear:true removes)", "listings", sec=tok,
+                                          note="body {data_url: data:image/png|jpeg|webp;base64,...} or {clear:true}; SVG refused; decoded cap 380KB; stored same-origin as a data URL (CSP img-src data:)")},
             "/search": {"get": op("Search listings (q, from/to date, min/max_price, tags=, sort, ...)", "listings",
                                   note="from/to = YYYY-MM-DD on the listing date (dateless listings excluded); "
                                        "tags=comma,any-of; sort=date|price|newest (newest = creation order reversed)")},
@@ -3276,9 +3281,9 @@ class Handler(BaseHTTPRequestHandler):
         self._t0 = time.time()  # H12: latency start
         path = urlparse(self.path).path
         # G4: global request-body cap (64KB) - reject before parsing.
-        # Narrow exemption: owner-only /branding/image uploads (magic-byte
-        # sniffed, per-kind DECODED caps 90KB/420KB inside the endpoint).
-        _g4 = 1200000 if path == "/branding/image" else 65536
+        # Narrow exemption: owner image uploads - /branding/image and
+        # /listings/{id}/image (magic-byte sniffed, DECODED caps inside).
+        _g4 = 1200000 if (path == "/branding/image" or (path.startswith("/listings/") and path.endswith("/image"))) else 65536
         if int(self.headers.get("Content-Length", 0)) > _g4:
             return self._json(413, {"error": "request body too large (max %d bytes)" % _g4})
         try:
@@ -4274,6 +4279,63 @@ class Handler(BaseHTTPRequestHandler):
                 _resp["claim_note"] = "shown ONCE — the only key to this private deal; without it the deal is invisible"
                 _resp["share"] = f"send id {lid} + this claim code; any EverList agent views/books with them"
             return self._json(201, _resp)
+        if path.startswith("/listings/") and path.endswith("/image"):
+            # B2 listing photo: ownership law = /manage (acct- owner OR
+            # manage_code), image hygiene = /branding/image (magic-byte sniff,
+            # SVG refused, decoded cap). Stored as a data URL on the listing;
+            # the public serializer keeps it, so every consumer face renders
+            # it same-origin (CSP img-src data:). Upload-only: create/edit
+            # can never set it (reserved field).
+            lid = path[len("/listings/"):-len("/image")]
+            cred = self.headers.get("X-Hub-Token", "")
+            p, err = hublib.verify_token(BOOKING_KEY, cred, "list", single_use=False) if cred \
+                else (None, "missing X-Hub-Token")
+            if p:
+                p, err = _gen_check(p)  # B1: stale tokens never prove identity
+            if not p:
+                return self._json(401, {"error": err or "missing X-Hub-Token",
+                    "hint": "login via POST /accounts/login as the owning account, or send a list token + manage_code"})
+            principal = p["sub"]
+            clearing = data.get("clear") is True
+            du = str(data.get("data_url", ""))
+            m = None
+            if not clearing:
+                m = re.match(r"^data:image/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)$", du)
+                if not m:
+                    return self._json(400, {"error": "data_url must be data:image/png|jpeg|webp;base64,... (SVG refused); clear with {clear:true}"})
+            with LOCK:
+                if not _auth_allow("manage", _source_of(self)):
+                    return self._json(429, {"error": "image rate limit reached for your source, retry later"})
+                listing = next((l for l in LISTINGS if l["id"] == lid), None)
+                if not listing:
+                    return self._json(404, {"error": f"no listing {lid}"})
+                is_owner = principal.startswith("acct-") and principal == listing.get("owner")
+                if not is_owner:
+                    code = str(data.get("manage_code", "")).strip()
+                    if not code or not hmac.compare_digest(hashlib.sha256(code.encode()).hexdigest(),
+                                                           str(listing.get("manage_code_hash", ""))):
+                        return self._json(403, {"error": "invalid manage_code for this listing (or login as the owning account)"})
+                if clearing:
+                    listing.pop("image", None)
+                    _persist_locked()
+                    return self._json(200, {"ok": True, "id": lid, "cleared": True})
+            blob = base64.b64decode(m.group(2), validate=True)
+            if len(blob) > LISTING_IMG_CAP:
+                return self._json(400, {"error": "listing image too large: %d bytes (max %d)" % (len(blob), LISTING_IMG_CAP)})
+            PNGSIG = bytes([0x89]) + b"PNG" + bytes([0x0d, 0x0a, 0x1a, 0x0a])
+            JPEGSIG = bytes([0xff, 0xd8, 0xff])
+            if blob[:8] == PNGSIG:
+                mime = "image/png"
+            elif blob[:3] == JPEGSIG:
+                mime = "image/jpeg"
+            elif blob[:4] == b"RIFF" and blob[8:12] == b"WEBP":
+                mime = "image/webp"
+            else:
+                return self._json(400, {"error": "file content is not PNG/JPEG/WebP (magic-byte sniff failed)"})
+            with LOCK:
+                listing["image"] = "data:" + mime + ";base64," + m.group(2)
+                _persist_locked()
+            return self._json(200, {"ok": True, "id": lid, "bytes": len(blob), "mime": mime})
         if path.startswith("/listings/") and path.endswith("/manage"):
             # B3c-ownership: manage code OR logged-in account ownership proves control
             lid = path[len("/listings/"):-len("/manage")]
@@ -5197,7 +5259,7 @@ class Handler(BaseHTTPRequestHandler):
         # destroyed (bookers keep escrow resolution; owner can no longer be
         # relinked because the account is gone).
         path = urlparse(self.path).path
-        _g4 = 1200000 if path == "/branding/image" else 65536  # G4; exemption: owner image uploads
+        _g4 = 1200000 if (path == "/branding/image" or (path.startswith("/listings/") and path.endswith("/image"))) else 65536  # G4; exemption: owner image uploads
         if int(self.headers.get("Content-Length", 0)) > _g4:
             return self._json(413, {"error": "request body too large (max %d bytes)" % _g4})
         try:
