@@ -842,6 +842,7 @@ def _notify_booking(event, booking, listing, *, extra=''):
                     door_name=_tking.display_name_of(_tkr),
                     ticket_url=_tking.ticket_url(_tkr['token'], emailkit.PUBLIC_URL),
                     amount=amt, escrow=esc, qr=_qr,
+                    listing_id=str((listing or {}).get('id') or ''),
                     unsub_url=_unsub(principal), loc=_loc)
             else:
                 tmpl = emailkit.booking_email(ev, title=title, booking_id=bid,
@@ -3256,6 +3257,8 @@ class Handler(BaseHTTPRequestHandler):
                     if p and _cl is not None and str(p.get("sub", "")).startswith("acct-") and p["sub"] == _cl.get("owner"):
                         owner = True
             proj = {"bid": bid, "title": tk.get("title"), "when": tk.get("when"),
+                    "location": str((_cl or {}).get("location") or ""),
+                    "listing_id": str((_b or {}).get("listing_id") or ""),
                     "qty": tk.get("qty"), "guest": ticketing.display_name_of(tk),
                     "display_choice": tk.get("display_choice"),
                     "redeemed": bool(tk.get("redeemed_ts")),

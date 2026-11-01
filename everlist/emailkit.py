@@ -61,6 +61,7 @@ _DE = {
     "Quantity": "Anzahl",
     "Door name": "Türname",
     "Open ticket page": "Ticket-Seite öffnen",
+    "Add to calendar": "Zum Kalender hinzufügen",
     'Show this QR at the door - straight from this email. No app, no website visit. First scan wins; copies stop working once the original is used.':
         "Zeigen Sie diesen QR am Eingang – direkt aus dieser E-Mail. Keine App, kein Website-Besuch. Der erste Scan gewinnt; Kopien funktionieren nach der ersten Verwendung nicht mehr.",
     'The door sees this name: <b>%s</b>. Change it anytime in the EverList chat: <b>ticket %s name Your Name</b> or <b>ticket %s private</b>.':
@@ -134,9 +135,11 @@ def _L(s, loc="en"):
 
 
 def _fmt_amt(amount, loc="en"):
+    """Money per pages.py convention: DE '24,00 €' after, EN '€ 24.00' before."""
     if isinstance(amount, (int, float)):
-        s = '%.2f' % amount
-        return s.replace('.', ',') if loc == 'de' else s
+        if loc == 'de':
+            return ("%.2f" % amount).replace(".", ",") + " €"
+        return "€ " + ("%.2f" % amount)
     return str(amount)
 
 
@@ -363,9 +366,10 @@ def code_email(kind, code, minutes=15, loc="en"):
 
 def ticket_email(*, title, booking_id, when, location, qty, door_name,
                  ticket_url, amount=0, escrow="", qr=None,
-                 unsub_url=None, loc="en"):
+                 unsub_url=None, loc="en", listing_id=""):
     """Returns dict(subject, text, html, unsub_url[, related]). qr: PNG bytes
-    or None (segno absent -> link-only mail; boot-safety law)."""
+    or None (segno absent -> link-only mail; boot-safety law).
+    listing_id enables the Add-to-calendar (.ics) link."""
     amt = _fmt_amt(amount, loc) if amount else ""
     rows = [(_L("Listing", loc), title), (_L("Date", loc), when or "-"),
             (_L("Location", loc), location or "-"),
@@ -376,8 +380,23 @@ def ticket_email(*, title, booking_id, when, location, qty, door_name,
         rows.append((_L("Amount", loc), amt + ((" (" + escrow + ")") if escrow else "")))
     qr_block = ""
     if qr is not None:
-        qr_block = ('<img src="cid:ticketqr@everlist.network" width="220" height="220" alt="QR" '
-                     'style="border:6px solid %s;border-radius:10px;">' % _C["card"])
+        # hero treatment: QR centered on a white card, booking-id caption
+        qr_block = (
+            '<table role="presentation" cellpadding="0" cellspacing="0" '
+            'style="margin:0 auto 18px;"><tr><td '
+            'style="background:%s;border:1px solid %s;border-radius:14px;'
+            'padding:16px 18px;text-align:center;">'
+            % (_C["card"], _C["line"])
+            + '<img src="cid:ticketqr@everlist.network" width="210" height="210" '
+              'alt="QR" style="display:block;border-radius:6px;">'
+            + '<div style="margin-top:8px;color:%s;font-size:11px;'
+               'letter-spacing:.8px;font-weight:700;">' % _C["mut"]
+            + _esc(booking_id) + ' · EverList</div></td></tr></table>')
+    cal_line = ""
+    if listing_id:
+        cal_line = _p('<a href="' + _esc(PUBLIC_URL + "/l/" + listing_id + ".ics")
+                      + '" style="color:' + _C["cyan"] + ';">'
+                      + _L("Add to calendar", loc) + '</a>')
     heading = _L("Your ticket is ready", loc)
     intro = (_p(_L('Show this QR at the door - straight from this email. No app, '
                    'no website visit. First scan wins; copies stop working once '
@@ -388,7 +407,8 @@ def ticket_email(*, title, booking_id, when, location, qty, door_name,
                      'EverList chat: <b>ticket %s name Your Name</b> or '
                      '<b>ticket %s private</b>.', loc)
                   % (_esc(door_name), _esc(booking_id), _esc(booking_id)))
-             + _btn(_L("Open ticket page", loc), _esc(ticket_url)))
+             + _btn(_L("Open ticket page", loc), _esc(ticket_url))
+             + cal_line)
     text = (_L('Your ticket: %s\nBooking %s\nWhen: %s\nWhere: %s\nPeople: %s\n'
                'Door name: %s\n\nThe QR is attached to this email - show it at the '
                'door (first scan wins, copies stop working afterwards).\n'
@@ -396,6 +416,8 @@ def ticket_email(*, title, booking_id, when, location, qty, door_name,
                'ticket %s name Your Name - or ticket %s private.', loc)
             % (title, booking_id, when or "-", location or "-", qty,
                door_name, ticket_url, booking_id, booking_id))
+    if listing_id:
+        text += "\nCalendar: " + PUBLIC_URL + "/l/" + listing_id + ".ics"
     out = {"subject": _L("Your ticket: ", loc) + title,
            "text": _with_unsub(text, loc),
            "html": _shell(heading, intro, _footer_lines(unsub_url, loc=loc)),

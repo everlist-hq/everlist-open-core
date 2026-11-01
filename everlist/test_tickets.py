@@ -224,6 +224,64 @@ check("chat dispatcher routes the ticket command",
 check("chat stash keeps ticket tokens server-side",
       'ticket_tokens' in chat_src and 'ticket_token_once' in chat_src)
 
+# --- excellence pins (2026-11-01: door page + ticket mail quality laws) -----
+import pages_dl as _pdl
+import emailkit as _ek
+
+_tk_info = {"bid": "bk-EX1", "title": "Excellence Pin Event", "when": "Di, 03.11.2026 · 09:30",
+            "location": "Raum 2", "listing_id": "l-ex1", "qty": 2,
+            "guest": "Jean-Luc", "display_choice": "full", "redeemed": False,
+            "you_are_owner": True, "you_are_buyer": True}
+_tk_page = _pdl.ticket_html(_tk_info, "PinTokenPinTokenPinTok1", "https://everlist.network",
+                            "de", owner=True, buyer=True).decode()
+check("door page: status chip present",
+      'tkchip tkok' in _tk_page)
+check("door page: labeled detail rows (DE Datum/Ort)",
+      'tkrows' in _tk_page and "Datum" in _tk_page and "Ort" in _tk_page)
+check("door page: location reaches the page (projection law)",
+      "Raum 2" in _tk_page)
+check("door page: radio pills replace select (rich-control law)",
+      'type="radio" name="display_choice"' in _tk_page and "<select" not in _tk_page)
+check("door page: two-step check-in confirm gate",
+      'tkconfirm' in _tk_page and "Ja, jetzt einchecken" in _tk_page)
+check("door page: branded buttons",
+      'tkbtn' in _tk_page)
+_tk_nav = _tk_page.split('<nav', 1)[-1].split('</nav>', 1)[0]
+check("door page: capability focus — no dash nav_extra",
+      "/?view=dash" not in _tk_nav)
+check("door page: stylesheet cache-bust current",
+      "style.css?v=20261101a" in _tk_page)
+_tk_used = _pdl.ticket_html(dict(_tk_info, redeemed=True, redeemed_ts="2026-11-01 09:41 UTC",
+                                 you_are_owner=False, you_are_buyer=False),
+                            "PinTokenPinTokenPinTok1", "https://everlist.network",
+                            "en", owner=False, buyer=False).decode()
+check("door page: used state chip, no mutating controls",
+      'tkchip tkused' in _tk_used and 'tkconfirm' not in _tk_used
+      and 'tkpills' not in _tk_used)
+
+_em_de = _ek.ticket_email(title="Pin Event", booking_id="bk-EX1",
+                          when="Di, 03.11.2026 · 09:30", location="Raum 2", qty=2,
+                          door_name="Jean-Luc", ticket_url="https://everlist.network/t/x",
+                          amount=24.0, escrow="HELD", qr=b"fauxpng", listing_id="l-ex1", loc="de")
+_em_en = _ek.ticket_email(title="Pin Event", booking_id="bk-EX1",
+                          when="Tue, Nov 3 2026 · 09:30", location="Room 2", qty=2,
+                          door_name="Jean-Luc", ticket_url="https://everlist.network/t/x",
+                          amount=24.0, escrow="HELD", qr=None, listing_id="l-ex1", loc="en")
+check("ticket mail: EUR per money convention (DE after, EN before)",
+      "24,00 €" in _em_de["html"] and "€ 24.00" in _em_en["html"])
+check("ticket mail: calendar link in HTML and text",
+      "/l/l-ex1.ics" in _em_de["html"] and "/l/l-ex1.ics" in _em_de["text"])
+check("ticket mail: hero QR card with booking caption",
+      "cid:ticketqr@everlist.network" in _em_de["html"]
+      and "· EverList</div>" in _em_de["html"])
+check("ticket mail: German calendar wording",
+      "Zum Kalender hinzufügen" in _em_de["html"])
+
+_tk_hy = tkmod.mint("bk-EX2", "t", "w", 1)
+tkmod.set_name(_tk_hy, "Jean-Luc", "full")
+check("name law: hyphens survive (Jean-Luc stays Jean-Luc)",
+      tkmod.display_name_of(_tk_hy) == "Jean-Luc")
+
 print(f"\nT5 tickets: {len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:
     print("FAILED:")
