@@ -54,6 +54,19 @@ _DE = {
     "Find something else": "Etwas anderes finden",
     "Review bookings": "Buchungen ansehen",
     "Go to EverList": "Zu EverList",
+    "Your ticket is ready": "Ihr Ticket ist bereit",
+    "Your ticket: ": "Ihr Ticket: ",
+    "Date": "Datum",
+    "Location": "Ort",
+    "Quantity": "Anzahl",
+    "Door name": "Türname",
+    "Open ticket page": "Ticket-Seite öffnen",
+    'Show this QR at the door - straight from this email. No app, no website visit. First scan wins; copies stop working once the original is used.':
+        "Zeigen Sie diesen QR am Eingang – direkt aus dieser E-Mail. Keine App, kein Website-Besuch. Der erste Scan gewinnt; Kopien funktionieren nach der ersten Verwendung nicht mehr.",
+    'The door sees this name: <b>%s</b>. Change it anytime in the EverList chat: <b>ticket %s name Your Name</b> or <b>ticket %s private</b>.':
+        "Am Eingang sieht der Veranstalter diesen Namen: <b>%s</b>. Änderbar jederzeit im EverList-Chat: <b>ticket %s Name Ihr Name</b> oder <b>ticket %s private</b>.",
+    'Your ticket: %s\nBooking %s\nWhen: %s\nWhere: %s\nPeople: %s\nDoor name: %s\n\nThe QR is attached to this email - show it at the door (first scan wins, copies stop working afterwards).\nTicket link: %s\nChange the door name in the EverList chat: ticket %s name Your Name - or ticket %s private.':
+        "Ihr Ticket: %s\nBuchung %s\nWann: %s\nWo: %s\nPersonen: %s\nTürname: %s\n\nDer QR ist an dieser E-Mail als Bild angehängt – zeigen Sie ihn am Eingang (erster Scan gewinnt, Kopien funktionieren danach nicht mehr).\nTicket-Link: %s\nTürname ändern im EverList-Chat: ticket %s Name Ihr Name – oder ticket %s private.",
     "Someone just booked <b>%s</b>. The money is already sitting in escrow - it moves to you when you confirm the booking.":
         "Jemand hat soeben <b>%s</b> gebucht. Das Geld liegt bereits im Escrow \u2013 es wandert zu Ihnen, sobald Sie die Buchung best\u00e4tigen.",
     "Confirm it in your EverList dashboard under <b>my-listings</b> (or reply to your agent). Unconfirmed bookings auto-refund when the refund window lapses.":
@@ -342,8 +355,58 @@ def code_email(kind, code, minutes=15, loc="en"):
 
 # ------------------------------------------------------------------- MIME ---
 
+# ------------------------------------------------------------ T5 ticket mail ---
+# Owner call 2026-11-01: the QR ticket rides the booking mail IMMEDIATELY.
+# The mail IS the ticket surface: QR inline (multipart/related CID), every
+# door detail as rows, link as fallback - no website visit required.
+
+
+def ticket_email(*, title, booking_id, when, location, qty, door_name,
+                 ticket_url, amount=0, escrow="", qr=None,
+                 unsub_url=None, loc="en"):
+    """Returns dict(subject, text, html, unsub_url[, related]). qr: PNG bytes
+    or None (segno absent -> link-only mail; boot-safety law)."""
+    amt = _fmt_amt(amount, loc) if amount else ""
+    rows = [(_L("Listing", loc), title), (_L("Date", loc), when or "-"),
+            (_L("Location", loc), location or "-"),
+            (_L("Quantity", loc), str(qty)),
+            (_L("Door name", loc), door_name),
+            (_L("Booking", loc), booking_id)]
+    if amt:
+        rows.append((_L("Amount", loc), amt + ((" (" + escrow + ")") if escrow else "")))
+    qr_block = ""
+    if qr is not None:
+        qr_block = ('<img src="cid:ticketqr@everlist.network" width="220" height="220" alt="QR" '
+                     'style="border:6px solid %s;border-radius:10px;">' % _C["card"])
+    heading = _L("Your ticket is ready", loc)
+    intro = (_p(_L('Show this QR at the door - straight from this email. No app, '
+                   'no website visit. First scan wins; copies stop working once '
+                   'the original is used.', loc))
+             + qr_block
+             + _detail_rows(rows)
+             + _p(_L('The door sees this name: <b>%s</b>. Change it anytime in the '
+                     'EverList chat: <b>ticket %s name Your Name</b> or '
+                     '<b>ticket %s private</b>.', loc)
+                  % (_esc(door_name), _esc(booking_id), _esc(booking_id)))
+             + _btn(_L("Open ticket page", loc), _esc(ticket_url)))
+    text = (_L('Your ticket: %s\nBooking %s\nWhen: %s\nWhere: %s\nPeople: %s\n'
+               'Door name: %s\n\nThe QR is attached to this email - show it at the '
+               'door (first scan wins, copies stop working afterwards).\n'
+               'Ticket link: %s\nChange the door name in the EverList chat: '
+               'ticket %s name Your Name - or ticket %s private.', loc)
+            % (title, booking_id, when or "-", location or "-", qty,
+               door_name, ticket_url, booking_id, booking_id))
+    out = {"subject": _L("Your ticket: ", loc) + title,
+           "text": _with_unsub(text, loc),
+           "html": _shell(heading, intro, _footer_lines(unsub_url, loc=loc)),
+           "unsub_url": unsub_url}
+    if qr is not None:
+        out["related"] = [("ticketqr@everlist.network", qr, "png", "ticket-qr.png")]
+    return out
+
+
 def mime_message(from_addr, to_addr, subject, text, html=None,
-                 unsub_url=None, list_id=None):
+                 unsub_url=None, list_id=None, related=None):
     msg = EmailMessage()
     disp = "%s <%s>" % (BRAND, from_addr)
     msg["From"] = disp
@@ -367,6 +430,13 @@ def mime_message(from_addr, to_addr, subject, text, html=None,
     msg.set_content(text)
     if html:
         msg.add_alternative(html, subtype="html")
+        if related:
+            # T5 ticket mail: inline images ride multipart/related (CID).
+            # Mail clients strip data:-URIs, so the QR MUST be a real part.
+            for cid, data, subtype, fname in related:
+                msg.get_payload()[1].add_related(
+                    data, maintype="image", subtype=subtype,
+                    cid="<%s>" % cid, filename=fname)
     return msg
 
 

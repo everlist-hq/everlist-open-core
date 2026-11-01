@@ -681,7 +681,8 @@ def _send_email(to, subject, body):
     unsub = body.get("unsub_url") if isinstance(body, dict) else None
     if isinstance(body, dict):
         msg = emailkit.mime_message(MAIL_FROM, to, subject, body["text"], body.get("html"),
-                                    unsub_url=unsub, list_id="booking")
+                                    unsub_url=unsub, list_id="booking",
+                                    related=body.get("related"))
     else:
         msg = emailkit.mime_message(MAIL_FROM, to, subject, body)
     emailkit.send_smtp(SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, MAIL_FROM, to, msg)
@@ -803,6 +804,16 @@ def _notify_booking(event, booking, listing, *, extra=''):
         jobs = []
         if event == 'created' and owner:
             jobs.append(('created', owner, owner_p, 'owner'))
+        if event == 'created' and buyer:
+            # T5 mail (owner 2026-11-01): the QR ticket rides the booking
+            # mail IMMEDIATELY - details inline, QR attached, no website
+            # visit. Verified buyer accounts only (standing email law).
+            try:
+                import tickets as _tking
+                if _tking.lookup_by_bid(TICKETS, bid) is not None:
+                    jobs.append(('ticket', buyer, buyer_p, 'buyer'))
+            except Exception:
+                pass
         elif event == 'released' and buyer:
             jobs.append(('released', buyer, buyer_p, 'buyer'))
         elif event == 'refunded':
@@ -813,10 +824,29 @@ def _notify_booking(event, booking, listing, *, extra=''):
                 jobs.append(('cancelled', owner, owner_p, 'owner'))
         for ev, to, principal, role in jobs:
             _loc = 'de' if (ACCOUNTS.get(principal) or {}).get('email_lang') == 'de' else 'en'
-            tmpl = emailkit.booking_email(ev, title=title, booking_id=bid,
-                                          amount=amt, escrow=esc, role=role,
-                                          note=(extra or None),
-                                          unsub_url=_unsub(principal), loc=_loc)
+            if ev == 'ticket':
+                import tickets as _tking
+                _tkr = _tking.lookup_by_bid(TICKETS, bid)
+                if _tkr is None:
+                    continue
+                try:
+                    _qr = _tking.qr_png(_tkr['token'], emailkit.PUBLIC_URL)
+                except Exception:
+                    _qr = None  # segno absent: mail still carries details + link
+                tmpl = emailkit.ticket_email(
+                    title=title, booking_id=bid,
+                    when=str((listing or {}).get('date') or ''),
+                    location=str((listing or {}).get('location') or ''),
+                    qty=_tkr.get('qty', 1),
+                    door_name=_tking.display_name_of(_tkr),
+                    ticket_url=_tking.ticket_url(_tkr['token'], emailkit.PUBLIC_URL),
+                    amount=amt, escrow=esc, qr=_qr,
+                    unsub_url=_unsub(principal), loc=_loc)
+            else:
+                tmpl = emailkit.booking_email(ev, title=title, booking_id=bid,
+                                              amount=amt, escrow=esc, role=role,
+                                              note=(extra or None),
+                                              unsub_url=_unsub(principal), loc=_loc)
             _send_email(to, tmpl['subject'], tmpl)
     except Exception as e:  # notifications must never break the money flow
         try:

@@ -122,6 +122,17 @@ check("created mail to organizer",
       last_code(r"\[EMAIL:log\] to=(org@example\.dev) subject='New booking") == "org@example.dev")
 check("created mail has unsubscribe line", "notify off" in open(LOGF).read())
 
+# ---- T5 (owner 2026-11-01): the QR ticket rides the booking mail NOW ------
+check("ticket mail to buyer immediately on booking",
+      last_code(r"\[EMAIL:log\] to=(buyer@example\.dev) subject='Your ticket: Notify Test Concert'") == "buyer@example.dev")
+_tl = open(LOGF).read()
+_tm = _tl[_tl.rfind("subject='Your ticket"):]
+check("ticket mail carries ALL door details (title/date/location/qty)",
+      all(x in _tm for x in ("Notify Test Concert", "2026-12-01", "Test Hall", "People: 1")), _tm[:200])
+check("ticket mail carries door name + ticket link",
+      "Door name:" in _tm and "Ticket link: https://everlist.network/t/" in _tm)
+check("ticket mail keeps unsubscribe line", "notify off" in _tm)
+
 # ---- confirmed -> buyer mail ------------------------------------------------
 c, adm = req("POST", "/admin/tokens", {"act": "confirm", "booking_id": b1}, tok=ADMIN)
 check("admin confirm token minted", c in (200, 201) and bool(adm.get("token")), (c, adm))
@@ -131,10 +142,12 @@ check("released mail to buyer",
       last_code(r"\[EMAIL:log\] to=(buyer@example\.dev) subject='Confirmed") == "buyer@example.dev")
 
 # ---- preference gating (per recipient) --------------------------------------
-pre = open(LOGF).read()
 c, bk2 = req("POST", "/book", {"listing_id": lid, "quantity": 1,
     "human_verified": True, "attendee": "B"}, tok=btok)
 check("second booking created", c == 201, (c, bk2))
+check("second booking ticket mail sent (prefs still on)",
+      last_code(r"\[EMAIL:log\] to=(buyer@example\.dev) subject='Your ticket:") == "buyer@example.dev")
+pre = open(LOGF).read()
 
 c, n = req("POST", "/accounts/notify", {"notify_email": False}, tok=blist)
 check("notify off 200", c == 200 and n.get("notify_email") is False, (c, n))
