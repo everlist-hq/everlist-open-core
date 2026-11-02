@@ -224,6 +224,26 @@ _r = chatlib.handle_text(HUB, "confirm", _S)
 check("F3: wizard completes after fix", "✅ Listed!" in _r, _r[:90])
 check("F3: intake popped only after success", _S not in chatlib._INTAKE)
 
+# ---- owner prod turn 2026-10-29: booking intent mid-intake was swallowed
+# 'Please book "Repair Cafe..." for me (even-15)' became the listing NAME
+# ([2/7] cost question). Booking intent breaks out; the draft survives.
+_S4 = "intake-book-%d" % os.getpid()
+chatlib.handle_text(HUB, "list", _S4)
+_r = chatlib.handle_text(HUB, 'Please book "Repair Cafe - November Edition" for me (even-15)', _S4)
+check("intake: booking command breaks out (never a field)",
+      "[2/7]" not in _r, _r[:90])
+check("intake: draft survives the booking break-out", _S4 in chatlib._INTAKE)
+_r = chatlib.handle_text(HUB, "list", _S4)
+check("intake: 'list' resumes the surviving draft",
+      "already listing" in _r.lower(), _r[:90])
+chatlib.handle_text(HUB, "cancel", _S4)
+_S5 = "intake-title-%d" % os.getpid()
+chatlib.handle_text(HUB, "list", _S5)
+_r = chatlib.handle_text(HUB, "Sunday Book Swap & Coffee", _S5)
+check("intake: mid-string Book title stays the name",
+      "[2/7]" in _r, _r[:90])
+chatlib.handle_text(HUB, "cancel", _S5)
+
 # ---- owner report 2026-09-22: wizard felt robotic -------------------------
 _S2 = "wiz-q-%d" % os.getpid()  # unique per run: drafts persist across processes
 chatlib.handle_text(HUB, "list", _S2)

@@ -1109,6 +1109,10 @@ def _intake_reply(hub_url: str, sender: str, text: str) -> str | None:
     # normally; intake survives so 'list' can resume it ---
     if _INTAKE_BREAK.match(t):
         return None
+    # booking intent is never a field (owner prod 2026-10-29, see
+    # _INTAKE_BOOK_RX): break out to normal routing, draft survives
+    if _INTAKE_BOOK_RX.search(t):
+        return None
 
     # --- 'key: value' mid-flow corrections (e.g. 'price: 20' at the preview) ---
     ed = _intake_edit_field(sender, t)
@@ -1414,6 +1418,20 @@ _INTAKE_BREAK = re.compile(
     r"account\b|status\b|my-(?:bookings|listings)\b|edit\s|delete\s|archive\s|unarchive\s|"
     r"list\s|list\n|listings\b|verify-|set-payout\b|notify\b|lang\b|email-|recover\b|delete-account\b|"
     r"unsubscribe\b|home\b|reset\b)",
+    re.IGNORECASE)
+
+# Booking intent must NEVER become a listing field (owner prod turn
+# 2026-10-29: 'Please book "Repair Cafe - November Edition" for me
+# (even-15)' mid-intake was swallowed as the listing NAME and answered
+# with the [2/7] cost question). Explicit ids and polite booking frames
+# break out to normal routing; the draft survives so 'list' resumes it.
+# Plain title answers ('Sunday Book Swap & Coffee') stay names - no polite frame,
+# no beneficiary, no id.
+_INTAKE_BOOK_RX = re.compile(
+    r"\b(?:even-\d+|bk-[0-9a-f]{4,})\b"
+    r"|(?:please\s+(?:book|reserve)|i'?d\s+like\s+to\s+(?:book|reserve)"
+    r"|c(?:an|ould)\s+you\s+(?:book|reserve)|bitte\s+(?:buch\w*|reservier\w*)"
+    r"|\b(?:book|reserve)\b[^.?!\n]{0,80}?\bfor\s+(?:me|us)\b)",
     re.IGNORECASE)
 
 

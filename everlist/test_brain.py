@@ -905,12 +905,16 @@ class ChatQualifiers(unittest.TestCase):
     # --- intake multi-field fill ---
 
     def test_intake_multi_field_fill(self):
+        # date must be computed: the fill rejects PAST dates (parity law),
+        # so a hard-coded literal becomes a time bomb (bit 2026-11-02)
+        import datetime as _dtm
+        _tmr = (_dtm.date.today() + _dtm.timedelta(days=1)).isoformat()
         self._say("list", "q13")
-        r = self._say("20 euros, room for 30, on 2026-11-01", "q13")
+        r = self._say("20 euros, room for 30, on " + _tmr, "q13")
         f = chatlib._intake_get("q13")["fields"]
         self.assertEqual(f.get("price"), "20")
         self.assertEqual(f.get("capacity"), "30")
-        self.assertEqual(f.get("date"), "2026-11-01")
+        self.assertEqual(f.get("date"), _tmr)
         self.assertIn("price: 20", r)
         # title is NEVER auto-filled (it IS the free text)
         self.assertIsNone(f.get("title"))
