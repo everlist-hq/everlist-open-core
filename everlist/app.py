@@ -3035,6 +3035,15 @@ class Handler(BaseHTTPRequestHandler):
                 "zk": "prove a floor without revealing totals: POST /organizer/earnings-proof {min_volume, min_settlements} (earnings.compact proveEarningsFloor is the on-chain ZK act)"})
         if u.path == "/bookings":
             cred = self.headers.get("X-Hub-Token", "")  # I2: token required, principal-scoped
+            # F2 2026-11-03: browsers landing on /bookings directly (typed
+            # URL, old link) get the human face — the SPA dashboard — not raw
+            # JSON. Tokened callers and JSON agents are unaffected.
+            if not cred and "text/html" in (self.headers.get("Accept") or ""):
+                self.send_response(302)
+                self.send_header("Location", "/?view=dash")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return
             payload, err = None, "missing X-Hub-Token"
             if cred:
                 for act in ("book", "list"):
