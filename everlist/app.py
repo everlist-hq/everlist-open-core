@@ -31,19 +31,19 @@ LISTINGS = [
     {"id": "evt-1", "vertical": "events", "title": "AI Builders Meetup",
      "category": "meetup", "tags": ["ai", "tech", "networking"],
      "date": "2026-09-15", "location": "Berlin", "price": 10.0,
-     "capacity": 50, "registered": 0, "owner": "event-owner-agent"},
+     "capacity": 50, "registered": 0, "owner": "event-owner-agent", "source": "demo-seed"},
     {"id": "evt-2", "vertical": "events", "title": "Rooftop Jazz Night",
      "category": "concert", "tags": ["music", "jazz", "rooftop"],
      "date": "2026-09-12", "location": "Berlin", "price": 15.0,
-     "capacity": 30, "registered": 0, "owner": "event-owner-agent"},
+     "capacity": 30, "registered": 0, "owner": "event-owner-agent", "source": "demo-seed"},
     {"id": "food-1", "vertical": "food", "title": "Margherita Pizza",
      "category": "pizzeria", "tags": ["pizza", "italian", "vegetarian"],
      "merchant": "Luigi's", "preparation_minutes": 20, "price": 8.5,
-     "available": True, "owner": "lufgis-pizzeria-agent"},
+     "available": True, "owner": "lufgis-pizzeria-agent", "source": "demo-seed"},
     {"id": "food-2", "vertical": "food", "title": "Vegan Bowl",
      "category": "vegan", "tags": ["vegan", "healthy", "salad"],
      "merchant": "Green Corner", "preparation_minutes": 15, "price": 11.0,
-     "available": True, "owner": "green-corner-agent"},
+     "available": True, "owner": "green-corner-agent", "source": "demo-seed"},
 ]
 BOOKINGS = []   # booking records (pseudonymous)
 SECRETS = {}    # booking id -> secret (private detail access)
@@ -335,12 +335,31 @@ def _loc_norm(s):
     return _LOC_ALIASES.get(n, n)
 
 
+_DEMO_OWNER_PREFIXES = ("demo-", "everlist-org-", "escrow-sandbox")
+
+
+def _is_demo_listing(l):
+    """A6 2026-11-04 (owner: launch honesty — 'Sandra is not real'): seed and
+    curated-example supply is machine-flagged so NO surface can present it
+    as live organizers. Covers demo-seed sources, demo-* owners, the
+    everlist-org-* seed families and the escrow sandbox. Real organizer
+    listings never match. Consumed by _pub_listing (API + SPA + SSR)."""
+    if str(l.get("source") or "").startswith("demo-seed"):
+        return True
+    return str(l.get("owner") or "").startswith(_DEMO_OWNER_PREFIXES)
+
+
 def _pub_listing(l):
     """H9: server-only fields must NEVER reach a public response.
     manage_code_hash = sha256 of the owner's manage code; with it an attacker
     could brute-force the ~48-bit code offline and forge ownership. Internal
-    state (LISTINGS) keeps it; every response copy passes through here."""
-    return {k: v for k, v in l.items() if k not in _SERVER_ONLY_LISTING_FIELDS}
+    state (LISTINGS) keeps it; every response copy passes through here.
+    A6 2026-11-04: demo/example supply carries a server-derived demo flag
+    (true only; absent for real organizers)."""
+    pub = {k: v for k, v in l.items() if k not in _SERVER_ONLY_LISTING_FIELDS}
+    if _is_demo_listing(l):
+        pub["demo"] = True
+    return pub
 
 
 def _read_gate(handler):
@@ -1241,6 +1260,7 @@ _SCHEMAS = {
             "rating_count": {"type": "integer"},
             "free_rating_sum": {"type": "integer"},
             "free_rating_count": {"type": "integer"},
+            "demo": {"type": "boolean", "description": "true only on seed/curated-example supply (server-derived, never client-claimed) — demo boards must never read as live organizers (A6 2026-11-04)"},
         },
     },
     "PaymentTerms": {
