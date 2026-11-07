@@ -358,6 +358,20 @@ def _dist_km(lat1, lon1, lat2, lon2):
     return 2 * math.asin(min(1.0, math.sqrt(a))) * 6371.0088
 
 
+_TIME_SHAPE = re.compile(r"^\d{2}:\d{2}$")
+
+
+def _is_hhmm(v):
+    """Phase 2 time facets: strict zero-padded 24h HH:MM (00-23:00-59).
+    Guards BOTH query params and stored listing times; malformed stored
+    values cannot satisfy a time facet (fail-closed, like coordless geo)."""
+    s = str(v or "")
+    if not _TIME_SHAPE.match(s):
+        return False
+    h, m = int(s[:2]), int(s[3:])
+    return h <= 23 and m <= 59
+
+
 _DEMO_OWNER_PREFIXES = ("demo-", "everlist-org-", "escrow-sandbox")
 
 
@@ -1611,10 +1625,11 @@ def _openapi_spec():
             "/listings/{id}/manage": {"post": op("Edit/archive/unarchive/make_private/make_public/delete a listing", "listings", sec=tok)},
             "/listings/{id}/image": {"post": op("Set or clear the listing photo (owning acct- token, or list token + manage_code; clear:true removes)", "listings", sec=tok,
                                           note="body {data_url: data:image/png|jpeg|webp;base64,...} or {clear:true}; SVG refused; decoded cap 380KB; stored same-origin as a data URL (CSP img-src data:)")},
-            "/search": {"get": op("Search listings (q, from/to date, min/max_price, tags=, sort, near=lat,lon, radius_km=, ...)", "listings",
+            "/search": {"get": op("Search listings (q, from/to date, min/max_price, tags=, sort, near=lat,lon, radius_km=, after/before=HH:MM, ...)", "listings",
                                   note="from/to = YYYY-MM-DD on the listing date (dateless listings excluded); "
                                        "tags=comma,any-of; sort=date|price|newest|distance (newest = creation order reversed); "
                                        "geo: near=lat,lon + optional radius_km= (listings without lat/lon excluded); "
+                                       "time: after=/before=HH:MM zero-padded 24h on the listing time (time-less listings excluded); "
                                        "sort=distance requires near=; matched listings carry distance_km")},
             "/bookings": {"get": op("Your bookings (principal-scoped)", "bookings", sec=tok)},
             "/bookings/{id}": {"get": op("Booking status (buyer or listing owner)", "bookings", sec=tok,
@@ -2576,6 +2591,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._serve_checkout_asset("checkout.css")
         if u.path == "/book.js":
             return self._serve_checkout_asset("book.js")
+        if u.path == "/polish.js":
+            # Prod drift-proofing (2026-11-07): the LIVE Caddyfile matcher
+            # lacks /polish.js (template has it; live predates it), so this
+            # asset fell to the hub catch-all and 404ed. Serving it here —
+            # like book.js — makes the quiet-polish layer Caddy-independent;
+            # new static assets must not depend on matcher drift ever again.
+            return self._serve_checkout_asset("polish.js")
         if u.path == "/auth/challenge":
             """HARDENING-v2: challenge issuance for cost curves.
             kind=signup -> sha256 PoW challenge (must be solved to signup)
@@ -3018,6 +3040,16 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(400, {"error": "radius_km requires near=lat,lon"})
             if fsort == "distance" and fnear is None:
                 return self._json(400, {"error": "sort=distance requires near=lat,lon"})
+            # Phase 2 time facets: after=/before=HH:MM on the listing start
+            # time; honest 400s, strict zero-padded 24h shape only.
+            fafter = q.get("after", [""])[0].strip()
+            fbefore = q.get("before", [""])[0].strip()
+            if fafter and not _is_hhmm(fafter):
+                return self._json(400, {"error": "after must be HH:MM (zero-padded 24h, 00:00-23:59)"})
+            if fbefore and not _is_hhmm(fbefore):
+                return self._json(400, {"error": "before must be HH:MM (zero-padded 24h, 00:00-23:59)"})
+            if fafter and fbefore and fafter > fbefore:
+                return self._json(400, {"error": "after must not be later than before"})
             with LOCK:
                 # C6: sqlite mode narrows q via the derived FTS5 index first
                 # (token match, O(matches) instead of a full substring scan).
@@ -3082,6 +3114,15 @@ class Handler(BaseHTTPRequestHandler):
                         res = [l for l in res if _geo_km.get(l["id"], float("inf")) <= frad]
                 if fsort == "distance":
                     res.sort(key=lambda l: _geo_km.get(l["id"], float("inf")))
+                # Phase 2 time facets: a listing without a well-formed HH:MM
+                # time cannot satisfy a time facet (the coordless-geo law,
+                # applied to time-of-day); zero-padded 24h strings compare
+                # chronologically, bounds inclusive.
+                if fafter or fbefore:
+                    res = [l for l in res
+                           if _is_hhmm(l.get("time"))
+                           and (not fafter or l["time"] >= fafter)
+                           and (not fbefore or l["time"] <= fbefore)]
                 # Phase 1 relevance: plain q-searches keep bm25 order (best
                 # first); any explicit sort below overrides it deterministically.
                 if _rank is not None and not fsort:
@@ -3101,6 +3142,7 @@ class Handler(BaseHTTPRequestHandler):
                 "tags": ftags or None, "location": floc, "min_price": fmin or None,
                 "max_price": fmax or None, "from": ffrom or None, "to": fto or None,
                 "near": fnear_raw or None, "radius_km": frad or None,
+                "after": fafter or None, "before": fbefore or None,
                 "sort": fsort or None}, "listings": [
                     # Phase 2 geo: distance_km rides on the response COPY only
                     # (_pub_listing builds fresh dicts; canonical LISTINGS stay

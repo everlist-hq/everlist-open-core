@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Phase 2 find-quality geo (owner GO 2026-11-07): server-side geo search.
+"""Phase 2 find-quality geo + time facets (owner GO 2026-11-07).
 
-Covers:
+Geo covers:
 - near=lat,lon + radius_km= filter: only listings with valid lat/lon in range
 - listings WITHOUT lat/lon excluded from geo filters (the dateless law, for space)
 - honest 400s: malformed/out-of-range near, radius_km without near, non-positive
@@ -9,7 +9,13 @@ Covers:
 - per-result distance_km rides on response COPIES only; plain (non-geo) searches
   carry no distance_km and stay uncontaminated after geo searches
 - sort=distance nearest-first, ascending distances; without sort, prior order kept
-- OpenAPI contract documents the geo params (near/radius_km in /search note)
+Time covers:
+- after=/before=HH:MM zero-padded 24h bands on the listing time; inclusive bounds
+- listings WITHOUT well-formed HH:MM time excluded from time facets
+- honest 400s: malformed shape, hour overflow, after later than before
+- filters echo after/before; geo+time compose
+Contract:
+- OpenAPI documents near/radius_km/sort=distance and after/before
 Run: ./venv/bin/python test_phase2_geo.py
 """
 import atexit
@@ -107,12 +113,13 @@ def main():
     OWN = res["tokens"]["list"]
 
     # inventory: three coordinate listings around Vienna center + one coord-less
-    # (haversine sanity: center->B ~1.3 km, center->C ~15.8 km)
+    # (haversine sanity: center->B ~1.3 km, center->C ~15.8 km);
+    # B/C carry well-formed times for the Phase 2 time facets, Far has NO time
     CENTER = (48.2082, 16.3738)
     probes = [
-        ("Geo Near",   {"lat": CENTER[0], "lon": CENTER[1]}),          # ~0 km
-        ("Geo Mid",    {"lat": 48.22,    "lon": 16.37}),               # ~1.3 km
-        ("Geo Far",    {"lat": 48.35,    "lon": 16.37}),               # ~15.8 km
+        ("Geo Near",   {"lat": CENTER[0], "lon": CENTER[1], "time": "09:30"}),
+        ("Geo Mid",    {"lat": 48.22,    "lon": 16.37,    "time": "17:45"}),
+        ("Geo Far",    {"lat": 48.35,    "lon": 16.37}),                   # no time
         ("Geo NoCoords", {}),                                            # excluded from geo
     ]
     ids = []
@@ -204,6 +211,57 @@ def main():
     note = str(res.get("paths", {}).get("/search", {}).get("get", {}))
     check("P2 openapi documents near/radius_km/sort=distance",
           st == 200 and "near" in note and "radius_km" in note and "distance" in note,
+          note[:160])
+
+    # ---- Phase 2 time facets (after=/before=HH:MM) ----
+
+    # 11) after= keeps only listings with time >= bound; time-less excluded
+    st, res = req("GET", "/search?after=10:00")
+    got = res.get("listings", [])
+    check("P2 after=10:00 keeps Mid(17:45) only, time-less excluded",
+          st == 200 and titles(got) == ["Geo Mid"], f"{st} {titles(got)}")
+
+    # 12) before= keeps the morning listing only
+    st, res = req("GET", "/search?before=12:00")
+    got = res.get("listings", [])
+    check("P2 before=12:00 keeps Near(09:30) only",
+          st == 200 and titles(got) == ["Geo Near"], f"{st} {titles(got)}")
+
+    # 13) band after+before keeps both timed listings, inclusive bounds
+    st, res = req("GET", "/search?after=09:30&before=17:45")
+    got = res.get("listings", [])
+    check("P2 band inclusive keeps Near+Mid, excludes time-less",
+          st == 200 and titles(got) == ["Geo Mid", "Geo Near"], f"{st} {titles(got)}")
+
+    # 14) filters echo after/before
+    st, res = req("GET", "/search?after=09:30&before=17:45")
+    f = res.get("filters", {})
+    check("P2 filters echo after and before",
+          st == 200 and f.get("after") == "09:30" and f.get("before") == "17:45", str(f))
+
+    # 15) geo+time compose: radius narrows to coords listings, time narrows further
+    st, res = req("GET", f"/search?{near}&radius_km=50&after=12:00")
+    got = res.get("listings", [])
+    check("P2 geo+time compose",
+          st == 200 and titles(got) == ["Geo Mid"]
+          and all("distance_km" in l for l in got), f"{st} {titles(got)}")
+
+    # 16) honest 400 walls for time facets
+    for label, qs, errpart in [
+        ("malformed after", "after=9:30", "after must be"),
+        ("malformed before", "before=25:00", "before must be"),
+        ("hour overflow", "after=24:00", "after must be"),
+        ("after later than before", "after=18:00&before=09:00", "later than"),
+    ]:
+        st, res = req("GET", f"/search?{qs}")
+        check(f"P2 400 {label}", st == 400 and errpart in str(res.get("error", "")),
+              f"{st} {str(res)[:120]}")
+
+    # 17) openapi documents time facets
+    st, res = req("GET", "/openapi.json")
+    note = str(res.get("paths", {}).get("/search", {}).get("get", {}))
+    check("P2 openapi documents after/before",
+          st == 200 and "after" in note and "before" in note and "time-less" in note,
           note[:160])
 
     failed = [n for n, ok in RESULTS if not ok]
