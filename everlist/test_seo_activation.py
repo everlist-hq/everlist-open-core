@@ -209,6 +209,26 @@ try:
     st, _, _ = req("GET", f"/img/{pid}.png", raw=True)
     check("/img private uniform 404", st == 404, f"st={st}")
 
+    # public-origin relay pins (crawlers/unfurlers hit webchat, not the hub)
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{wport}/img/{lid}.png", timeout=10) as rimg:
+            ib = rimg.read(); ict = rimg.headers.get("Content-Type", "")
+        check("webchat /img relay 200 png", rimg.status == 200 and ib.startswith(b"\x89PNG") and "image/png" in ict,
+              f"st={rimg.status} ct={ict}")
+    except urllib.error.HTTPError as e:
+        check("webchat /img relay 200 png", False, f"st={e.code}")
+    except Exception as e:
+        check("webchat /img relay 200 png", False, str(e)[:80])
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{wport}/img/nope.png", timeout=10) as rn:
+            check("webchat /img unknown passthrough 404", False, "unexpected 200")
+    except urllib.error.HTTPError as e:
+        check("webchat /img unknown passthrough 404", e.code == 404, f"st={e.code}")
+    except Exception as e:
+        check("webchat /img unknown passthrough 404", False, str(e)[:80])
+    st_j = wreq("/img/..%2Fetc%2Fpasswd.png")[0]
+    check("webchat /img junk wall 404", st_j == 404, f"st={st_j}")
+
     st, oh = wreq("/org/seo-test-org")
     os_ = oh if isinstance(oh, str) else ""
     check("org page renders", "SEO Live Photo Event" in os_)
