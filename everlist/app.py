@@ -16,6 +16,7 @@ from urllib.parse import urlparse, parse_qs
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import hublib  # I2/G5: versioned, domain-separated HMAC action tokens
+import enrich  # Phase 2 find-quality: AI write-side compression (fail-open)
 import tickets as ticketing  # T5: QR tickets (door check-in)
 from storage import configure, read_snapshot, write_snapshot, mode, search_ids
 
@@ -234,7 +235,7 @@ def _paginate(items, query):
 
 # S6: rating_wsum/rating_wtot (weighted-average numerator/denominator), review_flags
 # (L4 interlock heuristics) and rating_times (burst detection) are server-internal.
-_SERVER_ONLY_LISTING_FIELDS = frozenset({"manage_code_hash", "claim_code_hash", "rating_wsum", "rating_wtot", "review_flags", "rating_times", "promo_code_hash"})
+_SERVER_ONLY_LISTING_FIELDS = frozenset({"manage_code_hash", "claim_code_hash", "rating_wsum", "rating_wtot", "review_flags", "rating_times", "promo_code_hash", "_enrich_kw", "_enrich"})
 
 
 def _review_weight(b):
@@ -1631,6 +1632,9 @@ def _openapi_spec():
                                        "geo: near=lat,lon + optional radius_km= (listings without lat/lon excluded); "
                                        "time: after=/before=HH:MM zero-padded 24h on the listing time (time-less listings excluded); "
                                        "sort=distance requires near=; matched listings carry distance_km")},
+            "/listing/draft": {
+                "post": op("Paste-a-flyer: free text -> prefilled listing DRAFT (never creates; organizer confirms then POSTs /listings)", "listings", sec=tok,
+                           note="body {text}; deterministic extraction (title/date/time/price/location), no AI in v1")},
             "/bookings": {"get": op("Your bookings (principal-scoped)", "bookings", sec=tok)},
             "/bookings/{id}": {"get": op("Booking status (buyer or listing owner)", "bookings", sec=tok,
                                         note="unknown-or-not-yours = indistinguishable 404 (no existence oracle)")},
@@ -1886,6 +1890,57 @@ class Handler(BaseHTTPRequestHandler):
             "count": len(rich), "events": rich}, extra_headers=hdr)
 
     # ---------------- TRACK E methods (embeddable checkout, E2/E3) ----------------
+    def _serve_listing_image(self, lid_ext):
+        """SEO 2026-11-07: fetchable per-listing photo at /img/{id}.{ext} so
+        og:image/JSON-LD point at a REAL organizer upload instead of the brand
+        default (data URLs are invisible to crawlers/unfurlers). Walls:
+        public+unarchived listings ONLY (private deals keep the no-oracle
+        uniform 404), magic-byte sniff png/jpeg/webp (SVG refused, mirrors the
+        upload law), decoded cap 380KB, nosniff, short cache (photo swaps stay
+        honest within 5 min)."""
+        import base64 as _b64, re as _re
+        m = _re.match(r"^([A-Za-z0-9_-]+)\.(png|jpg|webp)$", lid_ext or "")
+        if not m:
+            return self._json(404, {"error": "no image"})
+        lid, ext = m.group(1), m.group(2)
+        if not _read_gate(self):
+            return self._json(429, {"error": "too many read requests — slow down (retry shortly)"})
+        with LOCK:
+            l = next((x for x in LISTINGS if x["id"] == lid), None)
+            du = str((l or {}).get("image") or "")
+            lvis = (l or {}).get("visibility", "public")
+            larch = (l or {}).get("archived", False)
+        if not l or larch or lvis != "public" or not du.startswith("data:image/"):
+            return self._json(404, {"error": "no image"})
+        mm = _re.match(r"^data:image/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)$", du)
+        if not mm:
+            return self._json(404, {"error": "no image"})
+        ctype = {"png": "image/png", "jpeg": "image/jpeg", "webp": "image/webp"}[mm.group(1)]
+        # URL ext must map 1:1 to the stored type (png->png, jpg->jpeg, webp->webp)
+        if {"png": "png", "jpeg": "jpg", "webp": "webp"}[mm.group(1)] != ext:
+            return self._json(404, {"error": "no image"})
+        try:
+            body = _b64.b64decode(mm.group(2), validate=True)
+        except Exception:
+            return self._json(404, {"error": "no image"})
+        if len(body) > 380 * 1024 or len(body) < 8:
+            return self._json(404, {"error": "no image"})
+        sig = body[:4]
+        ok = (sig.startswith(b"\x89PNG") if mm.group(1) == "png"
+              else sig.startswith(b"\xff\xd8\xff") if mm.group(1) == "jpeg"
+              else body[:4] == b"RIFF" and body[8:12] == b"WEBP")
+        if not ok:
+            return self._json(404, {"error": "no image"})
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "max-age=300")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Security-Policy", "default-src 'none'; img-src 'self'")
+        self.end_headers()
+        self.wfile.write(body)
+        return None
+
     def _serve_checkout_asset(self, fname):
         """Strict-allowlist static server for checkout assets (literal fnames
         only; normpath guard keeps the traversal wall even if that changes)."""
@@ -2875,6 +2930,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"hub": HUB_NAME, "version": "0.2",  # run7 D2: matches SPEC §11 + canonical manifest (was 0.3)
                 "type": "universal-commerce",
                 "canonical_manifest": "/.well-known/agent-hub.json"})
+        if u.path.startswith("/img/") and u.path.count("/") == 2:
+            return self._serve_listing_image(u.path[len("/img/"):])
         if u.path == "/openapi.json":
             # H13: machine-readable API contract — agents read it natively
             return self._json(200, _openapi_spec())
@@ -4230,6 +4287,28 @@ class Handler(BaseHTTPRequestHandler):
                 _persist_locked()
                 return self._json(200, {"ok": True, "account_id": aid, "account_code": new_code,
                     "code_note": "shown ONCE — store it; OLD CODE INVALID and old login tokens REVOKED"})
+        if path == "/listing/draft":
+            # Phase 2 paste-a-flyer: free text -> PREFILLED DRAFT (never
+            # creates). Token-gated like creation (write-assist surface, not
+            # anonymous parsing); deterministic extraction (enrich.py), no AI
+            # in v1; input bounded. The organizer confirms every field before
+            # any POST /listings — the draft is advice, never authority.
+            cred = self.headers.get("X-Hub-Token", "")
+            p, err = hublib.verify_token(BOOKING_KEY, cred, "list", single_use=False) if cred \
+                else (None, "missing X-Hub-Token")
+            if p:
+                p, err = _gen_check(p)
+            if not p:
+                return self._json(401, {"error": err or "invalid list token",
+                    "hint": "same list token as POST /listings"})
+            text = data.get("text") if isinstance(data, dict) else None
+            if not isinstance(text, str) or not text.strip():
+                return self._json(400, {"error": "text must be a nonempty string"})
+            if len(text) > 20000:
+                return self._json(400, {"error": "text too long (max 20000 chars)"})
+            return self._json(200, {"ok": True,
+                "draft": enrich.draft_from_text(text),
+                "note": "prefilled draft only — review every field, then POST /listings to create"})
         if path == "/listings":
             cred = self.headers.get("X-Hub-Token", "")  # I2: list token required
             p, err = hublib.verify_token(BOOKING_KEY, cred, "list", single_use=False) if cred \
@@ -4392,6 +4471,17 @@ class Handler(BaseHTTPRequestHandler):
             if _vis not in ("public", "private"):
                 return self._json(400, {"error": "visibility must be 'public' or 'private'"})
             data["visibility"] = _vis
+            # Phase 2 find-quality: AI write-side compression — runs OUTSIDE the
+            # LOCK (a live-mode HTTP call must never hold the hub lock) and
+            # AFTER client-field walls (reserved/unknown rejection above), so
+            # _enrich_* are server-owned from birth. enrich.extract NEVER
+            # raises (fail-open law): no key/timeout/garbage -> None -> the
+            # listing indexes on raw text exactly as before.
+            _enr = enrich.extract(data.get("title", ""), data.get("description", ""), data.get("tags"))
+            if _enr:
+                data["_enrich_kw"] = " ".join(str(k) for k in _enr.get("kw", []))[:300]
+                data["_enrich"] = {"mode": _enr.get("mode"), "model": _enr.get("model"),
+                                    "ts": _enr.get("ts"), "n_kw": len(_enr.get("kw", []))}
             with LOCK:
                 # S7-2: duplicate detection — same principal + normalized title
                 # + same date + same location as one of their ACTIVE listings.

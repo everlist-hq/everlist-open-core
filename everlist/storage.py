@@ -67,6 +67,12 @@ def _listing_values(l):
     else:
         city = ""
     tags = " ".join(str(t) for t in (l.get("tags") or []))
+    # Phase 2 find-quality: AI-derived keywords ride in the FTS tags CELL only
+    # (server-side search internals — the public tags JSON is never touched;
+    # provenance/meta stay on the listing dict, server-only fields).
+    _ekw = str(l.get("_enrich_kw") or "").strip()
+    if _ekw:
+        tags = (tags + " " + _ekw).strip()
     return (role, l.get("vertical") or "", city, l.get("date") or "", tags,
             l.get("title") or "", l.get("description") or "")
 
