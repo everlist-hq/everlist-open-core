@@ -392,6 +392,20 @@ def _is_demo_listing(l):
     return "writeproof" in own
 
 
+def _normalize_sponsor(v):
+    """Phase 3 marketplace: sponsor state is SERVER-OWNED (admin-granted via
+    /admin/sponsor; the reserved wall rejects client '_sponsor'). This runs
+    on trusted persisted state only — malformed stored state deactivates
+    instead of crashing search."""
+    if not isinstance(v, dict):
+        return None
+    try:
+        ok = bool(v.get("active")) and float(v.get("until_ts", 0)) > time.time()
+    except (TypeError, ValueError):
+        return None
+    return {"active": True, "until_ts": float(v["until_ts"])} if ok else None
+
+
 def _pub_listing(l):
     """H9: server-only fields must NEVER reach a public response.
     manage_code_hash = sha256 of the owner's manage code; with it an attacker
@@ -1027,7 +1041,7 @@ VERTICAL_SCHEMAS = {
     # settable booking fields; booking.identity = the ONE field whose real value
     # goes to the secret store (public copy gets an unlinkable anon-ref).
     "events": {"required": ["title", "date", "location", "price", "capacity"],
-               "optional": ["description", "category", "tags", "url", "time", "lat", "lon"],
+               "optional": ["description", "category", "tags", "url", "time", "lat", "lon", "series"],
                "categories": ["meetup", "concert", "workshop", "conference", "market",
                                "sports", "community", "party", "exhibition", "other"],
                "tracks_capacity": True,
@@ -1045,11 +1059,11 @@ VERTICAL_SCHEMAS = {
     # H15: second-vertical proof — adding a vertical is DATA, not code.
     "services": {"required": ["title", "provider", "price"],
                  "optional": ["description", "category", "tags", "url", "location",
-                               "duration_minutes"],
+                               "duration_minutes", "slot_minutes"],
                  "categories": ["cleaning", "repair", "tutoring", "design", "consulting",
                                  "wellness", "transport", "other"],
-                 "field_types": {"duration_minutes": "positive_int"},
-                 "booking": {"required": ["client"], "fields": ["client", "quantity"],
+                 "field_types": {"duration_minutes": "positive_int", "slot_minutes": "positive_int"},
+                 "booking": {"required": ["client"], "fields": ["client", "quantity", "slot_date", "slot_time"],
                               "identity": "client", "action": "book+pay"}},
 }
 
@@ -1116,7 +1130,7 @@ def normalize_tags(raw):
 RESERVED_LISTING_FIELDS = {"id", "registered", "available", "owner", "manage_code_hash", "claim_code_hash",
     "rating_sum", "rating_count", "rating_avg", "free_rating_sum", "free_rating_count",
     "rating_wsum", "rating_wtot", "review_flags", "rating_times",
-    "image"}  # owner = authenticated principal; manage_code_hash/claim_code_hash = server-only (anti-spoof, P2); rating aggregates = S6 server-owned (clients can never seed fake reputation); image is upload-only (B2: set via POST /listings/{id}/image, never client-settable)
+    "image", "_sponsor", "series_id"}  # owner = authenticated principal; manage_code_hash/claim_code_hash = server-only (anti-spoof, P2); rating aggregates = S6 server-owned (clients can never seed fake reputation); image is upload-only (B2: set via POST /listings/{id}/image, never client-settable)
 
 # C12: payment-terms policy (SPEC §19, owner-pinned 2026-09-12). Terms live on
 # the LISTING; booking = acceptance (paid bookings echo custom terms via
@@ -1623,7 +1637,8 @@ def _openapi_spec():
                            "responses": {"409": {"description": "cap reached (honest counts: cap, active) or duplicate of an active listing (existing id)"}}}},
             "/listings/{id}": {"get": op("One listing, full rich record (private deals need ?claim= or X-Claim-Code)", "listings",
                                         note="404 unknown / 410 archived")},
-            "/listings/{id}/manage": {"post": op("Edit/archive/unarchive/make_private/make_public/delete a listing", "listings", sec=tok)},
+            "/listings/{id}/manage": {"post": op("Edit/archive/unarchive/make_private/make_public/delete a listing (plus archive_series/delete_series on recurring series)", "listings", sec=tok,
+                                  note="series acts: action=archive_series hides every dated sibling at once; delete_series removes the family — both refuse while any member holds active bookings")},
             "/listings/{id}/image": {"post": op("Set or clear the listing photo (owning acct- token, or list token + manage_code; clear:true removes)", "listings", sec=tok,
                                           note="body {data_url: data:image/png|jpeg|webp;base64,...} or {clear:true}; SVG refused; decoded cap 380KB; stored same-origin as a data URL (CSP img-src data:)")},
             "/search": {"get": op("Search listings (q, from/to date, min/max_price, tags=, sort, near=lat,lon, radius_km=, after/before=HH:MM, ...)", "listings",
@@ -1631,7 +1646,8 @@ def _openapi_spec():
                                        "tags=comma,any-of; sort=date|price|newest|distance (newest = creation order reversed); "
                                        "geo: near=lat,lon + optional radius_km= (listings without lat/lon excluded); "
                                        "time: after=/before=HH:MM zero-padded 24h on the listing time (time-less listings excluded); "
-                                       "sort=distance requires near=; matched listings carry distance_km")},
+                                       "sort=distance requires near=; matched listings carry distance_km; "
+                                       "sponsorship: admin-granted listings ride the LAST page position (capped 1), labeled sponsored=true")},
             "/listing/draft": {
                 "post": op("Paste-a-flyer: free text -> prefilled listing DRAFT (never creates; organizer confirms then POSTs /listings)", "listings", sec=tok,
                            note="body {text}; deterministic extraction (title/date/time/price/location), no AI in v1")},
@@ -1699,6 +1715,8 @@ def _openapi_spec():
             "/auth/challenge": {"get": op("Signup PoW / login challenges", "accounts",
                                          note="?kind=signup | ?kind=login&pubkey=<64hex>")},
             "/admin/tokens": {"post": op("Operator: mint action tokens (admin key)", "admin")},
+            "/admin/sponsor": {"post": op("Sponsor a listing (admin): labeled, capped placement — organic order is never for sale", "admin", sec=tok,
+                                  note="body {listing_id, days 1..60}; sponsored listing appears LAST per results page with sponsored=true; grant is admin-only")},
         },
         "components": {"securitySchemes": {"X-Hub-Token": {
             "type": "apiKey", "in": "header", "name": "X-Hub-Token"}},
@@ -2293,6 +2311,40 @@ class Handler(BaseHTTPRequestHandler):
         # H17: identity field is a bounded nonempty STRING (probe: numbers,
         # objects, empty and 5000-char values were accepted; schema-driven
         # so every vertical's identity field gets the same wall)
+        # Phase 3 marketplace (owner GO 2026-11-07): appointment slots on
+        # services. slot_minutes = LISTING-side grid (schema-validated);
+        # slot_date + slot_time = BOOKING-side (which slot). Taken = any
+        # active booking holding the same slot — derived from escrow state,
+        # so a cancel/refund frees the slot automatically (zero hook code).
+        _slot_grid = listing.get("slot_minutes")
+        _b_sd = data.get("slot_date")
+        _b_st = data.get("slot_time")
+        if _b_sd is not None or _b_st is not None:
+            if _slot_grid is None:
+                return self._bk_json(400, {"error": "this listing has no slot grid; slot_date/slot_time not accepted"})
+            if not isinstance(_b_sd, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", _b_sd.strip()):
+                return self._bk_json(400, {"error": "slot_date must be YYYY-MM-DD"})
+            _b_sd = _b_sd.strip()
+            if not isinstance(_b_st, str) or not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", _b_st.strip()):
+                return self._bk_json(400, {"error": "slot_time must be HH:MM (24h, zero-padded)"})
+            _b_st = _b_st.strip()
+            if (int(_b_st[:2]) * 60 + int(_b_st[3:])) % int(_slot_grid) != 0:
+                return self._bk_json(409, {"error": f"slot_time must align to the {int(_slot_grid)}-minute grid"})
+            with LOCK:
+                _taken = [b for b in BOOKINGS
+                          if b.get("listing_id") == lid
+                          and b.get("slot_date") == _b_sd and b.get("slot_time") == _b_st
+                          and b.get("escrow") in ("HELD", "WAIVED", "DIRECT")]
+            if _taken:
+                return self._bk_json(409, {"error": "slot taken", "slot_date": _b_sd, "slot_time": _b_st,
+                    "note": "pick another grid slot; cancellations free their slot automatically"})
+            data["slot_date"] = _b_sd
+            data["slot_time"] = _b_st
+        elif _slot_grid is not None:
+            return self._bk_json(400, {"error": "this listing books by appointment: send slot_date (YYYY-MM-DD) and slot_time (HH:MM, aligned to the " + str(int(_slot_grid)) + "-minute grid)"})
+        else:
+            data.pop("slot_date", None)  # spoof-strip on non-slot listings
+            data.pop("slot_time", None)
         idf = VERTICAL_SCHEMAS[v]["booking"]["identity"]
         if not isinstance(data[idf], str):
             return self._bk_json(400, {"error": f"{idf} must be a string"})
@@ -2357,6 +2409,16 @@ class Handler(BaseHTTPRequestHandler):
                     "note": "released/refunded escrows cannot be re-claimed; squatting a settled escrow is refused",
                     "chain": {"state": _chain_v["state_name"], "escrow_id": er["escrow_id"]}})
         with LOCK:  # I3: single reservation section — check + increment atomic under one LOCK
+            # Phase 3: appointment-slot re-check INSIDE the reservation lock
+            # (the pre-lock wall narrows input; this closes read-then-act)
+            if data.get("slot_date") and data.get("slot_time"):
+                _re = [b for b in BOOKINGS
+                       if b.get("listing_id") == lid
+                       and b.get("slot_date") == data["slot_date"] and b.get("slot_time") == data["slot_time"]
+                       and b.get("escrow") in ("HELD", "WAIVED", "DIRECT")]
+                if _re:
+                    return self._bk_json(409, {"error": "slot taken",
+                        "slot_date": data["slot_date"], "slot_time": data["slot_time"]})
             listing = next((l for l in LISTINGS if l["id"] == lid), None)
             if not listing: return self._bk_json(404, {"error": f"no listing {lid}"})
             if listing.get("archived"):
@@ -3190,6 +3252,16 @@ class Handler(BaseHTTPRequestHandler):
                     res.sort(key=lambda l: (not l.get("date"), str(l.get("date", ""))))
                 elif fsort == "newest":
                     res.reverse()  # LISTINGS is append-ordered; ids are monotonic
+                # Phase 3 marketplace: ONE sponsored listing rides the LAST
+                # position of the result window — organic order is never for
+                # sale; the paid slot is additive, capped (1/page), labeled.
+                _sponsored = None
+                for _l in res:
+                    if _normalize_sponsor(_l.get("_sponsor")) is not None:
+                        _sponsored = _l
+                        break
+                if _sponsored is not None and len(res) > 1:
+                    res = [l for l in res if l is not _sponsored] + [_sponsored]
             total = len(res)
             res, off, lim = _paginate(res, parse_qs(u.query))
             return self._json(200, {"count": total, "offset": off, "limit": lim,
@@ -3205,7 +3277,8 @@ class Handler(BaseHTTPRequestHandler):
                     # (_pub_listing builds fresh dicts; canonical LISTINGS stay
                     # free of request-derived values).
                     dict(_pub_listing(x),
-                         **({"distance_km": _geo_km[x["id"]]} if x["id"] in _geo_km else {}))
+                         **({"distance_km": _geo_km[x["id"]]} if x["id"] in _geo_km else {}),
+                         **({"sponsored": True} if _normalize_sponsor(x.get("_sponsor")) is not None else {}))
                     for x in res]})
         if u.path == "/suggest":
             """C6-UX discovery helper: live vocabulary matching q.
@@ -4453,7 +4526,7 @@ class Handler(BaseHTTPRequestHandler):
                 if re.search(r"[\x00-\x1f\x7f\u202a-\u202e]", loc2):
                     return self._json(400, {"error": "location must not contain control characters or newlines"})
                 data["location"] = loc2
-            allowed = set(schema["required"]) | set(schema.get("optional", [])) | {"vertical", "payment_terms", "visibility", "receive_addr", "require_verified_buyer"}
+            allowed = set(schema["required"]) | set(schema.get("optional", [])) | {"vertical", "payment_terms", "visibility", "receive_addr", "require_verified_buyer", "series"}
             data = {k: d for k, d in data.items() if k in allowed}  # drop unknowns (payment_terms already server-normalized above)
             # RTF2: create-path hygiene for the remaining text fields — title
             # and location keep their stricter wall above (newlines banned);
@@ -4471,6 +4544,24 @@ class Handler(BaseHTTPRequestHandler):
             if _vis not in ("public", "private"):
                 return self._json(400, {"error": "visibility must be 'public' or 'private'"})
             data["visibility"] = _vis
+            # Phase 3 marketplace (owner GO 2026-11-07): recurring series —
+            # one POST fans a dated template into bounded child listings
+            # (2..12) sharing a server-owned series_id. series is
+            # {"every_days": int, "count": int} on the BASE request only;
+            # children are plain dated listings (never carry "series" —
+            # nested fan-out is structurally impossible).
+            _series_every, _series_n, _sid, _series_dates = None, 1, None, []
+            _series_req = data.pop("series", None)
+            if _series_req is not None:
+                if (not isinstance(_series_req, dict)
+                        or not isinstance(_series_req.get("every_days"), int)
+                        or not (1 <= _series_req["every_days"] <= 366)
+                        or not isinstance(_series_req.get("count"), int)
+                        or not (2 <= _series_req["count"] <= 12)):
+                    return self._json(400, {"error": "series must be {every_days: int 1..366, count: int 2..12}"})
+                if not str(data.get("date", "")).strip():
+                    return self._json(400, {"error": "series requires a base date on the listing"})
+                _series_every, _series_n = _series_req["every_days"], _series_req["count"]
             # Phase 2 find-quality: AI write-side compression — runs OUTSIDE the
             # LOCK (a live-mode HTTP call must never hold the hub lock) and
             # AFTER client-field walls (reserved/unknown rejection above), so
@@ -4545,10 +4636,41 @@ class Handler(BaseHTTPRequestHandler):
                     data["available"] = True  # default; SOLD OUT derives from registered>=capacity at booking time
                 else:
                     data["available"] = bool(data.get("available", True))
+                # Phase 3: series fan-out — the CAP check above sized one
+                # listing; re-check atomically for the whole series
+                # (all-or-nothing: a mid-series cap trip creates NOTHING).
+                if _series_n > 1:
+                    _cap_now = int(os.environ.get("HUB_LISTING_CAP", "20") or 20)
+                    _fam_active = [l for l in LISTINGS
+                                   if l.get("owner") == p["sub"] and not l.get("archived")]
+                    if _cap_now > 0 and len(_fam_active) + _series_n > _cap_now:
+                        return self._json(409, {"error": f"listing cap reached for a {_series_n}-listing series ({_cap_now} active). Free slots first",
+                            "cap": _cap_now, "active": len(_fam_active)})
+                    from datetime import date as _dtt, timedelta as _td
+                    try:
+                        _base_d = _dtt.fromisoformat(str(data["date"]).strip())
+                    except ValueError:
+                        return self._json(400, {"error": "series base date must be YYYY-MM-DD"})
+                    _sid = "series-" + secrets.token_hex(6)
+                    data["series_id"] = _sid
+                    for _i in range(1, _series_n):
+                        _ch = dict(data)
+                        _ch.pop("series", None)
+                        _ch["date"] = (_base_d + _td(days=_series_every * _i)).isoformat()
+                        _cn = ID_COUNTERS.get(_pref, 0) + 1
+                        ID_COUNTERS[_pref] = _cn
+                        _ch["id"] = f"{_pref}-{_cn}"
+                        # one manage code governs the whole series (shown once)
+                        LISTINGS.append(_ch)
+                        _series_dates.append(_ch["date"])
+                    _series_dates.insert(0, str(data["date"]))
                 LISTINGS.append(data)
                 _persist_locked()
             _resp = {"ok": True, "id": lid, "manage_code": manage_code,
                 "manage_note": "shown ONCE — required to edit or delete this listing; store it now"}
+            if _sid:
+                _resp["series"] = {"id": _sid, "created": _series_n, "dates": _series_dates,
+                    "note": "one manage code governs the whole series; archive_series/delete_series act on every date"}
             if claim_code:
                 _resp["claim_code"] = claim_code
                 _resp["claim_note"] = "shown ONCE — the only key to this private deal; without it the deal is invisible"
@@ -4617,7 +4739,8 @@ class Handler(BaseHTTPRequestHandler):
             code = str(data.get("manage_code", "")).strip()
             action = str(data.get("action", "")).strip().lower()
             if action not in ("edit", "delete", "archive", "unarchive", "make_private", "make_public"):
-                return self._json(400, {"error": "action must be 'edit', 'delete', 'archive', 'unarchive', 'make_private' or 'make_public'"})
+                if action not in ("edit", "delete", "archive", "unarchive", "make_private", "make_public", "archive_series", "delete_series"):
+                    return self._json(400, {"error": "action must be 'edit', 'delete', 'archive', 'unarchive', 'make_private', 'make_public', 'archive_series' or 'delete_series'"})
             cred = self.headers.get("X-Hub-Token", "")
             p, err = hublib.verify_token(BOOKING_KEY, cred, "list", single_use=False) if cred \
                 else (None, "missing X-Hub-Token")
@@ -4643,6 +4766,27 @@ class Handler(BaseHTTPRequestHandler):
                         return self._json(403, {"error": "invalid manage_code for this listing (or login as the owning account)"})
                 active = [b for b in BOOKINGS
                           if b.get("listing_id") == lid and b.get("escrow") in ("HELD", "WAIVED", "DIRECT")]
+                if action in ("archive_series", "delete_series"):
+                    _sid = listing.get("series_id")
+                    if not _sid:
+                        return self._json(400, {"error": "listing is not part of a series"})
+                    _fam = [l for l in LISTINGS if l.get("series_id") == _sid]
+                    for l in _fam:
+                        _act2 = [b for b in BOOKINGS
+                                 if b.get("listing_id") == l["id"] and b.get("escrow") in ("HELD", "WAIVED", "DIRECT")]
+                        if _act2:
+                            return self._json(409, {"error": f"series listing {l['id']} has active booking(s); resolve first",
+                                "listing": l["id"], "active": len(_act2)})
+                    if action == "archive_series":
+                        for l in _fam:
+                            l["archived"] = True
+                        _persist_locked()
+                        return self._json(200, {"ok": True, "series": _sid, "archived": len(_fam),
+                            "note": "whole series hidden; unarchive any single date to revive it"})
+                    for l in _fam:
+                        LISTINGS.remove(l)
+                    _persist_locked()
+                    return self._json(200, {"ok": True, "series": _sid, "deleted": len(_fam)})
                 if action == "delete":
                     if active:
                         return self._json(409, {"error": f"listing has {len(active)} active booking(s); resolve (confirm/cancel) first"})
@@ -5375,6 +5519,36 @@ class Handler(BaseHTTPRequestHandler):
             if not sub: return self._json(400, {"error": "booking_id required"})
             tok = hublib.mint_token(ADMIN_KEY, "confirm", sub, ttl=int(data.get("ttl", 3600)))
             return self._json(201, {"ok": True, "token": tok, "act": "confirm", "booking_id": sub})
+        if path == "/admin/sponsor":
+            # Phase 3 marketplace: sponsored PLACEMENT (owner GO 2026-11-07).
+            # Admin-granted only — money never self-serves placement; organic
+            # order stays untouched (the sponsored listing rides the page
+            # TAIL, capped 1/page, labeled sponsored=true in every payload).
+            with LOCK:
+                if not _auth_allow("admin", _source_of(self)):
+                    return self._json(429, {"error": "admin rate limit reached for your source, retry later"})
+            cred = self.headers.get("X-Hub-Token", "")
+            if not hmac.compare_digest(cred, ADMIN_KEY):
+                return self._json(403, {"error": "invalid admin key"})
+            _slid = str(data.get("listing_id", "")).strip()
+            _days = data.get("days", 7)
+            if not _slid:
+                return self._json(400, {"error": "listing_id required"})
+            if not isinstance(_days, int) or not (1 <= _days <= 60):
+                return self._json(400, {"error": "days must be int 1..60"})
+            with LOCK:
+                _sl = next((x for x in LISTINGS if x["id"] == _slid), None)
+                if not _sl:
+                    return self._json(404, {"error": f"no listing {_slid}"})
+                if _sl.get("archived") or _sl.get("visibility") == "private":
+                    return self._json(409, {"error": "listing must be public and active to be sponsored"})
+                _sl["_sponsor"] = {"active": True,
+                                    "until_ts": time.time() + _days * 86400,
+                                    "granted_by": "admin", "days": _days}
+                _persist_locked()
+            return self._json(200, {"ok": True, "id": _slid,
+                "sponsored_until": time.strftime("%Y-%m-%d", time.gmtime(_sl["_sponsor"]["until_ts"])),
+                "law": "organic order untouched; sponsored listing appears LAST per results page, labeled sponsored=true"})
         if path == "/admin/digest/send":
             # Weekly organizer digest (Phase B follow-up, owner-approved polish
             # batch 2026-09-18). Admin-gated; body: {weeks: N (default 1),

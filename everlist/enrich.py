@@ -14,11 +14,17 @@ Law (docs/reviews/2026-11-07-universal-listings-gap-analysis.md section 4):
 Modes via EVERLIST_ENRICH:
   off  (default) — no-op, zero behavior change.
   stub           — deterministic offline extractor (tests / airgapped).
-  live           — ONE OpenAI-compatible chat call, bounded by
-                   EVERLIST_ENRICH_TIMEOUT_S (default 2.5).
+  live           — OpenAI-compatible chat calls, bounded by
+                   EVERLIST_ENRICH_TIMEOUT_S per provider (default 8).
 
-Optional live knobs: EVERLIST_ENRICH_URL (chat-completions endpoint),
-EVERLIST_ENRICH_API_KEY (bearer), EVERLIST_ENRICH_MODEL.
+Provider chain (owner call 2026-11-07: use the key you already have):
+  1) explicit EVERLIST_ENRICH_URL / EVERLIST_ENRICH_API_KEY / EVERLIST_ENRICH_MODEL
+  2) the hub OWN .secrets/llm.env providers (NLU proxy, then ZAI) — gated by
+     EVERLIST_ENRICH_USE_LLM_ENV=1 so test gates stay hermetic. No new
+     secrets anywhere: the file brain.py/phrase.py already read carries
+     every key this module needs.
+The first provider that returns parseable keywords wins; every failure mode
+stays fail-open (extract NEVER raises, returns None).
 """
 import json
 import os
@@ -27,8 +33,27 @@ import time
 import urllib.error
 import urllib.request
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ENVF = os.path.join(_HERE, ".secrets", "llm.env")
+
+
+def _load_env() -> None:
+    """Load .secrets/llm.env into os.environ (never overriding real env)."""
+    try:
+        with open(_ENVF) as f:
+            for ln in f:
+                ln = ln.strip()
+                if not ln or ln.startswith("#") or "=" not in ln:
+                    continue
+                k, _, v = ln.partition("=")
+                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+    except OSError:
+        pass
+
+
+_load_env()
+
 _WORD = re.compile(r"[a-zäöüß][a-zäöüß-]{2,}")
-# Deterministic stopword wall for the stub extractor (EN+DE small core).
 _STOP = {"the", "and", "for", "with", "from", "this", "that", "are", "all",
          "our", "your", "their", "have", "will", "can", "who", "what",
          "when", "where", "how", "und", "der", "die", "das", "ein", "eine",
@@ -40,13 +65,30 @@ def _cfg():
     mode = os.environ.get("EVERLIST_ENRICH", "off").strip().lower()
     if mode not in ("off", "stub", "live"):
         mode = "off"
-    return {"mode": mode,
-            "url": os.environ.get("EVERLIST_ENRICH_URL",
-                                  "https://api.openai.com/v1/chat/completions"),
-            "key": os.environ.get("EVERLIST_ENRICH_API_KEY", ""),
-            "model": os.environ.get("EVERLIST_ENRICH_MODEL", "gpt-4o-mini"),
-            "timeout": min(5.0, max(0.2, float(
-                os.environ.get("EVERLIST_ENRICH_TIMEOUT_S", "2.5") or 2.5)))}
+    # Provider chain: (1) explicit knobs (tests / bespoke providers),
+    # (2) llm.env providers NLU then ZAI when EVERLIST_ENRICH_USE_LLM_ENV=1.
+    chain = []
+    _ek = os.environ.get("EVERLIST_ENRICH_API_KEY", "").strip()
+    if _ek:
+        chain.append((os.environ.get("EVERLIST_ENRICH_URL",
+                                     "https://api.openai.com/v1/chat/completions").strip(),
+                      _ek,
+                      os.environ.get("EVERLIST_ENRICH_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini"))
+    if os.environ.get("EVERLIST_ENRICH_USE_LLM_ENV", "") == "1":
+        for base_k, key_k, model_k, _dm in (
+                ("EVERLIST_NLU_API_URL", "EVERLIST_NLU_API_KEY", "EVERLIST_NLU_MODEL",
+                 "z-ai-glm-5-3-flash"),
+                ("EVERLIST_ZAI_API_URL", "EVERLIST_ZAI_API_KEY", "EVERLIST_ZAI_MODEL",
+                 "glm-5.3-flash")):
+            _k = os.environ.get(key_k, "").strip()
+            if _k:
+                chain.append((os.environ.get(base_k, "https://api.agent-zero.ai/venice/v1").strip().rstrip("/")
+                              + "/chat/completions",
+                              _k,
+                              os.environ.get(model_k, _dm).strip() or _dm))
+    return {"mode": mode, "chain": chain,
+            "timeout": min(12.0, max(0.2, float(
+                os.environ.get("EVERLIST_ENRICH_TIMEOUT_S", "8") or 8)))}
 
 
 def _clean_words(text):
@@ -74,25 +116,40 @@ def _live_extract(cfg, title, description, tags):
               "ONLY a JSON object {\"kw\": [...]}.\n"
               f"Title: {title}\nDescription: {description}\n"
               f"Tags: {', '.join(str(t) for t in (tags or []))}")
-    body = json.dumps({"model": cfg["model"], "temperature": 0,
-                       "messages": [{"role": "user", "content": prompt}]}).encode()
-    req = urllib.request.Request(
-        cfg["url"], data=body, method="POST",
-        headers={"Content-Type": "application/json",
-                 "Authorization": f"Bearer {cfg['key']}"})
-    with urllib.request.urlopen(req, timeout=cfg["timeout"]) as resp:
-        payload = json.loads(resp.read().decode())
-    content = (payload.get("choices") or [{}])[0].get("message", {}).get("content", "")
-    m = re.search(r"\{[^{}]*\}", str(content), re.S)
-    if not m:
-        return None
-    kw = json.loads(m.group(0)).get("kw") or []
-    kw = [str(k).strip().lower() for k in kw
-          if isinstance(k, str) and 1 <= len(str(k).strip()) <= 24][:_KW_MAX]
-    if not kw:
-        return None
-    return {"kw": kw, "mode": "live", "model": cfg["model"],
-            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    # max_tokens 1200 ON PURPOSE (brain.py lesson): reasoning models spend
+    # internal reasoning BEFORE the answer — small budgets return empty
+    # content with finish_reason=length.
+    payload_base = {"temperature": 0, "max_tokens": 1200,
+                    "messages": [{"role": "user", "content": prompt}]}
+    last = None
+    for url, key, model in cfg["chain"]:
+        try:
+            req = urllib.request.Request(
+                url, data=json.dumps(dict(payload_base, model=model)).encode(),
+                method="POST",
+                headers={"Content-Type": "application/json",
+                         "Authorization": f"Bearer {key}"})
+            with urllib.request.urlopen(req, timeout=cfg["timeout"]) as resp:
+                payload = json.loads(resp.read().decode())
+            content = (payload.get("choices") or [{}])[0].get("message", {}).get("content", "")
+            m = re.search(r"\{[^{}]*\}", str(content), re.S)
+            if not m:
+                last = "unparseable reply"
+                continue
+            kw = json.loads(m.group(0)).get("kw") or []
+            kw = [str(k).strip().lower() for k in kw
+                  if isinstance(k, str) and 1 <= len(str(k).strip()) <= 24][:_KW_MAX]
+            if not kw:
+                last = "empty keyword list"
+                continue
+            return {"kw": kw, "mode": "live", "model": model,
+                    "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        except Exception as _ex:
+            last = str(_ex)[:80]
+            continue
+    if last:
+        print(f"[enrich] live extraction failed ({last}); fail-open", flush=True)
+    return None
 
 
 def extract(title, description, tags):
@@ -104,7 +161,7 @@ def extract(title, description, tags):
     try:
         if cfg["mode"] == "stub":
             return _stub_extract(title, description, tags)
-        if not cfg["key"]:
+        if not cfg["chain"]:
             return None
         return _live_extract(cfg, title, description, tags)
     except Exception:
