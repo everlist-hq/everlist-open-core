@@ -1,0 +1,10 @@
+{
+  "name": "petsitting",
+  "description": "Dated care for pets: dog walking, cat visits, boarding days. capacity = pets/slots. Community vertical via the C5 drop-in extension point.",
+  "required": ["title", "price", "capacity", "date", "location"],
+  "optional": ["description", "category", "tags", "url", "time", "pet_types", "duration_minutes"],
+  "categories": ["dog-walking", "cat-visits", "boarding", "grooming", "other"],
+  "tracks_capacity": true,
+  "field_types": {"capacity": "positive_int", "date": "nonempty", "pet_types": "nonempty", "duration_minutes": "positive_int"},
+  "booking": {"required": ["pet_owner"], "fields": ["pet_owner", "notes", "quantity"], "identity": "pet_owner", "action": "book+pay"}
+}

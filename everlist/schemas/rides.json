@@ -1,0 +1,10 @@
+{
+  "name": "rides",
+  "description": "Ride-sharing (BlaBlaCar-style): a driver offers seats on a dated trip from A to B. capacity = free seats; booking = reserve a seat. Community vertical via the C5 drop-in extension point.",
+  "required": ["title", "price", "capacity", "date", "location"],
+  "optional": ["description", "category", "tags", "url", "from_location", "to_location", "time"],
+  "categories": ["carpool", "long-distance", "airport", "daily-commute", "event-return", "other"],
+  "tracks_capacity": true,
+  "field_types": {"capacity": "positive_int", "date": "nonempty", "from_location": "nonempty", "to_location": "nonempty"},
+  "booking": {"required": ["passenger"], "fields": ["passenger", "pickup", "quantity"], "identity": "passenger", "action": "reserve+pay"}
+}

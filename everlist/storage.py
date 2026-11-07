@@ -223,16 +223,18 @@ def search_ids(query):
         return None
     conn = _db()
     try:
-        rowids = [r[0] for r in conn.execute(
-            "SELECT rowid FROM listings_fts WHERE listings_fts MATCH ?",
+        # Phase 1 relevance: bm25 ascending = most relevant first; callers
+        # preserve this order for plain q-queries (explicit sorts override).
+        # ONE joined query: a follow-up `WHERE rowid IN (...)` lookup would
+        # destroy the bm25 order (IN returns rows in table order, not input
+        # order) — the JOIN keeps MATCH and ORDER BY in the same statement.
+        ids = [r[0] for r in conn.execute(
+            "SELECT l.id FROM listings_fts f"
+            " JOIN listings l ON l.rowid = f.rowid"
+            " WHERE listings_fts MATCH ?"
+            " ORDER BY bm25(listings_fts)",
             (q,)).fetchall()]
-        if not rowids:
-            return []
-        marks = ",".join("?" * len(rowids))
-        rows = conn.execute(
-            f"SELECT id FROM listings WHERE rowid IN ({marks})",
-            rowids).fetchall()
-        return [r[0] for r in rows]
+        return ids
     except sqlite3.OperationalError:
         # Index not ready (fresh db: FTS tables exist only after the first
         # persisted snapshot). None = "index unavailable" -> caller falls

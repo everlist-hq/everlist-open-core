@@ -52,6 +52,7 @@ for own, want in [("demo-x", True), ("everlist-org-vienna", True),
     check(f"predicate owner {own!r} -> {want}", got == want)
 
 check("predicate source demo-seed", app._is_demo_listing({"source": "demo-seed"}))
+check("predicate writeproof owner", app._is_demo_listing({"owner": "postship-writeproof"}))
 check("predicate client demo flag ignored",
       not app._is_demo_listing({"owner": "julian-kutos", "demo": True}))
 

@@ -335,6 +335,29 @@ def _loc_norm(s):
     return _LOC_ALIASES.get(n, n)
 
 
+def _parse_latlon(raw):
+    """Phase 2 geo: parse 'lat,lon' degrees; None when malformed (caller 400s)."""
+    try:
+        a, b = str(raw or "").split(",", 1)
+        lat, lon = float(a), float(b)
+    except ValueError:
+        return None
+    if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+        return None
+    return lat, lon
+
+
+def _dist_km(lat1, lon1, lat2, lon2):
+    """Haversine great-circle distance in km (deterministic, no deps)."""
+    import math
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = (math.sin(dp / 2) ** 2
+         + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2)
+    return 2 * math.asin(min(1.0, math.sqrt(a))) * 6371.0088
+
+
 _DEMO_OWNER_PREFIXES = ("demo-", "everlist-org-", "escrow-sandbox")
 
 
@@ -346,7 +369,12 @@ def _is_demo_listing(l):
     listings never match. Consumed by _pub_listing (API + SPA + SSR)."""
     if str(l.get("source") or "").startswith("demo-seed"):
         return True
-    return str(l.get("owner") or "").startswith(_DEMO_OWNER_PREFIXES)
+    own = str(l.get("owner") or "")
+    if own.startswith(_DEMO_OWNER_PREFIXES):
+        return True
+    # write-path proof artifacts (POST /listings direct, e.g. postship-writeproof)
+    # are test supply too - found live on prod 2026-11-05 (even-75)
+    return "writeproof" in own
 
 
 def _pub_listing(l):
@@ -359,6 +387,22 @@ def _pub_listing(l):
     pub = {k: v for k, v in l.items() if k not in _SERVER_ONLY_LISTING_FIELDS}
     if _is_demo_listing(l):
         pub["demo"] = True
+    # UI hint only: all checkout/session/booking walls remain authoritative.
+    # No receiver, account or booking secrets are added to this public projection.
+    from datetime import date
+    try:
+        day = date.fromisoformat(str(l.get("date") or ""))
+        ended = day < date.today()
+    except ValueError:
+        ended = False
+    available = (not ended and not l.get("archived") and l.get("visibility", "public") == "public"
+                 and l.get("available", True)
+                 and ("capacity" not in l or int(l.get("registered") or 0) < int(l["capacity"])))
+    paid = float(l.get("price") or 0) > 0
+    pub["checkout"] = {"eligible": bool(available and (not paid or PAY_MODE == "testnet")),
+                       "mode": "testnet" if paid and PAY_MODE == "testnet" else "demo" if not paid else "unavailable"}
+    # Same one-place calculation as hosted checkout; organizer commission is NOT a buyer surcharge.
+    pub["price_preview"] = {"quantity": 1, "total": _checkout_total_c({"qty": 1}, l) / 100.0, "buyer_fee": 0.0}
     return pub
 
 
@@ -1260,6 +1304,10 @@ _SCHEMAS = {
             "rating_count": {"type": "integer"},
             "free_rating_sum": {"type": "integer"},
             "free_rating_count": {"type": "integer"},
+            "checkout": {"type": "object", "description": "Non-secret UI hint only; session creation and booking revalidate all gates.",
+                         "properties": {"eligible": {"type": "boolean"}, "mode": {"type": "string", "enum": ["testnet", "demo", "unavailable"]}}},
+            "price_preview": {"type": "object", "description": "Server-calculated one-place total, same rounding as hosted checkout. Organizer commission is not added to the buyer price.",
+                              "properties": {"quantity": {"type": "integer"}, "total": {"type": "number"}, "buyer_fee": {"type": "number"}}},
             "demo": {"type": "boolean", "description": "true only on seed/curated-example supply (server-derived, never client-claimed) — demo boards must never read as live organizers (A6 2026-11-04)"},
         },
     },
@@ -1563,9 +1611,11 @@ def _openapi_spec():
             "/listings/{id}/manage": {"post": op("Edit/archive/unarchive/make_private/make_public/delete a listing", "listings", sec=tok)},
             "/listings/{id}/image": {"post": op("Set or clear the listing photo (owning acct- token, or list token + manage_code; clear:true removes)", "listings", sec=tok,
                                           note="body {data_url: data:image/png|jpeg|webp;base64,...} or {clear:true}; SVG refused; decoded cap 380KB; stored same-origin as a data URL (CSP img-src data:)")},
-            "/search": {"get": op("Search listings (q, from/to date, min/max_price, tags=, sort, ...)", "listings",
+            "/search": {"get": op("Search listings (q, from/to date, min/max_price, tags=, sort, near=lat,lon, radius_km=, ...)", "listings",
                                   note="from/to = YYYY-MM-DD on the listing date (dateless listings excluded); "
-                                       "tags=comma,any-of; sort=date|price|newest (newest = creation order reversed)")},
+                                       "tags=comma,any-of; sort=date|price|newest|distance (newest = creation order reversed); "
+                                       "geo: near=lat,lon + optional radius_km= (listings without lat/lon excluded); "
+                                       "sort=distance requires near=; matched listings carry distance_km")},
             "/bookings": {"get": op("Your bookings (principal-scoped)", "bookings", sec=tok)},
             "/bookings/{id}": {"get": op("Booking status (buyer or listing owner)", "bookings", sec=tok,
                                         note="unknown-or-not-yours = indistinguishable 404 (no existence oracle)")},
@@ -1605,7 +1655,7 @@ def _openapi_spec():
             "/accounts/email/bind": {"post": op("Bind recovery email (code sent)", "accounts")},
             "/accounts/email/verify": {"post": op("Verify email code", "accounts")},
             "/checkout/sessions": {"post": op("Create embeddable checkout session (TRACK E)", "checkout",
-                note="Public, rate-limited. Creates a hosted checkout session (chk- capability URL) for a PUBLIC listing. FREE listings: demo rail, escrow WAIVED at booking (no money moves). PAID listings: wallet rail (E7) on testnet hubs (HUB_PAY_MODE=testnet) - the session face carries payment_request (receiver/units/asset) and the verify step takes the buyer's EIP-3009 signature; money moves exactly when the booking lands. Paid sessions are refused honestly on non-testnet hubs (TRACK E4/E5 fiat deferred). Payment terms + total are snapshotted at create; listing changes stale the session.")},
+                note="Public listings carry checkout:{eligible,mode}, a non-secret UI hint; sessions revalidate all walls. Public, rate-limited. Creates a hosted checkout session (chk- capability URL) for a PUBLIC listing. FREE listings: demo rail, escrow WAIVED at booking (no money moves). PAID listings: wallet rail (E7) on testnet hubs (HUB_PAY_MODE=testnet) - the session face carries payment_request (receiver/units/asset) and the verify step takes the buyer's EIP-3009 signature; money moves exactly when the booking lands. Paid sessions are refused honestly on non-testnet hubs (TRACK E4/E5 fiat deferred). Payment terms + total are snapshotted at create; listing changes stale the session.")},
             "/checkout/sessions/{sid}": {"get": op("Checkout session status", "checkout",
                 note="Capability-URL face: status, masked email, listing snapshot, total. No secrets.")},
             "/checkout/sessions/{sid}/pay": {"post": op("Checkout pay step", "checkout",
@@ -2934,8 +2984,8 @@ class Handler(BaseHTTPRequestHandler):
             frole = q.get("role", [""])[0].strip().lower()
             if frole and frole not in ("offer", "seek"):
                 return self._json(400, {"error": "role must be offer or seek"})
-            if fsort and fsort not in ("date", "price", "newest"):
-                return self._json(400, {"error": "sort must be one of: date, price, newest"})
+            if fsort and fsort not in ("date", "price", "newest", "distance"):
+                return self._json(400, {"error": "sort must be one of: date, price, newest, distance"})
             DATE_SHAPE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
             if ffrom and not DATE_SHAPE.match(ffrom):
                 return self._json(400, {"error": "from must be YYYY-MM-DD"})
@@ -2949,11 +2999,35 @@ class Handler(BaseHTTPRequestHandler):
                 fminv = float(fmin) if fmin else None
             except ValueError:
                 return self._json(400, {"error": "min_price must be a number"})
+            # Phase 2 geo: near=lat,lon + radius_km=, honest 400s, no silent
+            # fallback: malformed coords, a radius without near=, or
+            # sort=distance without near= are client errors.
+            fnear_raw = q.get("near", [""])[0].strip()
+            fnear = _parse_latlon(fnear_raw) if fnear_raw else None
+            if fnear_raw and fnear is None:
+                return self._json(400, {"error": "near must be lat,lon degrees (lat -90..90, lon -180..180)"})
+            frad_raw = q.get("radius_km", [""])[0].strip()
+            try:
+                frad = float(frad_raw) if frad_raw else None
+            except ValueError:
+                return self._json(400, {"error": "radius_km must be a number"})
+            if frad is not None:
+                if frad <= 0:
+                    return self._json(400, {"error": "radius_km must be positive"})
+                if fnear is None:
+                    return self._json(400, {"error": "radius_km requires near=lat,lon"})
+            if fsort == "distance" and fnear is None:
+                return self._json(400, {"error": "sort=distance requires near=lat,lon"})
             with LOCK:
                 # C6: sqlite mode narrows q via the derived FTS5 index first
                 # (token match, O(matches) instead of a full substring scan).
                 # fts_ids None = index unavailable -> legacy substring scan.
                 fts_ids = search_ids(term) if (term and mode() == "sqlite") else None
+                # Phase 1 relevance: remember the bm25 rank (best first) so the
+                # filtered result can keep relevance order for plain q-searches
+                # (explicit sorts override it below).
+                _rank = {lid: i for i, lid in enumerate(fts_ids)} \
+                    if (term and fts_ids) else None
                 if fts_ids == []:
                     res = []
                 else:
@@ -2972,7 +3046,12 @@ class Handler(BaseHTTPRequestHandler):
                            and (not fcat or l.get("category") == fcat)
                            and (not ftag or ftag in (l.get("tags") or []))
                            and (not ftags or any(t in (l.get("tags") or []) for t in ftags))
-                           and (not floc or floc in _loc_norm(str(l.get("location", ""))))
+                           and (not floc or floc in _loc_norm(str(l.get("location", "")))
+                                # Phase 1 universal listings: route verticals (rides) —
+                                # any schema-declared *_location field satisfies a
+                                # location query (from_location/to_location matching).
+                                or any(floc in _loc_norm(str(v)) for _k, v in l.items()
+                                       if _k.endswith("_location") and isinstance(v, str)))
                            # C2 date range: a listing without a date cannot satisfy it
                            and (not ffrom or str(l.get("date", "")) >= ffrom)
                            and (not fto or bool(l.get("date")) and str(l.get("date")) <= fto)]
@@ -2982,6 +3061,31 @@ class Handler(BaseHTTPRequestHandler):
                     res = [l for l in res if float(l.get("price", 0)) <= fmaxv]
                 if fminv is not None:
                     res = [l for l in res if float(l.get("price", 0)) >= fminv]
+                # Phase 2 geo: a listing without numeric lat/lon cannot satisfy
+                # a geo filter (the dateless-listing law, applied to space).
+                # Distances live in _geo_km (keyed by id, never on the canonical
+                # dicts); filter preserves prior order unless sort=distance.
+                _geo_km = {}
+                if fnear is not None:
+                    _kept = []
+                    for l in res:
+                        try:
+                            _la, _lo = float(l.get("lat")), float(l.get("lon"))
+                        except (TypeError, ValueError):
+                            continue
+                        if not (-90.0 <= _la <= 90.0 and -180.0 <= _lo <= 180.0):
+                            continue
+                        _kept.append(l)
+                        _geo_km[l["id"]] = round(_dist_km(fnear[0], fnear[1], _la, _lo), 3)
+                    res = _kept
+                    if frad is not None:
+                        res = [l for l in res if _geo_km.get(l["id"], float("inf")) <= frad]
+                if fsort == "distance":
+                    res.sort(key=lambda l: _geo_km.get(l["id"], float("inf")))
+                # Phase 1 relevance: plain q-searches keep bm25 order (best
+                # first); any explicit sort below overrides it deterministically.
+                if _rank is not None and not fsort:
+                    res.sort(key=lambda l: _rank.get(l["id"], len(_rank)))
                 if fsort == "price":
                     res.sort(key=lambda l: float(l.get("price", 0)))
                 elif fsort == "date":
@@ -2996,7 +3100,14 @@ class Handler(BaseHTTPRequestHandler):
                 "category": fcat, "tag": ftag,
                 "tags": ftags or None, "location": floc, "min_price": fmin or None,
                 "max_price": fmax or None, "from": ffrom or None, "to": fto or None,
-                "sort": fsort or None}, "listings": [_pub_listing(x) for x in res]})
+                "near": fnear_raw or None, "radius_km": frad or None,
+                "sort": fsort or None}, "listings": [
+                    # Phase 2 geo: distance_km rides on the response COPY only
+                    # (_pub_listing builds fresh dicts; canonical LISTINGS stay
+                    # free of request-derived values).
+                    dict(_pub_listing(x),
+                         **({"distance_km": _geo_km[x["id"]]} if x["id"] in _geo_km else {}))
+                    for x in res]})
         if u.path == "/suggest":
             """C6-UX discovery helper: live vocabulary matching q.
             Empty q returns the full tag/category/vertical tree root;

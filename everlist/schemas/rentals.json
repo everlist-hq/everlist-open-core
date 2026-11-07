@@ -1,0 +1,10 @@
+{
+  "name": "rentals",
+  "description": "Rentals: dated use of a real asset - tools, electronics, outdoor gear, vehicles, rooms, parking. capacity = rentable units; deposits ride payment_terms. Community vertical via the C5 drop-in extension point.",
+  "required": ["title", "price", "capacity", "date", "location"],
+  "optional": ["description", "category", "tags", "url", "end_date", "deposit_info"],
+  "categories": ["tools", "electronics", "outdoor", "vehicle", "space", "parking", "other"],
+  "tracks_capacity": true,
+  "field_types": {"capacity": "positive_int", "date": "nonempty", "end_date": "nonempty"},
+  "booking": {"required": ["renter"], "fields": ["renter", "quantity", "notes"], "identity": "renter", "action": "rent+pay"}
+}
