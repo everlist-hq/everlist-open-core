@@ -324,12 +324,57 @@ def main():
     os.environ["EVERLIST_ENRICH_API_KEY"] = ""
     cfg = enrich._cfg()
     check("E5 no chain -> fail-open None path", cfg["mode"] == "live" and cfg["chain"] == [], cfg)
-    os.environ.pop("EVERLIST_ENRICH", None)
-    os.environ.pop("EVERLIST_NLU_API_KEY", None)
-    os.environ.pop("EVERLIST_ZAI_API_KEY", None)
-    os.environ.pop("EVERLIST_ENRICH_API_KEY", None)
-    os.environ.pop("EVERLIST_ENRICH_URL", None)
-    os.environ.pop("EVERLIST_ENRICH_MODEL", None)
+    # E6-E9 (owner-approved 2026-11-08): chain v1.2 + draft v2 pins
+    os.environ["EVERLIST_ENRICH"] = "live"
+    os.environ["EVERLIST_ENRICH_USE_LLM_ENV"] = "1"
+    os.environ["EVERLIST_NLU_API_KEY"] = "k-nlu"
+    os.environ["EVERLIST_ZAI_API_KEY"] = "k-zai"
+    os.environ["EVERLIST_OPENROUTER_API_KEY"] = "k-or"
+    os.environ["EVERLIST_A0_API_KEY"] = "k-a0"
+    cfg = enrich._cfg()
+    check("E6 four-provider chain", len(cfg["chain"]) == 4
+          and cfg["chain"][2][0].startswith("https://openrouter.ai/api/v1")
+          and cfg["chain"][3][0].startswith("https://llm.agent-zero.ai/v1"),
+          cfg["chain"])
+    os.environ["EVERLIST_ENRICH_TIMEOUT_S"] = "0.2"
+    sm = enrich.draft_from_text_smart("Yoga Event\n2026-12-24 um 10:00\nOrt: Wien")
+    check("E7 dead-chain draft falls back to regex", sm["engine"] == "regex"
+          and sm["draft"].get("date") == "2026-12-24", sm)
+    os.environ.pop("EVERLIST_ENRICH_TIMEOUT_S", None)
+    os.environ["EVERLIST_ENRICH"] = "off"
+    sm = enrich.draft_from_text_smart("Konzert\n05.12.2026")
+    check("E8 off-mode draft stays regex", sm["engine"] == "regex", sm)
+    os.environ["EVERLIST_ENRICH"] = "live"
+    # E9: mocked AI provider (ephemeral loopback server, daemon thread —
+    # cleaned up at process exit) proving the llm-engine draft path end-to-end
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    class _MH(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.dumps({"choices": [{"message": {"content":
+                '{"title":"Sommerfest im Hof","date":"2026-08-15","time":"18:00",'
+                '"price":5,"location":"Hinterhof Wien","description":"Musik und Essen"}'}}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        def log_message(self, *a):
+            pass
+    _srv = HTTPServer(("127.0.0.1", 0), _MH)
+    _port = _srv.server_address[1]
+    threading.Thread(target=_srv.serve_forever, daemon=True).start()
+    os.environ["EVERLIST_ENRICH_URL"] = f"http://127.0.0.1:{_port}/chat/completions"
+    os.environ["EVERLIST_ENRICH_API_KEY"] = "mock"
+    sm = enrich.draft_from_text_smart("Flyer text irgendwas")
+    check("E9 llm-engine draft parses", sm["engine"] == "llm"
+          and sm["draft"].get("title") == "Sommerfest im Hof"
+          and sm["draft"].get("price") == 5.0
+          and sm["draft"].get("time") == "18:00", sm)
+    for k in ("EVERLIST_ENRICH", "EVERLIST_ENRICH_USE_LLM_ENV", "EVERLIST_NLU_API_KEY",
+              "EVERLIST_ZAI_API_KEY", "EVERLIST_OPENROUTER_API_KEY", "EVERLIST_A0_API_KEY",
+              "EVERLIST_ENRICH_URL", "EVERLIST_ENRICH_API_KEY"):
+        os.environ.pop(k, None)
 
     # ---------- F. contracts ----------
     _s, oa = req("GET", "/openapi.json")
