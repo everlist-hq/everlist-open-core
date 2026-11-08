@@ -1649,7 +1649,7 @@ def _openapi_spec():
                                        "sort=distance requires near=; matched listings carry distance_km; "
                                        "sponsorship: admin-granted listings ride the LAST page position (capped 1), labeled sponsored=true")},
             "/listing/draft": {
-                "post": op("Paste-a-flyer: free text -> prefilled listing DRAFT (never creates; organizer confirms then POSTs /listings)", "listings", sec=tok,
+                "post": op("Paste-a-flyer: free text -> prefilled listing DRAFT (never creates; organizer confirms then POSTs /listings); engine: regex always, LLM-assisted when the enrichment chain is live (response names engine+model)", "listings", sec=tok,
                            note="body {text}; deterministic extraction (title/date/time/price/location), no AI in v1")},
             "/bookings": {"get": op("Your bookings (principal-scoped)", "bookings", sec=tok)},
             "/bookings/{id}": {"get": op("Booking status (buyer or listing owner)", "bookings", sec=tok,
@@ -4379,9 +4379,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {"error": "text must be a nonempty string"})
             if len(text) > 20000:
                 return self._json(400, {"error": "text too long (max 20000 chars)"})
-            return self._json(200, {"ok": True,
-                "draft": enrich.draft_from_text(text),
-                "note": "prefilled draft only — review every field, then POST /listings to create"})
+            # v2: LLM-assisted when the enrichment chain is live (owner GO
+            # 2026-11-08); deterministic regex stays as the fail-open fallback.
+            # The response names its engine + model — advice, never authority.
+            _smart = enrich.draft_from_text_smart(text)
+            _resp = {"ok": True, "draft": _smart["draft"], "engine": _smart["engine"]}
+            if _smart.get("model"):
+                _resp["model"] = _smart["model"]
+            _resp["note"] = "prefilled draft only — review every field, then POST /listings to create"
+            return self._json(200, _resp)
         if path == "/listings":
             cred = self.headers.get("X-Hub-Token", "")  # I2: list token required
             p, err = hublib.verify_token(BOOKING_KEY, cred, "list", single_use=False) if cred \

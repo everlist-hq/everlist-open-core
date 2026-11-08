@@ -235,13 +235,22 @@ try:
     check("org ItemList JSON-LD embedded", '"ItemList"' in os_)
 
     # legal/env doc gates (docs must stay truthful)
-    er = open(os.path.join(HERE, "../../docs/ops/env-reference.md")).read() if os.path.exists(os.path.join(HERE, "../../docs/ops/env-reference.md")) else ""
-    # canonical docs live in project docs/, not experiments/; fallback read
-    if not er:
-        er = open("/a0/usr/projects/everlist/docs/ops/env-reference.md").read()
-    check("env-reference documents WEBCHAT_LEGAL_FILE", "WEBCHAT_LEGAL_FILE" in er)
-    ua = open("/a0/usr/projects/everlist/docs/user-actions.md").read()
-    check("user-actions references legal template", "legal-template" in ua)
+    # docs exist in BOTH layouts (CI fix 2026-11-08): canonical project tree
+    # (../../docs/...) and the private-mirror checkout (docs/ next to the hub).
+    # The law stays STRICT: the doc must exist somewhere and stay truthful —
+    # a missing doc in either layout is a real failure, never a skip.
+    _cands = [os.path.join(HERE, "../../docs/ops/env-reference.md"),
+              os.path.join(HERE, "docs/ops/env-reference.md")]
+    _er_path = next((c for c in _cands if os.path.exists(c)), None)
+    er = open(_er_path).read() if _er_path else ""
+    check("env-reference documents WEBCHAT_LEGAL_FILE", "WEBCHAT_LEGAL_FILE" in er,
+          "doc not found in canonical or mirror layout")
+    _ua_cands = [os.path.join(HERE, "../../docs/user-actions.md"),
+                 os.path.join(HERE, "docs/user-actions.md")]
+    _ua_path = next((c for c in _ua_cands if os.path.exists(c)), None)
+    ua = open(_ua_path).read() if _ua_path else ""
+    check("user-actions references legal template", "legal-template" in ua,
+          "doc not found in canonical or mirror layout")
 
 finally:
     try:

@@ -79,10 +79,19 @@ def _cfg():
                 ("EVERLIST_NLU_API_URL", "EVERLIST_NLU_API_KEY", "EVERLIST_NLU_MODEL",
                  "z-ai-glm-5-3-flash"),
                 ("EVERLIST_ZAI_API_URL", "EVERLIST_ZAI_API_KEY", "EVERLIST_ZAI_MODEL",
-                 "glm-5.3-flash")):
+                 "glm-5.3-flash"),
+                ("EVERLIST_OPENROUTER_API_URL", "EVERLIST_OPENROUTER_API_KEY",
+                 "EVERLIST_OPENROUTER_MODEL", "openai/gpt-4o-mini"),
+                # a0 shared router: quota resets daily (owner 2026-11-08) —
+                # LAST in the chain so daily-exhausted windows fail over first
+                ("EVERLIST_A0_API_URL", "EVERLIST_A0_API_KEY", "EVERLIST_A0_MODEL",
+                 "z-ai-glm-5-3-flash")):
+            _defaults = {"EVERLIST_OPENROUTER_API_URL": "https://openrouter.ai/api/v1",
+                         "EVERLIST_A0_API_URL": "https://llm.agent-zero.ai/v1"}
             _k = os.environ.get(key_k, "").strip()
             if _k:
-                chain.append((os.environ.get(base_k, "https://api.agent-zero.ai/venice/v1").strip().rstrip("/")
+                chain.append((os.environ.get(base_k, _defaults.get(base_k,
+                              "https://api.agent-zero.ai/venice/v1")).strip().rstrip("/")
                               + "/chat/completions",
                               _k,
                               os.environ.get(model_k, _dm).strip() or _dm))
@@ -200,3 +209,79 @@ def draft_from_text(text):
          "price": price, "location": loc,
          "description": "\n".join(lines[1:])[:500] or None}
     return {k: v for k, v in d.items() if v is not None}
+
+
+_DRAFT_PROMPT = ("You parse EVENT/SERVICE FLYER text into strict JSON. Reply ONLY "
+                 "with a JSON object, no prose. Allowed keys: title (string, "
+                 "max 80 chars), date (YYYY-MM-DD or null), time (HH:MM 24h or "
+                 "null), price (number >=0 or null), location (string max 120 "
+                 "or null), description (string max 500 or null). Omit keys you "
+                 "cannot support from the text. Never invent facts.\n\nFlyer:\n")
+
+
+def _draft_llm(cfg, text, max_providers=2):
+    """LLM flyer parse over the provider chain (first parseable reply wins).
+    Returns {"draft": {...}, "model": model} or None. NEVER raises."""
+    body_base = {"temperature": 0, "max_tokens": 1200,
+                 "messages": [{"role": "user",
+                               "content": _DRAFT_PROMPT + str(text)[:8000]}]}
+    for url, key, model in cfg["chain"][:max(1, int(max_providers))]:
+        try:
+            req = urllib.request.Request(
+                url, data=json.dumps(dict(body_base, model=model)).encode(),
+                method="POST",
+                headers={"Content-Type": "application/json",
+                         "Authorization": f"Bearer {key}"})
+            with urllib.request.urlopen(req, timeout=cfg["timeout"]) as resp:
+                payload = json.loads(resp.read().decode())
+            content = (payload.get("choices") or [{}])[0].get("message", {}).get("content", "")
+            m = re.search(r"\{[^{}]*\}", str(content), re.S)
+            if not m:
+                continue
+            raw = json.loads(m.group(0))
+            if not isinstance(raw, dict):
+                continue
+            d = {}
+            t = raw.get("title")
+            if isinstance(t, str) and t.strip():
+                d["title"] = t.strip()[:80]
+            dt = raw.get("date")
+            if isinstance(dt, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", dt.strip()):
+                d["date"] = dt.strip()
+            tm2 = raw.get("time")
+            if isinstance(tm2, str):
+                mm = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", tm2.strip())
+                if mm:
+                    d["time"] = f"{int(mm.group(1)):02d}:{mm.group(2)}"
+            pr = raw.get("price")
+            if isinstance(pr, (int, float)) and pr == pr and 0 <= pr < 10**7:
+                d["price"] = round(float(pr), 2)
+            lc = raw.get("location")
+            if isinstance(lc, str) and lc.strip():
+                d["location"] = lc.strip()[:120]
+            de = raw.get("description")
+            if isinstance(de, str) and de.strip():
+                d["description"] = de.strip()[:500]
+            if not d:
+                continue
+            return {"draft": d, "model": model}
+        except Exception:
+            continue
+    return None
+
+
+def draft_from_text_smart(text):
+    """Paste-a-flyer v2: LLM-assisted parse when live+chain available,
+    deterministic regex otherwise (fail-open law). Returns
+    {"draft", "engine" (regex|llm), "model"?}. NEVER raises; the draft is
+    ADVICE — it never creates anything (the organizer confirms every field)."""
+    out = {"draft": draft_from_text(text), "engine": "regex"}
+    cfg = _cfg()
+    if cfg["mode"] != "live" or not cfg["chain"]:
+        return out
+    got = _draft_llm(cfg, text)
+    if got and got.get("draft"):
+        out["draft"] = got["draft"]
+        out["engine"] = "llm"
+        out["model"] = got.get("model")
+    return out
