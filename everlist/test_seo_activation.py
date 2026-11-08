@@ -244,13 +244,13 @@ try:
     _er_path = next((c for c in _cands if os.path.exists(c)), None)
     er = open(_er_path).read() if _er_path else ""
     check("env-reference documents WEBCHAT_LEGAL_FILE", "WEBCHAT_LEGAL_FILE" in er,
-          "doc not found in canonical or mirror layout")
+          "doc missing or missing required content in both layouts")
     _ua_cands = [os.path.join(HERE, "../../docs/user-actions.md"),
                  os.path.join(HERE, "docs/user-actions.md")]
     _ua_path = next((c for c in _ua_cands if os.path.exists(c)), None)
     ua = open(_ua_path).read() if _ua_path else ""
     check("user-actions references legal template", "legal-template" in ua,
-          "doc not found in canonical or mirror layout")
+          "doc missing or missing required content in both layouts")
 
 finally:
     try:
