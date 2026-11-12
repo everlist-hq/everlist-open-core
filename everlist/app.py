@@ -62,6 +62,16 @@ ID_COUNTERS = {}  # per-vertical id counters - persisted, NEVER decremented (ids
 # The account CODE is the credential (shown ONCE, sha256-only); login mints tokens
 # with sub=acct-<id>; open /access can NEVER mint acct- principals (forgery wall).
 ACCOUNTS = {}
+# SEEK system (owner GO 2026-11-12, docs/spec-seek-listings-2026-11-12.md):
+# role=seek listings turn the marketplace around - a seeker posts what/when/
+# where a human is WANTED; fillers join (WAIVED) or apply (vetted). Money
+# direction on paid seeks: seeker funds, filler receives (S3 flip recorded on
+# the booking). Fiscal wording law: seeks say "pay", never "price" (the API
+# stores price; every surface words it as pay).
+APPLICATIONS = {}   # aid -> {id, listing_id, filler, book_fields, message, status, created, bid?}
+MERCHANTS = {}      # slug -> merchant profile (catalogs, P-track)
+CATALOGS = {}       # catalog id -> versioned tree (catalogs, P-track)
+SEEK_JOB_ROLES = ("join", "vetted")  # application_mode values
 # Self-service page branding (owner call 2026-10-31): partners customize THEIR
 # page themselves. GET /branding is public; PUT requires an acct- principal
 # (same ownership law as manage/confirm). FIXED rails are server-pinned and
@@ -595,7 +605,9 @@ def _persist_locked():
             "cardano_nonces": cardano_x402.snapshot_used_nonces(),   # C3c nonce wall
             "tickets": TICKETS,   # T5: QR tickets
             "earnings": EARNINGS,   # W3.4: private earnings mirror (never public LEDGER)
-            "branding": BRANDING}   # v2: partner branding MUST survive restarts (was silently dropped)
+            "branding": BRANDING,  # v2: partner branding MUST survive restarts (was silently dropped)
+            "applications": APPLICATIONS,  # SEEK vetted applications (messages: private-store law)
+            "merchants": MERCHANTS, "catalogs": CATALOGS}  # catalogs P-track
     write_snapshot(snap)
 
 
@@ -607,6 +619,9 @@ def _load_state():
             return
         LISTINGS[:] = snap.get("listings", [])
         BOOKINGS[:] = snap.get("bookings", [])
+        APPLICATIONS.update(snap.get("applications", {}))
+        MERCHANTS.update(snap.get("merchants", {}))
+        CATALOGS.update(snap.get("catalogs", {}))
         LEDGER[:] = snap.get("ledger", [])
         IDEMPOTENCY.update(snap.get("idempotency", {}))
         ACCOUNTS.update(snap.get("accounts", {}))
@@ -2202,7 +2217,42 @@ class Handler(BaseHTTPRequestHandler):
         """Book-core exit shim: tuple result instead of an HTTP write."""
         return (code, data, extra_headers)
 
-    def _book_core(self, data, token=None, claim=None, idem_key=None, payment=None):
+    def _seek_apply(self, data, listing, principal, acct_t2):
+        """SEEK vetted application: records an APPLICATION (no booking, no
+        ledger entry, no capacity change). require_verified_worker enforces
+        the Tier-2 wall fail-closed (email-code NEVER satisfies it). The
+        applicant message lives in APPLICATIONS only - same private-store
+        discipline as booking secrets; public surfaces show counts."""
+        if listing.get("require_verified_worker") and not acct_t2:
+            return self._bk_json(403, {"error": "this seek requires a Tier-2-verified worker",
+                "note": "verify via POST /accounts/verify-midnight (fail-closed Midnight personhood credential); chat: 'verify-midnight <credential_id>'",
+                "verified": False})
+        with LOCK:
+            if listing.get("archived"):
+                return self._bk_json(409, {"error": "listing archived - not bookable"})
+            lid = listing["id"]
+            _apps = [a for a in APPLICATIONS.values()
+                     if a["listing_id"] == lid and a["filler"] == principal and a["status"] == "pending"]
+            if _apps:
+                return self._bk_json(409, {"error": f"you already have a pending application on {lid}",
+                    "application_id": _apps[0]["id"]})
+            msg = data.get("message")
+            if msg is not None:
+                msg = _BAD_CHARS_RE.sub("", str(msg)).strip()[:300] or None
+            v = listing["vertical"]
+            allowed_bf = CLIENT_BOOKING_FIELDS[v] | {"quantity", "human_verified"}
+            book_fields = {k: data[k] for k in data if k in allowed_bf}
+            _n = ID_COUNTERS.get("app", 0) + 1
+            ID_COUNTERS["app"] = _n
+            aid = f"app-{_n}"
+            APPLICATIONS[aid] = {"id": aid, "listing_id": lid, "filler": principal,
+                "book_fields": book_fields, "message": msg, "status": "pending",
+                "created": time.time()}
+            _persist_locked()
+        return self._bk_json(201, {"ok": True, "application_id": aid, "status": "pending",
+            "note": "application recorded - the seeker accepts or declines; no money moved"})
+
+    def _book_core(self, data, token=None, claim=None, idem_key=None, payment=None, _accept_replay=False):
         """Booking engine core (extracted verbatim from the /book route).
 
         Returns (code, body, extra_headers). The HTTP route wraps this;
@@ -2292,6 +2342,19 @@ class Handler(BaseHTTPRequestHandler):
             # only server-side verification (midnight-zk / admin-vouch) counts.
             return self._bk_json(403, {"error": "this listing requires a Tier-2-verified buyer",
                 "note": "sign in to your account and verify via POST /accounts/verify-midnight (fail-closed Midnight personhood credential); chat: 'verify-midnight <credential_id>'",
+                "verified": False})
+        # SEEK (owner GO 2026-11-12): vetted seeks take APPLICATIONS, never
+        # direct bookings - capacity decrements only at ACCEPT (first accept
+        # wins; pending applications never block). Applications are NOT
+        # ledger events: no money moves at apply time.
+        if (listing.get("role") == "seek"
+                and str(listing.get("application_mode") or "join") == "vetted"
+                and not _accept_replay):
+            return self._seek_apply(data, listing, principal, acct_t2)
+        if listing.get("role") == "seek" and listing.get("require_verified_worker") and not acct_t2:
+            # same Tier-2 law as require_verified_buyer: email-code NEVER counts
+            return self._bk_json(403, {"error": "this seek requires a Tier-2-verified worker",
+                "note": "verify via POST /accounts/verify-midnight (fail-closed Midnight personhood credential); chat: 'verify-midnight <credential_id>'",
                 "verified": False})
         v = listing["vertical"]
         missing = [f for f in VERTICAL_SCHEMAS[v]["booking"]["required"] if f not in data]
@@ -4434,7 +4497,42 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {"error": f"unknown vertical: {v}",
                     "known": list(VERTICAL_SCHEMAS)})
             schema = VERTICAL_SCHEMAS[v]
+            # SEEK (owner GO 2026-11-12): cross-vertical seek fields, handled
+            # BEFORE the required-check so the pay alias satisfies price.
+            # role is structural (the schema-derived manage-edit allowlist can
+            # never touch it). Wording law: seeks say "pay", never "price".
+            _role = str(data.get("role", "offer")).strip().lower()
+            if _role not in ("offer", "seek"):
+                return self._json(400, {"error": "role must be offer or seek"})
+            data["role"] = _role
+            if "pay" in data:
+                if _role != "seek":
+                    return self._json(400, {"error": "pay is a seek field; offers set price"})
+                if data.get("price") is not None:
+                    return self._json(400, {"error": "set pay or price, not both"})
+                try:
+                    _pay = float(data.pop("pay"))
+                except (TypeError, ValueError):
+                    return self._json(400, {"error": "pay must be a number"})
+                if not (_pay >= 0 and _pay == _pay and _pay not in (float("inf"), float("-inf"))):
+                    return self._json(400, {"error": "pay must be a nonnegative finite number"})
+                data["price"] = _pay
+            if _role == "seek":
+                _am = str(data.get("application_mode", "join")).strip().lower()
+                if _am not in SEEK_JOB_ROLES:
+                    return self._json(400, {"error": "application_mode must be join or vetted"})
+                data["application_mode"] = _am
+                if data.get("require_verified_worker") is not None:
+                    if not isinstance(data["require_verified_worker"], bool):
+                        return self._json(400, {"error": "require_verified_worker must be a boolean"})
+                else:
+                    data.pop("require_verified_worker", None)
+            else:
+                for _sf in ("application_mode", "require_verified_worker"):
+                    data.pop(_sf, None)
             missing = [f for f in schema["required"] if f not in data]
+            if missing and _role == "seek" and missing == ["price"]:
+                return self._json(400, {"error": "missing fields: pay (the amount the filler receives; 0 = free join)"})
             if missing: return self._json(400, {"error": f"missing fields: {missing}"})
             # H17: required string fields must be nonempty and bounded
             for f in schema["required"]:
@@ -4559,7 +4657,7 @@ class Handler(BaseHTTPRequestHandler):
                 if re.search(r"[\x00-\x1f\x7f\u202a-\u202e]", loc2):
                     return self._json(400, {"error": "location must not contain control characters or newlines"})
                 data["location"] = loc2
-            allowed = set(schema["required"]) | set(schema.get("optional", [])) | {"vertical", "payment_terms", "visibility", "receive_addr", "require_verified_buyer", "series"}
+            allowed = set(schema["required"]) | set(schema.get("optional", [])) | {"vertical", "payment_terms", "visibility", "receive_addr", "require_verified_buyer", "series", "role", "application_mode", "require_verified_worker"}
             data = {k: d for k, d in data.items() if k in allowed}  # drop unknowns (payment_terms already server-normalized above)
             # RTF2: create-path hygiene for the remaining text fields — title
             # and location keep their stricter wall above (newlines banned);
@@ -4791,6 +4889,131 @@ class Handler(BaseHTTPRequestHandler):
                 listing["image"] = "data:" + mime + ";base64," + m.group(2)
                 _persist_locked()
             return self._json(200, {"ok": True, "id": lid, "bytes": len(blob), "mime": mime})
+        if path.startswith("/listings/") and "/applications" in path:
+            # SEEK applications (owner GO 2026-11-12): one action-route, B3c
+            # owner proof (list token of the owning acct- principal OR the
+            # listing manage_code); withdraw is the FILLER's own action with
+            # their book/list token. Accept replays the stored booking fields
+            # through the SHARED _book_core engine via an internally minted
+            # book token (checkout-session precedent: zero drift from /book
+            # gates). Paid seeks record the S3 direction flip on the booking.
+            m = re.fullmatch(r"/listings/([^/]+)/applications(?:/([^/]+))?", path)
+            if not m:
+                return self._json(404, {"error": "no route"})
+            lid, aid_in = m.group(1), m.group(2)
+            action = str(data.get("action", "list")).strip().lower()
+            if action not in ("list", "accept", "decline", "withdraw"):
+                return self._json(400, {"error": "action must be list, accept, decline or withdraw"})
+            cred = self.headers.get("X-Hub-Token", "")
+            # applicants authenticate with BOOK tokens (POST /book created
+            # the application); owners arrive with list tokens - accept either.
+            p, err = (None, "missing X-Hub-Token")
+            if cred:
+                p, err = hublib.verify_token(BOOKING_KEY, cred, "list", single_use=False)
+                if not p:
+                    p, err = hublib.verify_token(BOOKING_KEY, cred, "book", single_use=False)
+            if p:
+                p, err = _gen_check(p)  # B1
+            if not p:
+                return self._json(401, {"error": err or "invalid list token"})
+            principal = p["sub"]
+            with LOCK:
+                if not _auth_allow("manage", _source_of(self)):
+                    return self._json(429, {"error": "manage rate limit reached for your source, retry later"})
+                listing = next((l for l in LISTINGS if l["id"] == lid), None)
+                if not listing:
+                    return self._json(404, {"error": f"no listing {lid}"})
+                is_owner = principal.startswith("acct-") and principal == listing.get("owner")
+                _code_ok = False
+                if not is_owner:
+                    code = str(data.get("manage_code", "")).strip()
+                    _code_ok = bool(code) and hmac.compare_digest(
+                        hashlib.sha256(code.encode()).hexdigest(),
+                        str(listing.get("manage_code_hash", "")))
+                    # manage_code proves the OWNER for list/accept/decline;
+                    # withdraw is the FILLER's action - authorized by the
+                    # app.filler match below, no owner proof needed.
+                    if not _code_ok and action != "withdraw":
+                        return self._json(403, {"error": "invalid credentials for this listing's applications"})
+            if action == "list":
+                with LOCK:
+                    apps = [a for a in APPLICATIONS.values() if a["listing_id"] == lid]
+                    apps.sort(key=lambda a: a["created"])
+                    out = [{"id": a["id"], "filler_ref": a["filler"][:4] + "…",
+                            "status": a["status"], "created": a["created"],
+                            "message": a.get("message")} for a in apps]
+                return self._json(200, {"listing_id": lid, "applications": out,
+                    "note": "filler_ref is a truncated principal - full identity stays booking-private until accept"})
+            aid = str(data.get("application_id", aid_in or "")).strip()
+            with LOCK:
+                app = APPLICATIONS.get(aid)
+                if not app or app["listing_id"] != lid:
+                    return self._json(404, {"error": f"no application {aid} on {lid}"})
+            if action == "withdraw":
+                if app["filler"] != principal:
+                    return self._json(403, {"error": "only the applicant can withdraw"})
+                with LOCK:
+                    if app["status"] != "pending":
+                        return self._json(409, {"error": f"application already {app['status']}"})
+                    app["status"] = "withdrawn"; app["decided_ts"] = time.time()
+                    _persist_locked()
+                return self._json(200, {"ok": True, "application_id": aid, "status": "withdrawn"})
+            # owner decisions below (acct ownership or manage_code proof)
+            if not (is_owner or _code_ok):
+                return self._json(403, {"error": "only the seek owner can accept or decline"})
+            if action == "decline":
+                with LOCK:
+                    if app["status"] != "pending":
+                        return self._json(409, {"error": f"application already {app['status']}"})
+                    app["status"] = "declined"; app["decided_ts"] = time.time()
+                    _persist_locked()
+                return self._json(200, {"ok": True, "application_id": aid, "status": "declined"})
+            # ACCEPT: capacity re-checked INSIDE the lock before minting;
+            # _book_core runs OUTSIDE the lock (it takes the lock itself).
+            with LOCK:
+                if app["status"] != "pending":
+                    return self._json(409, {"error": f"application already {app['status']}"})
+                if listing.get("archived"):
+                    return self._json(409, {"error": "listing archived - not bookable"})
+                sch = VERTICAL_SCHEMAS[listing["vertical"]]
+                if sch.get("tracks_capacity"):
+                    cap = listing.get("capacity")
+                    if cap is not None and listing.get("registered", 0) + 1 > int(cap):
+                        return self._json(409, {"error": "seek slot already filled",
+                            "note": "pending applications never block capacity; first accept wins"})
+                filler = app["filler"]
+                tok = hublib.mint_token(BOOKING_KEY, "book", filler, ttl=120)
+            bdata = dict(app.get("book_fields") or {})
+            bdata["listing_id"] = lid
+            # S3 (owner GO): on paid seeks the SEEKER funds at accept -
+            # payment evidence rides THIS action into _book_core (same walls
+            # as /book; the escrow rail validates verbatim). No evidence on a
+            # paid seek = the booking engine's honest payment error.
+            if data.get("escrow_ref") is not None:
+                bdata["escrow_ref"] = data.get("escrow_ref")
+            bcode, bbody, beh = self._book_core(bdata, token=tok, _accept_replay=True)
+            if bcode != 201:
+                return self._json(bcode, bbody, extra_headers=beh)
+            bid = str(bbody.get("id") or bbody.get("bid") or "")
+            with LOCK:
+                app["status"] = "accepted"; app["decided_ts"] = time.time(); app["bid"] = bid
+                bk = next((b for b in BOOKINGS if b["id"] == bid), None)
+                if bk is not None:
+                    bk["application_id"] = aid
+                    if listing.get("role") == "seek":
+                        # S3 direction flip (owner GO): on paid seeks the money
+                        # flows SEEKER (listing owner) -> FILLER (the accepted
+                        # applicant). The escrow rail itself is untouched.
+                        bk["money_direction"] = "seeker_to_filler"
+                        bk["payee_principal"] = filler
+                    # decline other pending applications honestly: slot filled
+                    for other in APPLICATIONS.values():
+                        if other["listing_id"] == lid and other["id"] != aid and other["status"] == "pending":
+                            other["status"] = "declined"; other["decided_ts"] = time.time()
+                            other["note"] = "slot filled"
+                _persist_locked()
+            return self._json(201, {"ok": True, "application_id": aid, "status": "accepted",
+                "booking_id": bid, "money_direction": "seeker_to_filler" if listing.get("role") == "seek" else None})
         if path.startswith("/listings/") and path.endswith("/manage"):
             # B3c-ownership: manage code OR logged-in account ownership proves control
             lid = path[len("/listings/"):-len("/manage")]

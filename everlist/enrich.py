@@ -30,6 +30,7 @@ import json
 import os
 import re
 import time
+import zlib
 import urllib.error
 import urllib.request
 
@@ -285,6 +286,74 @@ def draft_from_text_smart(text):
         out["engine"] = "llm"
         out["model"] = got.get("model")
     return out
+
+
+def pdf_text(data: bytes) -> str | None:
+    """A3 flyer branch (owner GO 2026-11-12): extract readable text from a
+    PDF's FlateDecode content streams with the STDLIB ONLY (zlib) — no pypdf
+    install exists and none is approved. Bounded and fail-open: returns None
+    on anything non-PDF, undecodable, or oversized; NEVER raises. Extracted
+    text feeds draft_from_text() — the DRAFT is advice, never authority
+    (organizer confirms every field, same as the photo/text paths)."""
+    try:
+        if not isinstance(data, (bytes, bytearray)) or not data.startswith(b"%PDF-"):
+            return None
+        if len(data) > 10_000_000:  # 10 MB — a flyer PDF is never bigger
+            return None
+        out = []
+        for m in re.finditer(rb"stream\r?\n(.*?)endstream", data, re.S):
+            raw = m.group(1)
+            try:
+                dec = zlib.decompress(raw)
+            except Exception:
+                dec = raw  # uncompressed stream — try as-is
+            # PDF text operators: strings live in (...) Tj and [...] TJ arrays
+            for tm in re.finditer(rb"\((?:[^()\\]|\\.)*\)", dec):
+                s = tm.group(0)[1:-1]
+                # unescape the minimal PDF string escapes
+                s = s.replace(b"\\(", b"(").replace(b"\\)", b")").replace(b"\\\\", b"\\")
+                try:
+                    out.append(s.decode("latin-1"))
+                except Exception:
+                    continue
+        # PDF text ops are per-line visual runs — join with NEWLINES so the
+        # line-based draft logic below (title = first line, Ort: anchor,
+        # description = rest) sees the flyer's real layout.
+        txt = "\n".join(out).strip()
+        if not txt or len(txt) < 20:
+            return None
+        return txt[:8000]
+    except Exception:
+        return None
+
+
+def draft_from_flyer(data: bytes) -> dict | None:
+    """Flyer dispatcher (PDF or plain text bytes): returns the SAME shape as
+    draft_from_text_smart() plus "source" (pdf|text), or None when nothing
+    readable. Fail-open everywhere; the draft is advice, never authority."""
+    try:
+        if not isinstance(data, (bytes, bytearray)) or not data:
+            return None
+        if data.startswith(b"%PDF-"):
+            txt = pdf_text(data)
+            if not txt:
+                return None
+            out = draft_from_text_smart(txt)
+            out["source"] = "pdf"
+            return out
+        # plain text (UTF-8 with latin-1 fallback)
+        try:
+            txt = data.decode("utf-8")
+        except Exception:
+            txt = data.decode("latin-1", errors="ignore")
+        txt = txt.strip()
+        if not txt:
+            return None
+        out = draft_from_text_smart(txt)
+        out["source"] = "text"
+        return out
+    except Exception:
+        return None
 
 
 # ---- URL import (owner GO 2026-11-12, spec-import-and-badges §3) ---------

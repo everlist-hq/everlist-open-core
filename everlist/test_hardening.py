@@ -141,8 +141,9 @@ lid = li.get("id")
 check("create for archive test", c == 201 and lid)
 _, tok_b = signup_login("hard-owner-b")
 
-check("archive 200", req("POST", f"/listings/{lid}/manage", {"action": "archive"},
-      headers={"X-Hub-Token": tok_a["list"]})[0] == 200)
+_c, _d = req("POST", f"/listings/{lid}/manage", {"action": "archive"},
+      headers={"X-Hub-Token": tok_a["list"]})
+check("archive 200", _c == 200, f"actual {_c}: {json.dumps(_d)[:240]}")
 check("anon archived view 401", req("GET", "/listings?archived=1")[0] == 401)
 check("garbage token archived view 401", req("GET", "/listings?archived=1",
       headers={"X-Hub-Token": "garbage"})[0] == 401)

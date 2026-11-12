@@ -1488,7 +1488,7 @@ def _intake_edit_field(sender: str, text: str) -> str | None:
 _INTAKE_BREAK = re.compile(
     r"^(?:search\b|find\b|import\b|show\b|browse\b|book\b|help\b|signup\b|login\b|logout\b|whoami\b|"
     r"account\b|status\b|my-(?:bookings|listings)\b|edit\s|delete\s|archive\s|unarchive\s|"
-    r"list\s|list\n|listings\b|verify-|set-payout\b|notify\b|lang\b|email-|recover\b|delete-account\b|"
+    r"need\s|need\n|list\s|list\n|listings\b|verify-|set-payout\b|notify\b|lang\b|email-|recover\b|delete-account\b|"
     r"unsubscribe\b|home\b|reset\b)",
     re.IGNORECASE)
 
@@ -2424,6 +2424,66 @@ def _create_listing(hub_url: str, sender: str, text: str) -> str:
             f"\U0001f511 Your manage code (shown ONCE \u2014 store it!): [[secret:manage:{_secret_put(sender, 'manage', code)}]]\n"
             f"It owns the listing: 'edit {res.get('id')} <code> ...' or 'delete {res.get('id')} <code>'. "
             f"Tip: 'signup' gives you an account (cap 25, no codes).")
+
+
+def _create_seek(hub_url: str, sender: str, text: str) -> str:
+    """SEEK intake (owner GO 2026-11-12, spec-seek-listings): one message posts
+    a 'wanted' listing. Quick: need Title | date | pay | location | wanted-count
+    Rich: need\n title: ... \n date: ... \n pay: ... (+ vertical:/application_mode:).
+    Wording law: PAY, never price - pay is what the filler RECEIVES."""
+    sender = (sender or "anonymous-chat")[:128]
+    sess = _session(sender)
+    body = text.strip()[4:].strip()
+    rich = _parse_rich(body)
+    if rich is not None:
+        parts = [rich.get("title", "")]
+        parts += [rich.get(k, "") for k in ("date", "pay", "location", "capacity")]
+        extra = {k: rich[k] for k in ("vertical", "application_mode", "category", "description") if rich.get(k)}
+    else:
+        parts = [p.strip() for p in body.split("|")]
+        extra = {}
+    title = (parts[0] or "").strip()[:80]
+    if not title:
+        return ("To post a seek (what you NEED), send:\n"
+                "need Kitchen help Saturday | 2026-11-15 | 120 | Vienna 1040 | 1\n"
+                "title | date | pay | location | wanted-count. Pay = what the helper RECEIVES; 0 = free join.")
+    date = parts[1] if len(parts) > 1 and parts[1] else "TBD"
+    pay = parts[2] if len(parts) > 2 and parts[2] else "0"
+    location = parts[3] if len(parts) > 3 and parts[3] else "TBD"
+    capacity = parts[4] if len(parts) > 4 and parts[4] else "1"
+    try:
+        payv = float(pay)
+        if payv < 0:
+            raise ValueError
+    except ValueError:
+        return f"Pay must be a number (what the helper receives), got {pay!r}. Example: need ... | 120 | ..."
+    try:
+        cap = max(1, int(capacity))
+    except ValueError:
+        cap = 1
+    vert = str(extra.get("vertical", "events")).strip().lower() or "events"
+    payload = {"vertical": vert, "role": "seek",
+               "application_mode": (str(extra.get("application_mode", "join")).strip().lower() or "join"),
+               "title": title, "date": date, "location": location,
+               "price": payv, "capacity": cap, "source": "chat-agent"}
+    if extra.get("category"):
+        payload["category"] = str(extra["category"]).strip().lower()
+    if extra.get("description"):
+        payload["description"] = str(extra["description"])[:500]
+    if sess and (sess.get("tokens") or {}).get("list"):
+        token = sess["tokens"]["list"]
+    else:
+        _, acc = _hub_post(hub_url, "/access", {"agent": sender, "acts": ["list"]})
+        token = acc["tokens"]["list"]
+    status, res = _hub_post(hub_url, "/listings", payload, token=token)
+    if status == 201:
+        payw = ("pay \u20ac" + _fmt_price_val(payv)) if payv else "free join"
+        out = (f"\u2705 Seek posted! '{res.get('title', title)}' is live (id: {res.get('id')}).\n"
+               f"{payw} \u00b7 wanted: {cap} \u00b7 {date}, {location}. ")
+        out += ("Applications wait for your accept." if payload["application_mode"] == "vetted"
+                else "People can join directly.")
+        return out
+    return f"\u274c Seek failed ({status}): {res.get('error', 'unknown error')}"
 
 
 def _owned_listing(hub_url: str, sender: str, body: str, action: str) -> str:
@@ -4798,6 +4858,14 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     # --- one-prompt listing creation (B3c) — before search ('list' vs 'listings')
     if low == "list" or low.startswith("list ") or low.startswith("list\n") or low.startswith("list\r\n"):
         return _create_listing(hub_url, sender, text.strip())
+    # SEEK intake (owner GO 2026-11-12): 'need ...' posts a wanted listing.
+    # Deliberately NO 'suche' alias: the pinned R5b search-intent law routes
+    # event-seeking phrases to SEARCH; creating on 'suche' would collide.
+    # SEEK intake (owner GO 2026-11-12): 'need ...' posts a wanted listing.
+    # Deliberately NO suche alias: pinned R5b law routes event-seeking phrases
+    # to SEARCH; creating on suche would collide with that pin.
+    if low == "need" or low.startswith("need ") or low.startswith("need\n") or low.startswith("need\r\n"):
+        return _create_seek(hub_url, sender, text.strip())
 
     # --- import ladder (owner GO 2026-11-12): 'import <url>' seeds the wizard
     if low == "import" or low.startswith("import ") or low.startswith("import\n"):

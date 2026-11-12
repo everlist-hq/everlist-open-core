@@ -49,7 +49,7 @@ def check(name, cond, detail=""):
     print(("PASS" if cond else "FAIL"), name, detail)
 
 
-def wait_ready(port, timeout=15):
+def wait_ready(port, timeout=45):  # 45s: slow binds under load (2 gate fails 2026-11-12)
     end = time.time() + timeout
     while time.time() < end:
         try:
@@ -177,9 +177,10 @@ check("G5: cancel token bound to other booking 403", st == 403)
 # ================= section 10: G1 restart persistence + crash-injection =================
 stop(srv)
 time.sleep(0.5)
-srv2 = start(PORT + 1)  # same STATE file (default), different port
-check("G1: server restarts", wait_ready(PORT + 1))
-BASE2 = f"http://127.0.0.1:{PORT+1}"
+PORT2 = free_port()  # fresh at spawn: PORT+1 races the kernel's sequential
+srv2 = start(PORT2)  # ephemeral allocator (2 gate failures 2026-11-12, G6 class)
+check("G1: server restarts", wait_ready(PORT2))
+BASE2 = f"http://127.0.0.1:{PORT2}"
 import urllib.request as _u
 def req2(method, path, body=None, headers=None):
     r = _u.Request(BASE2 + path, method=method,
@@ -204,8 +205,9 @@ check("G1: idempotency replays across restart", st3 == 201 and i3["id"] == i1["i
 # ================= section 11: G4 rate limiting (dedicated default-limit server) =================
 STATE_G4 = STATE + ".g4"
 if os.path.exists(STATE_G4): os.remove(STATE_G4)
-srv3 = start(PORT + 2, state_file=STATE_G4)  # default rate limit: 10 books/min
-BASE3 = f"http://127.0.0.1:{PORT+2}"
+PORT3 = free_port()  # fresh at spawn: same ephemeral-race fix as PORT2 above
+srv3 = start(PORT3, state_file=STATE_G4)  # default rate limit: 10 books/min
+BASE3 = f"http://127.0.0.1:{PORT3}"
 def req3(method, path, body=None, headers=None):
     r = urllib.request.Request(BASE3 + path, method=method,
         data=json.dumps(body).encode() if body is not None else None,
@@ -215,7 +217,7 @@ def req3(method, path, body=None, headers=None):
     except urllib.error.HTTPError as e:
         try: return e.code, json.loads(e.read().decode()), dict(e.headers)
         except Exception: return e.code, {}, dict(e.headers)
-check("G4: rate-limit server up", wait_ready(PORT + 2))
+check("G4: rate-limit server up", wait_ready(PORT3))
 st, a3, _ = req3("POST", "/access", {"agent": "g4-principal", "acts": ["book"]})
 codes = []
 for i in range(12):

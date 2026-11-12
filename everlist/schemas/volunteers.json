@@ -1,0 +1,41 @@
+{
+  "name": "volunteers",
+  "description": "Volunteering seeks - crew, cleanups, NGO shifts for a date. Joining is free; the seek counts hands.",
+  "required": [
+    "title",
+    "date",
+    "location",
+    "price",
+    "capacity"
+  ],
+  "optional": [
+    "description",
+    "category",
+    "tags",
+    "url",
+    "time"
+  ],
+  "categories": [
+    "cleanup",
+    "crew",
+    "ngo",
+    "event",
+    "other"
+  ],
+  "tracks_capacity": true,
+  "field_types": {
+    "capacity": "positive_int",
+    "date": "nonempty"
+  },
+  "booking": {
+    "required": [
+      "volunteer"
+    ],
+    "fields": [
+      "volunteer",
+      "quantity"
+    ],
+    "identity": "volunteer",
+    "action": "join"
+  }
+}

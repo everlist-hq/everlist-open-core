@@ -5,6 +5,7 @@ present (route + static-path map). Static-gate style per DL-3 precedent.
 Run: python test_presskit.py
 """
 import os
+import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -49,6 +50,25 @@ src = open(os.path.join(HERE, "webchat.py"), encoding="utf-8").read()
 check("W route registered", 'rest == "/presskit"' in src and "presskit_html(HUB_URL, loc)" in src)
 check("W static-path map includes /presskit", '"/privacy", "/presskit"' in src)
 check("W cache pattern consistent", src.count('presskit_html(HUB_URL, loc)') == 1)
+
+# ---- deploy.sh Caddy matcher (drift class 2026-11-12: /presskit /verify
+# ---- /break-it /llms.txt 404'd on prod EN root — /de/* escaped the drift) --
+srcd = open(os.path.join(HERE, "tools", "deploy.sh"), encoding="utf-8").read()
+m = re.search(r"@chat path ([^\n]+)", srcd)
+check("M matcher line present", bool(m))
+if m:
+    matcher = m.group(1)
+    _missing = []
+    for _r in ("/transparency", "/network", "/how", "/agents", "/privacy",
+               "/presskit", "/verify", "/break-it", "/llms.txt",
+               "/imprint", "/impressum", "/terms", "/agb", "/support"):
+        if _r not in matcher:
+            _missing.append(_r)
+    check("M matcher covers all web pages (drift class closed)", not _missing, f"missing: {_missing}")
+    check("M indexnow proof file in matcher",
+          "/.well-known/8465f3525dbe1925d3f13a5ee36b943e.txt" in matcher)
+    check("M badge logo path is prod-served /logo-512.png (no /static/)",
+          "/static/logo-512.png" not in open(os.path.join(HERE, "pages.py"), encoding="utf-8").read())
 
 print()
 bad = [n for n, ok in RESULTS if not ok]
