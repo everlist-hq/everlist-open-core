@@ -108,6 +108,10 @@ AUTH_LIMITS = {"signup": (30, 3600), "login": (120, 60), "rotate": (10, 3600),
                  "book": (int(os.environ.get("HUB_LIMIT_BOOK", "60")), 60),
                  "manage": (int(os.environ.get("HUB_LIMIT_MANAGE", "60")), 60),
                  "branding": (int(os.environ.get("HUB_LIMIT_BRANDING", "60")), 60),   # self-service branding writes (2026-10-31)
+                 # Import ladder (owner GO 2026-11-12, spec-import-and-badges §3):
+                 # URL/text DRAFT extraction wall — per source, env-tunable.
+                 # Fetching remote pages is expensive + untrusted input: capped.
+                 "draft": (int(os.environ.get("HUB_LIMIT_DRAFT", "12")), 3600),
                  "admin": (int(os.environ.get("HUB_LIMIT_ADMIN", "30")), 60),
                  "delete": (int(os.environ.get("HUB_LIMIT_DELETE", "30")), 60),
                  # S2 sweep: dedicated per-source kinds for the M9/M14 account
@@ -1649,8 +1653,8 @@ def _openapi_spec():
                                        "sort=distance requires near=; matched listings carry distance_km; "
                                        "sponsorship: admin-granted listings ride the LAST page position (capped 1), labeled sponsored=true")},
             "/listing/draft": {
-                "post": op("Paste-a-flyer: free text -> prefilled listing DRAFT (never creates; organizer confirms then POSTs /listings); engine: regex always, LLM-assisted when the enrichment chain is live (response names engine+model)", "listings", sec=tok,
-                           note="body {text}; deterministic extraction (title/date/time/price/location), no AI in v1")},
+                "post": op("Paste-a-flyer OR share-a-link: free text or an existing page URL -> prefilled listing DRAFT (never creates; organizer confirms then POSTs /listings); engine: regex always, LLM-assisted when the enrichment chain is live, URL pages read schema.org JSON-LD first (response names engine+model)", "listings", sec=tok,
+                           note="body {text} or {url} (not both); deterministic extraction (title/date/time/price/location); URL fetches are SSRF-walled (public hosts only, 1MB cap, html-only) and rate-limited per source; response carries needs_confirm [date,price] — never trust AI-extracted prices without review")},
             "/bookings": {"get": op("Your bookings (principal-scoped)", "bookings", sec=tok)},
             "/bookings/{id}": {"get": op("Booking status (buyer or listing owner)", "bookings", sec=tok,
                                         note="unknown-or-not-yours = indistinguishable 404 (no existence oracle)")},
@@ -4375,6 +4379,29 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(401, {"error": err or "invalid list token",
                     "hint": "same list token as POST /listings"})
             text = data.get("text") if isinstance(data, dict) else None
+            url = data.get("url") if isinstance(data, dict) else None
+            if isinstance(url, str) and url.strip():
+                # Import ladder v1 (owner GO 2026-11-12, spec-import-and-badges
+                # §3): fetch an EXISTING page (SSRF-walled in enrich.py),
+                # JSON-LD -> meta -> text ladder, DRAFT only — advice, never
+                # authority. Rate wall: fetching remote pages is expensive
+                # and untrusted input.
+                if text and text.strip():
+                    return self._json(400, {"error": "send text OR url, not both"})
+                url = url.strip()
+                if not url.lower().startswith(("http://", "https://")) or len(url) > 2048:
+                    return self._json(400, {"error": "url must be http(s) and <= 2048 chars"})
+                if not _auth_allow("draft", _source_of(self)):
+                    return self._json(429, {"error": "import rate limit reached, retry later"})
+                _got = enrich.draft_from_url(url)
+                if not _got:
+                    # fail-open law: honest degrade to the text flow, no fake draft
+                    return self._json(422, {"error": "could not read that page",
+                        "hint": "paste the event text instead: {\"text\": \"...\"}"})
+                return self._json(200, {"ok": True, "draft": _got["draft"],
+                    "engine": _got["engine"], "import_source": "url", "source_url": url,
+                    "needs_confirm": sorted(k for k in ("date", "price") if k in _got["draft"]),
+                    "note": "prefilled draft only — confirm DATE and PRICE, then POST /listings to create"})
             if not isinstance(text, str) or not text.strip():
                 return self._json(400, {"error": "text must be a nonempty string"})
             if len(text) > 20000:

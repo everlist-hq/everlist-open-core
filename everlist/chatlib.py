@@ -1297,6 +1297,78 @@ def _intake_after_edit(fields: dict) -> str:
     return (chr(0x2713) + " " + q) if q else _intake_preview(fields)
 
 
+def _import_listing(hub_url: str, sender: str, arg: str) -> str:
+    """Import ladder v1 (owner GO 2026-11-12, spec-import-and-badges §3):
+    'import <url>' fetches an EXISTING page (SSRF-walled enrich.draft_from_url),
+    extracts a prefilled DRAFT and SEEDS the guided listing wizard with it —
+    the organizer reviews/edits every field, then 'confirm'. Advice, never
+    authority: nothing is published by importing. Fail-open: an unreadable
+    page degrades honestly to the 'list' paste flow."""
+    url = (arg or "").strip()
+    if not url:
+        return ("Import a listing from a link:\n"
+                "  import https://your-event-page.example\n"
+                "I read the page and prefill a draft — you review and confirm "
+                "before anything is published. (No link handy? Say 'list' and "
+                "we'll do it together.)")
+    if not url.lower().startswith(("http://", "https://")):
+        url = "https://" + url
+    if len(url) > 2048:
+        return "That link is too long (max 2048 characters)."
+    try:
+        # A6 lesson: /access answers 200 or 201 — ignore the code, read tokens.
+        _, acc = _hub_post(hub_url, "/access", {"agent": sender, "acts": ["list"]})
+        token = acc["tokens"]["list"]
+        code, res = _hub_post(hub_url, "/listing/draft", {"url": url}, token=token)
+    except Exception:
+        return "Sorry — the EverList hub is unreachable right now. Try again shortly."
+    if code == 429:
+        return ("Import limit reached for now — try again in a bit, or say "
+                "'list' to type it directly.")
+    if code != 200:
+        return ("I couldn't read a listing out of that page. You can paste the "
+                "details instead — say 'list' and we'll do it together.")
+    d = res.get("draft") or {}
+    fields: dict = {}
+    if d.get("title"):
+        fields["title"] = str(d["title"])[:80]
+    if d.get("price") is not None:
+        fields["price"] = str(d["price"])
+    if d.get("date"):
+        fields["date"] = str(d["date"])
+    if d.get("location"):
+        fields["location"] = str(d["location"])[:120]
+    if d.get("description"):
+        fields["description"] = str(d["description"])[:500]
+    if not fields.get("title"):
+        return ("I found the page but couldn't pull a listing out of it. "
+                "Say 'list' and we'll do it together in a few lines.")
+    _intake_put(sender, fields)  # seeds the guided wizard (durable shadow too)
+    nl = chr(10)
+    bits = []
+    skipped = set(fields.get("__skipped", []))
+    for key, _, _ in _INTAKE_STEPS:
+        if fields.get(key):
+            bits.append(f"  {key}: {fields[key]}")
+        elif key in skipped:
+            bits.append(f"  {key}: —")
+    needs = res.get("needs_confirm") or []
+    warn = ""
+    if needs:
+        warn = (nl + chr(0x26a0) + chr(0xfe0f) + " Double-check these — I read "
+                "them off the page: " + ", ".join(needs) + ".")
+    q = _intake_next_question(fields)
+    out = ("\u2713 Read your page — draft below. Nothing is published yet:"
+           + nl + nl + nl.join(bits) + warn)
+    if q:
+        out += nl + nl + "Still needed — " + q
+    else:
+        out += (nl + nl + "Say 'confirm' to publish it, or send changes like "
+                "'price: 20' to edit a field.")
+    src = res.get("source_url") or url
+    return out + nl + nl + "Source: " + src[:200]
+
+
 def _intake_card(fields: dict) -> dict:
     """W2 item 11: the partial listing dict carried in /api/chat's additive
     `card` field. UI renders it via makeCard in a pinned dashed preview slot;
@@ -1414,7 +1486,7 @@ def _intake_edit_field(sender: str, text: str) -> str | None:
 
 # commands that break out of intake (they run normally; intake stays alive)
 _INTAKE_BREAK = re.compile(
-    r"^(?:search\b|find\b|show\b|browse\b|book\b|help\b|signup\b|login\b|logout\b|whoami\b|"
+    r"^(?:search\b|find\b|import\b|show\b|browse\b|book\b|help\b|signup\b|login\b|logout\b|whoami\b|"
     r"account\b|status\b|my-(?:bookings|listings)\b|edit\s|delete\s|archive\s|unarchive\s|"
     r"list\s|list\n|listings\b|verify-|set-payout\b|notify\b|lang\b|email-|recover\b|delete-account\b|"
     r"unsubscribe\b|home\b|reset\b)",
@@ -3368,6 +3440,7 @@ _HELP = (
     "where AI agents book real things.\n\nCommands:\n"
     "• search — all listings; 'search jazz' — filtered; 'find me a free yoga class' — natural language\n"
     "• filters: under/over <price> · from/until <YYYY-MM-DD> · soonest · cheapest (combine freely)\n"
+    "• import <link> — send a link to your existing event page; I prefill a draft, you review every field and confirm\n"
     "• list — publish something: guided chat (one question at a time), or all at once: list <title> | <category> | <date> | <price> | <location> | <capacity>\n"
     "• deal <title> | <price> | <date> | <location> | [category] — PRIVATE escrow deal; you get a one-time claim code to send the other party\n"
     "• book <id> <pvt-claim> <name> — book a private deal (claim code = the key)\n"
@@ -4725,6 +4798,10 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
     # --- one-prompt listing creation (B3c) — before search ('list' vs 'listings')
     if low == "list" or low.startswith("list ") or low.startswith("list\n") or low.startswith("list\r\n"):
         return _create_listing(hub_url, sender, text.strip())
+
+    # --- import ladder (owner GO 2026-11-12): 'import <url>' seeds the wizard
+    if low == "import" or low.startswith("import ") or low.startswith("import\n"):
+        return _import_listing(hub_url, sender, text.strip()[6:].strip())
 
     # instant phatic tier (owner law 2026-09-20): thanks/ok/lol stay 0-8ms
     # templates BEFORE the brain - never vary, never pay LLM latency.

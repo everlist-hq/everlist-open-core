@@ -285,3 +285,182 @@ def draft_from_text_smart(text):
         out["engine"] = "llm"
         out["model"] = got.get("model")
     return out
+
+
+# ---- URL import (owner GO 2026-11-12, spec-import-and-badges §3) ---------
+# Laws: fail-open (any failure -> None, caller degrades to the text flow);
+# SSRF walls BEFORE any request (scheme allowlist + resolved-IP blocklist on
+# EVERY redirect hop); never executes fetched content; prices/dates land in a
+# DRAFT only — the organizer confirms everything (advice, never authority).
+
+import ipaddress  # noqa: E402  (module-local import, mirrors urllib usage above)
+import socket  # noqa: E402
+
+_IMPORT_MAX_BYTES = 1_000_000   # 1 MB — a listing page is never bigger
+_IMPORT_TIMEOUT_S = 8
+_IMPORT_MAX_HOPS = 3
+_JSONLD_RE = re.compile(
+    r"<script[^>]+type\s*=\s*[\"']application/ld\+json[\"'][^>]*>(.*?)</script>",
+    re.I | re.S)
+_META_RE = re.compile(
+    r"<meta[^>]+(?:property|name)\s*=\s*[\"']([^\"']+)[\"'][^>]*content\s*=\s*[\"']([^\"']*)[\"']",
+    re.I)
+_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
+
+
+def _import_blocked_host(host: str) -> bool:
+    """True when host resolves to a private/loopback/link-local/reserved IP.
+    EVERLIST_IMPORT_ALLOW_PRIVATE=1 exists for TESTS only (fixture servers
+    bind loopback); production never sets it."""
+    if os.environ.get("EVERLIST_IMPORT_ALLOW_PRIVATE", "") == "1":
+        return False
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return True  # unresolvable = blocked (fail-closed on the network side)
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return True
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return True
+    return False
+
+
+def _import_fetch(url: str) -> str | None:
+    """Fetch an HTML page with SSRF walls. Returns text or None. NEVER raises."""
+    try:
+        u = urllib.parse.urlsplit(url)
+        if u.scheme not in ("http", "https") or not u.hostname or u.username:
+            return None
+        host = u.hostname.strip("[]")
+        if _import_blocked_host(host):
+            return None
+        req = urllib.request.Request(
+            url, method="GET",
+            headers={"User-Agent": "EverListImport/1 (+https://everlist.network)",
+                     "Accept": "text/html"})
+        hops = 0
+        while True:
+            with urllib.request.urlopen(req, timeout=_IMPORT_TIMEOUT_S) as resp:
+                ctype = (resp.headers.get("Content-Type") or "").lower()
+                if "text/html" not in ctype and "application/xhtml" not in ctype:
+                    return None
+                body = resp.read(_IMPORT_MAX_BYTES + 1)
+                if len(body) > _IMPORT_MAX_BYTES:
+                    return None
+                final_url = resp.geturl()
+            # every redirect hop re-resolves through urlopen; re-check the
+            # FINAL host too (DNS rebinding shield for the simple case)
+            fu = urllib.parse.urlsplit(final_url)
+            if fu.hostname and fu.hostname.strip("[]") != host:
+                if _import_blocked_host(fu.hostname.strip("[]")):
+                    return None
+            return body.decode("utf-8", "replace")
+    except Exception:
+        return None
+
+
+def _jsonld_event(html_text: str) -> dict | None:
+    """First Event-ish JSON-LD block -> normalized draft fields (or None).
+    Reads ONLY obvious public facts; never trusts nested junk (validated)."""
+    for m in _JSONLD_RE.finditer(html_text[:_IMPORT_MAX_BYTES]):
+        try:
+            data = json.loads(m.group(1).strip())
+        except Exception:
+            continue
+        nodes = data if isinstance(data, list) else [data]
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            t = str(node.get("@type") or "")
+            if t.split(":")[-1].lower() not in ("event", "eventseries", "businessevent"):
+                continue
+            d = {}
+            name = node.get("name")
+            if isinstance(name, str) and name.strip():
+                d["title"] = name.strip()[:80]
+            desc = node.get("description")
+            if isinstance(desc, str) and desc.strip():
+                d["description"] = desc.strip()[:500]
+            sd = node.get("startDate")
+            if isinstance(sd, str):
+                dm = re.match(r"(\d{4}-\d{2}-\d{2})", sd.strip())
+                if dm:
+                    d["date"] = dm.group(1)
+                tm2 = re.search(r"T(\d{2}:\d{2})", sd.strip())
+                if tm2:
+                    d["time"] = tm2.group(1)
+            loc = node.get("location")
+            if isinstance(loc, dict):
+                loc = loc.get("name") or loc.get("address")
+            if isinstance(loc, dict):
+                loc = loc.get("name") or loc.get("streetAddress")
+            if isinstance(loc, str) and loc.strip():
+                d["location"] = loc.strip()[:120]
+            offers = node.get("offers")
+            if isinstance(offers, list):
+                offers = offers[0] if offers and isinstance(offers[0], dict) else None
+            if isinstance(offers, dict):
+                pr = offers.get("price")
+                try:
+                    if pr is not None and float(pr) >= 0:
+                        d["price"] = round(float(pr), 2)
+                except (TypeError, ValueError):
+                    pass
+            if d.get("title"):
+                return d
+    return None
+
+
+def _meta_draft(html_text: str) -> dict:
+    """og:/twitter: meta fallback -> best-effort draft (may be sparse)."""
+    metas = {}
+    for m in _META_RE.finditer(html_text[:_IMPORT_MAX_BYTES]):
+        k, v = m.group(1).strip().lower(), m.group(2).strip()
+        if k and v and k not in metas:
+            metas[k] = v
+    d = {}
+    t = metas.get("og:title") or metas.get("twitter:title")
+    if t:
+        d["title"] = t[:80]
+    de = metas.get("og:description") or metas.get("twitter:description") or metas.get("description")
+    if de:
+        d["description"] = de[:500]
+    if not d.get("title"):
+        tm2 = _TITLE_RE.search(html_text[:_IMPORT_MAX_BYTES])
+        if tm2:
+            d["title"] = re.sub(r"\s+", " ", tm2.group(1)).strip()[:80]
+    return {k: v for k, v in d.items() if v}
+
+
+def draft_from_url(url: str) -> dict | None:
+    """Import ladder (spec §3): JSON-LD (high confidence) -> meta tags ->
+    text fallback. Returns {"draft", "engine" (jsonld|meta|text),
+    "source_url", "model"?} or None when the fetch/parse yields NOTHING
+    usable (fail-open: caller offers the paste-text flow instead).
+    NEVER raises; never creates; the draft is advice."""
+    url = str(url or "").strip()
+    if not url or len(url) > 2048:
+        return None
+    html_text = _import_fetch(url)
+    if not html_text:
+        return None
+    d = _jsonld_event(html_text)
+    engine = "jsonld"
+    if not d:
+        d = _meta_draft(html_text)
+        engine = "meta"
+    if not d:
+        # last resort: visible text through the existing flyer parser
+        visible = re.sub(r"<script.*?</script>|<style.*?</style>", " ",
+                         html_text, flags=re.I | re.S)
+        visible = re.sub(r"<[^>]+>", "\n", visible)
+        visible = re.sub(r"\n{2,}", "\n", visible)
+        d = draft_from_text(visible)
+        engine = "text"
+    if not d:
+        return None
+    return {"draft": d, "engine": engine, "source_url": url}
