@@ -4557,6 +4557,7 @@ class Handler(BaseHTTPRequestHandler):
             # children are plain dated listings (never carry "series" —
             # nested fan-out is structurally impossible).
             _series_every, _series_n, _sid, _series_dates = None, 1, None, []
+            _series_child_ids = []
             _series_req = data.pop("series", None)
             if _series_req is not None:
                 if (not isinstance(_series_req, dict)
@@ -4669,6 +4670,7 @@ class Handler(BaseHTTPRequestHandler):
                         # one manage code governs the whole series (shown once)
                         LISTINGS.append(_ch)
                         _series_dates.append(_ch["date"])
+                        _series_child_ids.append(_ch["id"])
                     _series_dates.insert(0, str(data["date"]))
                 LISTINGS.append(data)
                 _persist_locked()
@@ -4681,6 +4683,29 @@ class Handler(BaseHTTPRequestHandler):
                 _resp["claim_code"] = claim_code
                 _resp["claim_note"] = "shown ONCE — the only key to this private deal; without it the deal is invisible"
                 _resp["share"] = f"send id {lid} + this claim code; any EverList agent views/books with them"
+            # Discovery batch 2026-11-12: IndexNow ping on public listing create.
+            # Fire-and-forget daemon thread, fail-open (indexing is best-effort,
+            # never a create-latency or create-success dependency); OFF unless
+            # EVERLIST_INDEXNOW_PING=1 so tests stay hermetic (no outbound net).
+            if os.environ.get("EVERLIST_INDEXNOW_PING") == "1" and not claim_code:
+                try:
+                    _pub = os.environ.get("EVERLIST_PUBLIC_URL", "https://everlist.network").rstrip("/")
+                    _inkey = "8465f3525dbe1925d3f13a5ee36b943e"  # public proof-of-domain key (pages.py INDEXNOW_KEY)
+                    _ping_urls = [_pub + "/l/" + lid] + [_pub + "/l/" + _cid for _cid in _series_child_ids]
+                    def _in_ping(urls=_ping_urls, key=_inkey, pub=_pub):
+                        try:
+                            _pd = json.dumps({"host": "everlist.network", "key": key,
+                                              "keyLocation": pub + "/.well-known/" + key + ".txt",
+                                              "urlList": urls}).encode("utf-8")
+                            _preq = urllib.request.Request(
+                                "https://api.indexnow.org/indexnow", data=_pd,
+                                headers={"Content-Type": "application/json; charset=utf-8"}, method="POST")
+                            urllib.request.urlopen(_preq, timeout=6)
+                        except Exception:
+                            pass  # fail-open: indexing hint only, never a create failure
+                    threading.Thread(target=_in_ping, daemon=True).start()
+                except Exception:
+                    pass
             return self._json(201, _resp)
         if path.startswith("/listings/") and path.endswith("/image"):
             # B2 listing photo: ownership law = /manage (acct- owner OR
