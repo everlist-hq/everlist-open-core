@@ -92,11 +92,18 @@ check("W Makefile registers test_poster.py", "test_poster.py" in mk)
 check("W Makefile registers test_poster_pdf.py", "test_poster_pdf.py" in mk)
 
 # ---- ship-list law (incident class: poster.py broke webchat boot on VPS) --
-ship = open(os.path.join(HERE, "..", "..", "ops", "ship.sh"), encoding="utf-8").read()
-check("S ship FILES carries poster.py", " poster.py " in ship)
-check("S ship FILES carries static/poster.css", "static/poster.css" in ship)
-check("S ship FILES carries poster_pdf.py", "poster_pdf.py" in ship)
-check("S ship FILES carries all font files", ship.count("static/fonts/") >= 10)
+# ops/ship.sh is a local orchestration file, NOT part of either repo — skip
+# these pins where it doesn't exist (GitHub runner checkout). Local gates
+# still enforce them.
+_ship = os.path.join(HERE, "..", "..", "ops", "ship.sh")
+if os.path.isfile(_ship):
+    ship = open(_ship, encoding="utf-8").read()
+    check("S ship FILES carries poster.py", " poster.py " in ship)
+    check("S ship FILES carries static/poster.css", "static/poster.css" in ship)
+    check("S ship FILES carries poster_pdf.py", "poster_pdf.py" in ship)
+    check("S ship FILES carries all font files", ship.count("static/fonts/") >= 10)
+else:
+    check("S ship.sh absent (CI checkout) — ship pins skipped", True)
 
 # ---- PDF twin laws (B3-PDF, owner 2026-11-13: downloadable as PDF, A4) -----
 import poster_pdf
