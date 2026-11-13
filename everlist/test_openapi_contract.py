@@ -110,8 +110,13 @@ try:
         "vertical": "events", "title": "Contract Free Meetup", "date": "2026-10-01",
         "location": "Berlin", "price": 0, "capacity": 5}, H(OLT))
     assert st == 201, f"free create failed: {st} {free}"
+    # CATALOGS contract (owner GO 2026-11-12): merchant attach requires an
+    # EXISTING merchant owned by the creating principal - seed it first.
+    st, merch = req(BASE, "POST", "/merchants", {
+        "slug": "contract-pizza", "name": "Contract Pizzeria"}, H(OLT))
+    assert st == 201, f"merchant seed failed: {st} {merch}"
     st, paid = req(BASE, "POST", "/listings", {
-        "vertical": "food", "title": "Contract Pizza", "merchant": "M",
+        "vertical": "food", "title": "Contract Pizza", "merchant": "contract-pizza",
         "price": 12}, H(OLT))
     assert st == 201, f"paid create failed: {st} {paid}"
     fid, pid, mc = free["id"], paid["id"], paid["manage_code"]

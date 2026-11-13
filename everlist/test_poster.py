@@ -28,7 +28,11 @@ de = poster.poster_html(FX, "https://everlist.network", "de").decode()
 
 # ---- renderer laws ----
 check("R noindex (print artifact stays out of search)", "noindex" in en)
-check("R A4 print rule", "@page { size: A4 portrait" in en)
+check("R A4 print rule (in external poster.css — CSP law)",
+      "@page { size: A4 portrait" in open(os.path.join(HERE, "static", "poster.css"), encoding="utf-8").read())
+check("R stylesheet EXTERNAL (CSP style-src strips inline)",
+      '<link rel="stylesheet" href="/poster.css?v=' in en and "<style" not in en)
+check("R stylesheet carries version param", "poster.css?v=" in en)
 check("R EN tagline", "Bookable via EverList" in en)
 check("R DE tagline", "Buchbar \u00fcber EverList" in de)
 check("R DE Sie-form footer", "Veranstalter:" in de)
@@ -68,9 +72,15 @@ check("W poster path mapped in static-path map", 'return "/poster/*"' in wc)
 
 dep = open(os.path.join(HERE, "tools", "deploy.sh"), encoding="utf-8").read()
 check("W deploy matcher carries /poster/*", "/poster/*" in dep)
+check("W deploy matcher carries /poster.css", "/poster.css" in dep)
 
 mk = open(os.path.join(HERE, "Makefile"), encoding="utf-8").read()
 check("W Makefile registers test_poster.py", "test_poster.py" in mk)
+
+# ---- ship-list law (incident class: poster.py broke webchat boot on VPS) --
+ship = open(os.path.join(HERE, "..", "..", "ops", "ship.sh"), encoding="utf-8").read()
+check("S ship FILES carries poster.py", " poster.py " in ship)
+check("S ship FILES carries static/poster.css", "static/poster.css" in ship)
 
 # ---- enrich A3 pins (pdf flyer extraction shipped with SEEK ship) ----
 enrich_src = open(os.path.join(HERE, "enrich.py"), encoding="utf-8").read()

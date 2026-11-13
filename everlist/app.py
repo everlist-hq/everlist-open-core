@@ -72,6 +72,33 @@ APPLICATIONS = {}   # aid -> {id, listing_id, filler, book_fields, message, stat
 MERCHANTS = {}      # slug -> merchant profile (catalogs, P-track)
 CATALOGS = {}       # catalog id -> versioned tree (catalogs, P-track)
 SEEK_JOB_ROLES = ("join", "vetted")  # application_mode values
+# CATALOGS (owner GO 2026-11-12, spec-partner-catalogs v2.1): merchants own
+# catalog trees; catalog ITEMS are searchable but never feed/listing noise.
+_MERCHANT_FEED_QUOTA = int(os.environ.get("HUB_MERCHANT_FEED_QUOTA", "2") or 0)
+_MERCHANT_CAP = int(os.environ.get("HUB_MERCHANT_CAP", "5") or 0)
+_MERCH_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,38}$")
+_MERCH_FULFILL = ("pickup", "delivery", "shipping", "onsite")
+
+def _pub_merchant(m):
+    """Public merchant copy (no secrets stored; kept as a function so future
+    server-only fields have one wall to live behind)."""
+    return dict(m)
+
+def _catalog_hash(tree):
+    return hashlib.sha256(json.dumps(tree, sort_keys=True, ensure_ascii=False,
+                                     separators=(",", ":")).encode()).hexdigest()
+
+def _cat_walk(tree):
+    """Yield (path_labels, item) over a catalog tree."""
+    stack = [(([], tree),)] if isinstance(tree, dict) else []
+    if not stack: return
+    def walk(node, path):
+        for it in (node.get("items") or [])[:200]:
+            yield path, it
+        for ch in (node.get("children") or [])[:50]:
+            if isinstance(ch, dict) and ch.get("name"):
+                yield from walk(ch, path + [str(ch["name"])[:60]])
+    yield from walk(tree, [])
 # Self-service page branding (owner call 2026-10-31): partners customize THEIR
 # page themselves. GET /branding is public; PUT requires an acct- principal
 # (same ownership law as manage/confirm). FIXED rails are server-pinned and
@@ -1068,7 +1095,7 @@ VERTICAL_SCHEMAS = {
                                 "lat": "float_latlon", "lon": "float_latlon"},
                "booking": {"required": ["attendee"], "fields": ["attendee", "quantity"],
                             "identity": "attendee", "action": "register+pay"}},
-    "food":   {"required": ["title", "merchant", "price"],
+    "food":   {"required": ["title", "price"],  # merchant OPTIONAL (spec v2.1): validated at create, settable only via attach_merchant/detach_merchant
                "optional": ["description", "category", "tags", "url", "preparation_minutes"],
                "categories": ["pizzeria", "vegan", "asian", "burger", "bakery",
                                "cafe", "grocery", "other"],
@@ -1670,6 +1697,12 @@ def _openapi_spec():
             "/listing/draft": {
                 "post": op("Paste-a-flyer OR share-a-link: free text or an existing page URL -> prefilled listing DRAFT (never creates; organizer confirms then POSTs /listings); engine: regex always, LLM-assisted when the enrichment chain is live, URL pages read schema.org JSON-LD first (response names engine+model)", "listings", sec=tok,
                            note="body {text} or {url} (not both); deterministic extraction (title/date/time/price/location); URL fetches are SSRF-walled (public hosts only, 1MB cap, html-only) and rate-limited per source; response carries needs_confirm [date,price] — never trust AI-extracted prices without review")},
+            "/merchants": {
+                "post": op("Create a merchant profile (unique kebab slug; fulfillment pickup/delivery/shipping/onsite; locations + promos; per-owner cap)", "listings", sec=tok,
+                           note="owner = token principal; listings attach via {merchant: slug} at create or manage action attach_merchant/detach_merchant (ownership-walled both ways); public GET /merchants/{slug} returns profile + the merchant's OWN uncapped listings + catalog summary; feed quota (default 2/merchant) applies only to the general /listings feed")},
+            "/catalogs": {
+                "post": op("Create a versioned catalog tree for a merchant (depth<=3, items need title, price numeric)", "listings", sec=tok,
+                           note="one catalog per merchant; replace via POST /catalogs/{id}/replace bumps version and REQUIRES content change (same content_hash -> 409); public GET /catalogs/{id} returns version+content_hash+tree, ?fields=summary omits the tree, ?since_hash=<hash> -> 304 when unchanged; catalog items NEVER appear in /listings or /search listing results - they surface as grouped catalog_items")},
             "/bookings": {"get": op("Your bookings (principal-scoped)", "bookings", sec=tok)},
             "/bookings/{id}": {"get": op("Booking status (buyer or listing owner)", "bookings", sec=tok,
                                         note="unknown-or-not-yours = indistinguishable 404 (no existence oracle)")},
@@ -3092,10 +3125,51 @@ class Handler(BaseHTTPRequestHandler):
                 "asset": BASE_SEPOLIA_USDC, "pay_to": _plr,
                 "max_amount_units": str(int(round(_plp * 1_000_000))),
                 "mode": PAY_MODE.upper(), "payment_terms": _plt})
+        if u.path == "/merchants" or u.path.startswith("/merchants/"):
+            # CATALOGS P1 public reads: profile + OWN uncapped listing set +
+            # catalog summary (items never leak into /listings).
+            _mslug = u.path[len("/merchants"):].lstrip("/")
+            if not _mslug or len(_mslug) > 40 or not _MERCH_SLUG_RE.fullmatch(_mslug):
+                return self._json(404, {"error": "no merchant"})
+            with LOCK:
+                _m = MERCHANTS.get(_mslug)
+                if not _m:
+                    return self._json(404, {"error": "no merchant %s" % _mslug})
+                _own_ls = [_pub_listing(l) for l in LISTINGS
+                           if l.get("merchant") == _mslug and not l.get("archived")
+                           and l.get("visibility") != "private"]
+                _cat = next((c for c in CATALOGS.values() if c.get("merchant") == _mslug), None)
+                _cat_pub = None
+                if _cat:
+                    _items = [{"path": " / ".join(pth), "title": str(it.get("title", ""))[:80],
+                               "price": it.get("price")} for pth, it in _cat_walk(_cat["tree"])]
+                    _cat_pub = {"id": _cat["id"], "version": _cat["version"],
+                                "content_hash": _cat["content_hash"], "items": _items[:200]}
+            return self._json(200, {"merchant": _pub_merchant(_m),
+                "listings": _own_ls, "catalog": _cat_pub})
+        if u.path.startswith("/catalogs"):
+            # CATALOGS P2 public read: version + content_hash (+ tree unless
+            # fields=summary); since_hash match -> honest 304.
+            _crid = u.path[len("/catalogs"):].lstrip("/")
+            if not _crid or "/" in _crid or len(_crid) > 40:
+                return self._json(404, {"error": "no catalog"})
+            with LOCK:
+                _c = CATALOGS.get(_crid)
+            if not _c:
+                return self._json(404, {"error": "no catalog %s" % _crid})
+            _wh = parse_qs(u.query).get("since_hash", [""])[0].strip()
+            if _wh and _wh == _c["content_hash"]:
+                return self._json(304, {})
+            body = {"id": _c["id"], "merchant": _c["merchant"], "version": _c["version"],
+                    "content_hash": _c["content_hash"]}
+            if parse_qs(u.query).get("fields", [""])[0] != "summary":
+                body["tree"] = _c["tree"]
+            return self._json(200, body)
         if u.path == "/listings":
             if not _read_gate(self):
                 return self._json(429, {"error": "too many read requests — slow down (retry shortly)"})
             v = parse_qs(u.query).get("vertical", [""])[0]
+            fm = parse_qs(u.query).get("merchant", [""])[0].strip().lower()
             show_arch = parse_qs(u.query).get("archived", [""])[0] in ("1", "true")
             if show_arch:
                 # HARDENING: archived listings are OWNER-ONLY. Audit finding:
@@ -3132,11 +3206,34 @@ class Handler(BaseHTTPRequestHandler):
                 res = [_pub_listing(l) for l in LISTINGS
                        if not l.get("archived")
                        and (l.get("visibility") != "private" or (l.get("owner") == _me and _me))
-                       and (not v or l["vertical"] == v)]
+                       and (not v or l["vertical"] == v)
+                       and (not fm or l.get("merchant") == fm)]
+                # P1 feed quota (spec §6): a merchant's catalog must not flood
+                # the feed. Explicit merchant= browses (the merchant page's own
+                # set) are uncapped; the owner always sees their own full set.
+                _quota_note = None
+                if not fm and _MERCHANT_FEED_QUOTA > 0:
+                    _cap = _MERCHANT_FEED_QUOTA
+                    _seen, _kept, _qap = {}, [], set()
+                    for l in res:
+                        _ms = l.get("merchant")
+                        if not _ms or (_me and l.get("owner") == _me):
+                            _kept.append(l); continue
+                        _seen.setdefault(_ms, 0)
+                        if _seen[_ms] < _cap:
+                            _seen[_ms] += 1; _kept.append(l)
+                        else:
+                            _qap.add(_ms)
+                    if _qap:
+                        res = _kept
+                        _quota_note = {"max_per_merchant": _cap, "applied_for": sorted(_qap)}
             total = len(res)
             res, off, lim = _paginate(res, parse_qs(u.query))
-            return self._json(200, {"count": total, "offset": off, "limit": lim,
-                                    "returned": len(res), "listings": res})
+            _body = {"count": total, "offset": off, "limit": lim,
+                     "returned": len(res), "listings": res}
+            if _quota_note:
+                _body["merchant_quota"] = _quota_note
+            return self._json(200, _body)
         if u.path.startswith("/listings/"):
             # H9: single-listing fetch, full rich record. Unknown -> 404;
             # archived -> 410 Gone (exists, not publicly available).
@@ -3329,12 +3426,33 @@ class Handler(BaseHTTPRequestHandler):
                         break
                 if _sponsored is not None and len(res) > 1:
                     res = [l for l in res if l is not _sponsored] + [_sponsored]
+            # CATALOGS P3: two-answer search. Listing hits stay the first
+            # answer; catalog ITEM hits ride alongside, grouped by merchant,
+            # deterministic substring match over item titles + tags. Catalog
+            # items NEVER leak into the listing result set itself.
+            _cat_items = []
+            if term:
+                with LOCK:
+                    for c in CATALOGS.values():
+                        _mslug = c.get("merchant")
+                        for pth, it in _cat_walk(c.get("tree") or {}):
+                            _hay = " ".join([str(it.get("title", ""))] +
+                                            [str(t) for t in (it.get("tags") or []) if isinstance(t, str)]).lower()
+                            if term in _hay:
+                                _cat_items.append({"catalog_id": c["id"], "merchant": _mslug,
+                                    "path": " / ".join(pth), "title": str(it.get("title", ""))[:80],
+                                    "price": it.get("price")})
+                            if len(_cat_items) >= 20:
+                                break
+                        if len(_cat_items) >= 20:
+                            break
             total = len(res)
             res, off, lim = _paginate(res, parse_qs(u.query))
             return self._json(200, {"count": total, "offset": off, "limit": lim,
                 "returned": len(res), "filters": {
                 "q": term, "vertical": fvert, "role": frole or None,
                 "category": fcat, "tag": ftag,
+                "catalog_items": _cat_items,
                 "tags": ftags or None, "location": floc, "min_price": fmin or None,
                 "max_price": fmax or None, "from": ffrom or None, "to": fto or None,
                 "near": fnear_raw or None, "radius_km": frad or None,
@@ -4427,6 +4545,201 @@ class Handler(BaseHTTPRequestHandler):
                 _persist_locked()
                 return self._json(200, {"ok": True, "account_id": aid, "account_code": new_code,
                     "code_note": "shown ONCE — store it; OLD CODE INVALID and old login tokens REVOKED"})
+        if path == "/merchants" or path.startswith("/merchants/"):
+            # CATALOGS P1 (owner GO 2026-11-12): merchant profiles. Create/PUT
+            # need a list token (owner = token principal, same law as /listings
+            # create); GET is public read. Cap-walled (HUB_MERCHANT_CAP) with
+            # slug hygiene: lowercase kebab, no probes via weird names.
+            _mslug = path[len("/merchants"):].lstrip("/")
+            if path == "/merchants":
+                if u.method if False else False:
+                    pass
+                # POST create
+                _cred = self.headers.get("X-Hub-Token", "")
+                _p, _err = hublib.verify_token(BOOKING_KEY, _cred, "list", single_use=False) if _cred \
+                    else (None, "missing X-Hub-Token")
+                if _p:
+                    _p, _err = _gen_check(_p)
+                if not _p:
+                    return self._json(401, {"error": _err or "invalid list token"})
+                with LOCK:
+                    if not _auth_allow("create", _source_of(self)):
+                        return self._json(429, {"error": "merchant creation rate limit reached"})
+                    if _MERCHANT_CAP > 0:
+                        _ownct = sum(1 for m in MERCHANTS.values() if m.get("owner") == _p["sub"])
+                        if _ownct >= _MERCHANT_CAP:
+                            return self._json(409, {"error": f"merchant cap reached ({_MERCHANT_CAP})"})
+                slug = str(data.get("slug", "")).strip().lower()
+                name = str(data.get("name", "")).strip()
+                if not _MERCH_SLUG_RE.fullmatch(slug):
+                    return self._json(400, {"error": "slug must be 2-39 chars: lowercase letters, digits, hyphens"})
+                if not name or len(name) > 80:
+                    return self._json(400, {"error": "name required (max 80 chars)"})
+                locs = data.get("locations") or []
+                if not isinstance(locs, list) or len(locs) > 10:
+                    return self._json(400, {"error": "locations must be a list (max 10)"})
+                _cl = []
+                for _lo in locs:
+                    if not isinstance(_lo, dict):
+                        return self._json(400, {"error": "locations entries must be objects"})
+                    _cl.append({"city": str(_lo.get("city", ""))[:60],
+                                "address": str(_lo.get("address", ""))[:120],
+                                "lat": _lo.get("lat"), "lon": _lo.get("lon")})
+                ful = data.get("fulfillment") or []
+                if isinstance(ful, str):
+                    ful = [ful]
+                if not isinstance(ful, list) or any(f not in _MERCH_FULFILL for f in ful):
+                    return self._json(400, {"error": f"fulfillment must be a list of {_MERCH_FULFILL}"})
+                promos = data.get("promos") or []
+                if not isinstance(promos, list) or len(promos) > 5:
+                    return self._json(400, {"error": "promos must be a list (max 5)"})
+                _cp = []
+                for _pr in promos:
+                    if not isinstance(_pr, dict):
+                        return self._json(400, {"error": "promos entries must be objects"})
+                    _cp.append({"label": str(_pr.get("label", ""))[:80],
+                                "detail": str(_pr.get("detail", ""))[:200]})
+                with LOCK:
+                    if slug in MERCHANTS:
+                        return self._json(409, {"error": f"merchant slug already taken: {slug}"})
+                    MERCHANTS[slug] = {"slug": slug, "name": name, "owner": _p["sub"],
+                        "locations": _cl, "fulfillment": ful, "promos": _cp,
+                        "description": str(data.get("description", ""))[:500],
+                        "created": time.time()}
+                    _persist_locked()
+                return self._json(201, {"ok": True, "merchant": _pub_merchant(MERCHANTS[slug])})
+            if not _mslug or len(_mslug) > 40 or not _MERCH_SLUG_RE.fullmatch(_mslug):
+                return self._json(404, {"error": "no merchant"})
+            with LOCK:
+                _m = MERCHANTS.get(_mslug)
+            if not _m:
+                return self._json(404, {"error": f"no merchant {_mslug}"})
+            if self.command == "PUT" or (self.command == "POST" and data.get("action") == "update"):
+                _cred = self.headers.get("X-Hub-Token", "")
+                _p, _err = hublib.verify_token(BOOKING_KEY, _cred, "list", single_use=False) if _cred \
+                    else (None, "missing X-Hub-Token")
+                if _p:
+                    _p, _err = _gen_check(_p)
+                if not _p:
+                    return self._json(401, {"error": _err or "invalid list token"})
+                with LOCK:
+                    if _m.get("owner") != _p["sub"]:
+                        return self._json(403, {"error": "not your merchant"})
+                    for _k, _wall in (("name", 80), ("description", 500)):
+                        if _k in data:
+                            _m[_k] = str(data[_k]).strip()[:_wall]
+                    if "locations" in data:
+                        _cl = []
+                        locs = data.get("locations") or []
+                        if not isinstance(locs, list) or len(locs) > 10:
+                            return self._json(400, {"error": "locations must be a list (max 10)"})
+                        for _lo in locs:
+                            if not isinstance(_lo, dict):
+                                return self._json(400, {"error": "locations entries must be objects"})
+                            _cl.append({"city": str(_lo.get("city", ""))[:60],
+                                        "address": str(_lo.get("address", ""))[:120]})
+                        _m["locations"] = _cl
+                    if "fulfillment" in data:
+                        ful = data.get("fulfillment") or []
+                        if isinstance(ful, str):
+                            ful = [ful]
+                        if not isinstance(ful, list) or any(f not in _MERCH_FULFILL for f in ful):
+                            return self._json(400, {"error": f"fulfillment must be a list of {_MERCH_FULFILL}"})
+                        _m["fulfillment"] = ful
+                    if "promos" in data:
+                        promos = data.get("promos") or []
+                        if not isinstance(promos, list) or len(promos) > 5:
+                            return self._json(400, {"error": "promos must be a list (max 5)"})
+                        _m["promos"] = [{"label": str(_pr.get("label", ""))[:80],
+                                          "detail": str(_pr.get("detail", ""))[:200]} for _pr in promos
+                                         if isinstance(_pr, dict)]
+                    _persist_locked()
+                return self._json(200, {"ok": True, "merchant": _pub_merchant(_m)})
+            # writes only; public reads live in the GET region below
+            return self._json(405, {"error": "use GET for merchant reads"})
+        if path == "/catalogs" or path.startswith("/catalogs/"):
+            # CATALOGS P2 (owner GO): versioned catalog trees owned by a
+            # merchant (restored: post-tail surgery had swallowed this block).
+            # POST creates v1; replace bumps version and REQUIRES a content
+            # change (same hash = honest 409). Items never appear in
+            # /listings or the feed - they surface via /search catalog_items
+            # and the merchant page (leakage guard, spec C-CAT law).
+            _crid = path[len("/catalogs"):].lstrip("/")
+            _cred = self.headers.get("X-Hub-Token", "")
+            _p, _err = hublib.verify_token(BOOKING_KEY, _cred, "list", single_use=False) if _cred \
+                else (None, "missing X-Hub-Token")
+            if _p:
+                _p, _err = _gen_check(_p)
+            if not _p:
+                return self._json(401, {"error": _err or "invalid list token"})
+            if path == "/catalogs":
+                mslug = str(data.get("merchant", "")).strip().lower()
+                tree = data.get("tree")
+                with LOCK:
+                    _m = MERCHANTS.get(mslug)
+                    if not _m:
+                        return self._json(400, {"error": f"unknown merchant: {mslug}"})
+                    if _m.get("owner") != _p["sub"]:
+                        return self._json(403, {"error": "you don't own that merchant"})
+                    if any(c.get("merchant") == mslug for c in CATALOGS.values()):
+                        return self._json(409, {"error": "merchant already has a catalog (use /catalogs/<id>/replace)"})
+                if not isinstance(tree, dict):
+                    return self._json(400, {"error": "tree must be an object"})
+                def _tv(node, d=0):
+                    if d > 3:
+                        return "tree deeper than 3 levels"
+                    if not isinstance(node, dict):
+                        return "tree nodes must be objects"
+                    for it in (node.get("items") or []):
+                        if not isinstance(it, dict) or not str(it.get("title", "")).strip():
+                            return "every item needs a title"
+                        if "price" in it:
+                            try:
+                                float(it["price"])
+                            except (TypeError, ValueError):
+                                return "item price must be a number"
+                        for ch in (node.get("children") or []):
+                            _e = _tv(ch, d + 1)
+                            if _e:
+                                return _e
+                    return None
+                _terr = _tv(tree)
+                if _terr:
+                    return self._json(400, {"error": _terr})
+                _h = _catalog_hash(tree)
+                with LOCK:
+                    _n = ID_COUNTERS.get("cat", 0) + 1
+                    ID_COUNTERS["cat"] = _n
+                    cid = f"cat-{_n}"
+                    CATALOGS[cid] = {"id": cid, "merchant": mslug, "version": 1,
+                        "content_hash": _h, "tree": tree, "created": time.time()}
+                    _persist_locked()
+                return self._json(201, {"ok": True, "id": cid, "version": 1, "content_hash": _h})
+            m = re.fullmatch(r"([^/]+)/replace", _crid)
+            if m:
+                cid = m.group(1)
+                tree = data.get("tree")
+                with LOCK:
+                    c = CATALOGS.get(cid)
+                    if not c:
+                        return self._json(404, {"error": f"no catalog {cid}"})
+                    _m = MERCHANTS.get(c["merchant"])
+                    if not _m or _m.get("owner") != _p["sub"]:
+                        return self._json(403, {"error": "not your catalog"})
+                if not isinstance(tree, dict):
+                    return self._json(400, {"error": "tree must be an object"})
+                _h = _catalog_hash(tree)
+                with LOCK:
+                    if c["content_hash"] == _h:
+                        return self._json(409, {"error": "no content change (same hash)",
+                            "version": c["version"], "content_hash": _h})
+                    c["tree"] = tree
+                    c["content_hash"] = _h
+                    c["version"] = int(c.get("version", 1)) + 1
+                    _persist_locked()
+                return self._json(200, {"ok": True, "id": cid, "version": c["version"], "content_hash": _h})
+            return self._json(405, {"error": "use GET for catalog reads"})
+
         if path == "/listing/draft":
             # Phase 2 paste-a-flyer: free text -> PREFILLED DRAFT (never
             # creates). Token-gated like creation (write-assist surface, not
@@ -4657,7 +4970,21 @@ class Handler(BaseHTTPRequestHandler):
                 if re.search(r"[\x00-\x1f\x7f\u202a-\u202e]", loc2):
                     return self._json(400, {"error": "location must not contain control characters or newlines"})
                 data["location"] = loc2
-            allowed = set(schema["required"]) | set(schema.get("optional", [])) | {"vertical", "payment_terms", "visibility", "receive_addr", "require_verified_buyer", "series", "role", "application_mode", "require_verified_worker"}
+            # CATALOGS P1: merchant attach - slug must exist and be OWNED by
+            # the creating principal (a listing can never hang off someone
+            # else's merchant profile).
+            if data.get("merchant") is not None:
+                _ms = str(data["merchant"]).strip().lower()
+                with LOCK:
+                    _mown = (MERCHANTS.get(_ms) or {}).get("owner")
+                if not _mown:
+                    return self._json(400, {"error": f"unknown merchant: {_ms}"})
+                if _mown != p["sub"]:
+                    return self._json(403, {"error": "you don't own that merchant"})
+                data["merchant"] = _ms
+            else:
+                data.pop("merchant", None)
+            allowed = set(schema["required"]) | set(schema.get("optional", [])) | {"vertical", "payment_terms", "visibility", "receive_addr", "require_verified_buyer", "series", "role", "application_mode", "require_verified_worker", "merchant"}
             data = {k: d for k, d in data.items() if k in allowed}  # drop unknowns (payment_terms already server-normalized above)
             # RTF2: create-path hygiene for the remaining text fields — title
             # and location keep their stricter wall above (newlines banned);
@@ -5020,8 +5347,8 @@ class Handler(BaseHTTPRequestHandler):
             code = str(data.get("manage_code", "")).strip()
             action = str(data.get("action", "")).strip().lower()
             if action not in ("edit", "delete", "archive", "unarchive", "make_private", "make_public"):
-                if action not in ("edit", "delete", "archive", "unarchive", "make_private", "make_public", "archive_series", "delete_series"):
-                    return self._json(400, {"error": "action must be 'edit', 'delete', 'archive', 'unarchive', 'make_private', 'make_public', 'archive_series' or 'delete_series'"})
+                if action not in ("edit", "delete", "archive", "unarchive", "make_private", "make_public", "archive_series", "delete_series", "attach_merchant", "detach_merchant"):
+                    return self._json(400, {"error": "action must be 'edit', 'delete', 'archive', 'unarchive', 'make_private', 'make_public', 'archive_series', 'delete_series', 'attach_merchant' or 'detach_merchant'"})
             cred = self.headers.get("X-Hub-Token", "")
             p, err = hublib.verify_token(BOOKING_KEY, cred, "list", single_use=False) if cred \
                 else (None, "missing X-Hub-Token")
@@ -5095,6 +5422,20 @@ class Handler(BaseHTTPRequestHandler):
                     _persist_locked()
                     return self._json(200, {"ok": True, "id": lid, "visibility": "public",
                         "note": "deal is public: discoverable in search, no claim needed"})
+                if action in ("attach_merchant", "detach_merchant"):
+                    if action == "detach_merchant":
+                        listing.pop("merchant", None)
+                        _persist_locked()
+                        return self._json(200, {"ok": True, "id": lid, "merchant": None})
+                    _ms = str(data.get("merchant", "")).strip().lower()
+                    _m = MERCHANTS.get(_ms)
+                    if not _m:
+                        return self._json(400, {"error": f"unknown merchant: {_ms}"})
+                    if _m.get("owner") != listing.get("owner"):
+                        return self._json(403, {"error": "merchant belongs to a different owner"})
+                    listing["merchant"] = _ms
+                    _persist_locked()
+                    return self._json(200, {"ok": True, "id": lid, "merchant": _ms})
                 # H17: edit allowlist is SCHEMA-DERIVED (base + owner-name fields
                 # + the vertical's optional fields, intersected with the
                 # vertical's own fields) so services providers can edit
