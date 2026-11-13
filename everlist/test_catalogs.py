@@ -66,6 +66,19 @@ def req(method, path, body=None, headers=None, base=""):
         except Exception:
             return e.code, {}
 
+def _spawn_state(state_file):
+    """HRD: spawn a hub bound to an EXISTING state file (persistence respawn)."""
+    port = free_port()
+    env = {**os.environ, "HUB_STATE_FILE": state_file,
+           "HUB_POW_SIGNUP_BITS": "8", "PYTHONUNBUFFERED": "1"}
+    logf = tempfile.TemporaryFile()
+    p = subprocess.Popen([sys.executable, os.path.join(HERE, "app.py"), str(port)],
+                         stdout=logf, stderr=subprocess.STDOUT, env=env)
+    _PROCS.append(p)
+    assert wait_ready(port), "hub (state-file spawn) did not start"
+    return p, f"http://127.0.0.1:{port}"
+
+
 def main():
     HUB, p, logf = spawn()
     _, a1 = req("POST", "/access", {"agent": "cat-owner", "acts": ["list", "book"]}, base=HUB)
@@ -195,6 +208,86 @@ def main():
     check("P1 unknown merchant SSR honest 404", pages.merchant_html("no-such-merchant", hub=HUB) is None, "")
     w = open(os.path.join(HERE, "webchat.py")).read()
     check("P1 webchat /m/ route wired", 'rest.startswith("/m/")' in w and "merchant_html" in w, "")
+
+    # ---- HRD: hardening pass pins (quality mandate 2026-11-13) ----
+    # HRD-A honest public collections (H5)
+    st, r = req("GET", "/merchants", base=HUB)
+    check("HRD-A1 GET /merchants collection 200", st == 200 and r.get("count", 0) >= 2
+          and any(m.get("slug") == "pizzeria-nostra" for m in r.get("merchants", [])),
+          f"{st} {str(r)[:120]}")
+    st, r = req("GET", "/catalogs", base=HUB)
+    check("HRD-A2 GET /catalogs collection 200", st == 200 and r.get("count", 0) >= 1
+          and any(c.get("id") == cid for c in r.get("catalogs", [])), f"{st} {str(r)[:120]}")
+    # HRD-B prefix tighten (H4): /catalogsXYZ must not ride the catalogs branch
+    st, r = req("GET", "/catalogsXYZ", base=HUB)
+    check("HRD-B1 /catalogsXYZ no longer matches branch", st == 404, f"{st}")
+    # HRD-C raw bodiless 304 (H1, RFC 9110): no body bytes on the wire
+    import http.client as _hc
+    import urllib.parse as _up
+    st, r = req("GET", f"/catalogs/{cid}", base=HUB)
+    _h2v = r.get("content_hash", "")
+    _u = _up.urlparse(HUB)
+    _conn = _hc.HTTPConnection(_u.hostname, _u.port, timeout=8)
+    _conn.request("GET", f"/catalogs/{cid}?since_hash={_h2v}")
+    _resp = _conn.getresponse()
+    _body = _resp.read()
+    check("HRD-C1 304 is bodiless on the wire", _resp.status == 304 and _body == b"",
+          f"status={_resp.status} body={len(_body)}B")
+    _conn.close()
+    # HRD-D merchant lifecycle (H3): update arm + guarded delete
+    st, r = req("POST", "/merchants/pizzeria-nostra", {"description": "Forno a legna since today"},
+                headers=O, base=HUB)
+    check("HRD-D1 update without action -> 400", st == 400, f"{st}")
+    st, r = req("POST", "/merchants/pizzeria-nostra", {"action": "update", "name": "Pizzeria Nostra SI"},
+                headers=X, base=HUB)
+    check("HRD-D2 foreign update -> 403", st == 403, f"{st}")
+    st, r = req("POST", "/merchants/pizzeria-nostra", {"action": "update", "description": "Forno a legna, Napoli rules"},
+                headers=O, base=HUB)
+    check("HRD-D3 owner update -> 200", st == 200 and "Napoli" in r.get("merchant", {}).get("description", ""),
+          f"{st} {str(r)[:120]}")
+    st, r = req("POST", "/merchants/pizzeria-nostra", {"action": "delete"}, headers=O, base=HUB)
+    check("HRD-D4 delete with attached actives -> 409", st == 409 and "attached" in r.get("error", ""),
+          f"{st} {str(r)[:120]}")
+    st, r = req("POST", "/merchants/second-owner", {"action": "delete"}, headers=X, base=HUB)
+    check("HRD-D5 delete unattached merchant -> 200", st == 200, f"{st} {str(r)[:120]}")
+    st, r = req("GET", "/merchants/second-owner", base=HUB)
+    check("HRD-D6 deleted merchant -> honest 404", st == 404, f"{st}")
+    # HRD-E merchant SEO (H6): JSON-LD + sitemap pairs, public fields only
+    html = pages.merchant_html("pizzeria-nostra", hub=HUB)
+    check("HRD-E1 merchant page carries LocalBusiness JSON-LD",
+          html is not None and '"LocalBusiness"' in html, "")
+    sx = pages.sitemap_xml(hub=HUB).decode()
+    check("HRD-E2 sitemap carries /m/ EN+DE pair",
+          "/m/pizzeria-nostra" in sx and "/de/m/pizzeria-nostra" in sx, "")
+    # HRD-F static dead-code pins (H2) + write backstop presence (H7)
+    app_src = open(os.path.join(HERE, "app.py"), encoding="utf-8").read()
+    check("HRD-F1 no dead no-op lines left", "u.method if False" not in app_src, "")
+    check("HRD-F2 no dead stack var in _cat_walk", "stack = [(([], tree),)]" not in app_src, "")
+    check("HRD-F3 catalog writes backstopped", "catalog write rate limit reached" in app_src, "")
+    # HRD-G persistence respawn (state round-trip, previously unproven)
+    sf = os.path.join(tempfile.mkdtemp(prefix="hub-cat-persist-"), "state.json")
+    p1, B1 = _spawn_state(sf)
+    _, ap = req("POST", "/access", {"agent": "persist-probe", "acts": ["list"]}, base=B1)
+    PT = ap["tokens"]["list"]
+    st, r = req("POST", "/merchants", {"slug": "persist-check", "name": "Persist Check"},
+                headers={"X-Hub-Token": PT}, base=B1)
+    check("HRD-G1 merchant created on hub-A", st == 201, f"{st}")
+    p1.terminate(); p1.wait(timeout=10)
+    p2, B2 = _spawn_state(sf)
+    st, r = req("GET", "/merchants/persist-check", base=B2)
+    check("HRD-G2 merchant survives respawn", st == 200, f"{st}")
+    # re-mint for the SAME agent name on the respawned hub: principal identity
+    # is the agent name, so ownership holds whichever way signing keys persist
+    _, ap2 = req("POST", "/access", {"agent": "persist-probe", "acts": ["list"]}, base=B2)
+    PT2 = ap2["tokens"]["list"]
+    st, r = req("POST", "/merchants/persist-check", {"action": "delete"},
+                headers={"X-Hub-Token": PT2}, base=B2)
+    check("HRD-G3 delete on respawned hub -> 200", st == 200, f"{st} {str(r)[:120]}")
+    p2.terminate(); p2.wait(timeout=10)
+    p3, B3 = _spawn_state(sf)
+    st, r = req("GET", "/merchants/persist-check", base=B3)
+    check("HRD-G4 delete survives respawn", st == 404, f"{st}")
+    p3.terminate(); p3.wait(timeout=10)
 
     fails = [n for n, ok in RESULTS if not ok]
     print(f"\n{len(RESULTS) - len(fails)}/{len(RESULTS)} PASS")

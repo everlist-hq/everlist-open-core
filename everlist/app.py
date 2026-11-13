@@ -90,8 +90,8 @@ def _catalog_hash(tree):
 
 def _cat_walk(tree):
     """Yield (path_labels, item) over a catalog tree."""
-    stack = [(([], tree),)] if isinstance(tree, dict) else []
-    if not stack: return
+    if not isinstance(tree, dict):
+        return
     def walk(node, path):
         for it in (node.get("items") or [])[:200]:
             yield path, it
@@ -1698,7 +1698,7 @@ def _openapi_spec():
                 "post": op("Paste-a-flyer OR share-a-link: free text or an existing page URL -> prefilled listing DRAFT (never creates; organizer confirms then POSTs /listings); engine: regex always, LLM-assisted when the enrichment chain is live, URL pages read schema.org JSON-LD first (response names engine+model)", "listings", sec=tok,
                            note="body {text} or {url} (not both); deterministic extraction (title/date/time/price/location); URL fetches are SSRF-walled (public hosts only, 1MB cap, html-only) and rate-limited per source; response carries needs_confirm [date,price] — never trust AI-extracted prices without review")},
             "/merchants": {
-                "post": op("Create a merchant profile (unique kebab slug; fulfillment pickup/delivery/shipping/onsite; locations + promos; per-owner cap)", "listings", sec=tok,
+                "post": op("Create a merchant profile (unique kebab slug; fulfillment pickup/delivery/shipping/onsite; locations + promos; per-owner cap); update/delete via POST /merchants/{slug} action=update|delete (owner-walled; delete refuses 409 while active listings are attached and cascades the catalog)", "listings", sec=tok,
                            note="owner = token principal; listings attach via {merchant: slug} at create or manage action attach_merchant/detach_merchant (ownership-walled both ways); public GET /merchants/{slug} returns profile + the merchant's OWN uncapped listings + catalog summary; feed quota (default 2/merchant) applies only to the general /listings feed")},
             "/catalogs": {
                 "post": op("Create a versioned catalog tree for a merchant (depth<=3, items need title, price numeric)", "listings", sec=tok,
@@ -1814,6 +1814,25 @@ def _openapi_spec():
 
 class Handler(BaseHTTPRequestHandler):
     def _json(self, code, data, extra_headers=None):
+        # CATALOGS hardening (RFC 9110): 204/304 MUST NOT carry a body - a
+        # 304 especially must not imply a Content-Length for representation
+        # data it deliberately does not contain.
+        if code in (204, 304):
+            rid = "req-" + secrets.token_hex(8)  # H12: per-request trace id
+            self.send_response(code)
+            for k, v in (extra_headers or {}).items():
+                self.send_header(k, v)
+            self.end_headers()
+            if _reqlog is not None:  # H12
+                try:
+                    p = self.path.split("?", 1)[0][:120]
+                    lat = (time.time() - getattr(self, "_t0", time.time())) * 1000.0
+                    _reqlog.info("%s %s -> %d %.1fms src=%s rid=%s",
+                                 getattr(self, "command", "?"), p, code, lat,
+                                 _source_of(self), rid)
+                except Exception:
+                    pass
+            return
         body = json.dumps(data, indent=2).encode()
         rid = "req-" + secrets.token_hex(8)  # H12: per-request trace id
         self.send_response(code)
@@ -3128,6 +3147,12 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/merchants" or u.path.startswith("/merchants/"):
             # CATALOGS P1 public reads: profile + OWN uncapped listing set +
             # catalog summary (items never leak into /listings).
+            if u.path == "/merchants":
+                # hardening: bare GET = public collection (honest 200, never
+                # a naked 404; also the sitemap/llms discovery source).
+                with LOCK:
+                    _coll = [_pub_merchant(m) for m in MERCHANTS.values()]
+                return self._json(200, {"count": len(_coll), "merchants": _coll})
             _mslug = u.path[len("/merchants"):].lstrip("/")
             if not _mslug or len(_mslug) > 40 or not _MERCH_SLUG_RE.fullmatch(_mslug):
                 return self._json(404, {"error": "no merchant"})
@@ -3147,9 +3172,17 @@ class Handler(BaseHTTPRequestHandler):
                                 "content_hash": _cat["content_hash"], "items": _items[:200]}
             return self._json(200, {"merchant": _pub_merchant(_m),
                 "listings": _own_ls, "catalog": _cat_pub})
-        if u.path.startswith("/catalogs"):
+        if u.path == "/catalogs" or u.path.startswith("/catalogs/"):
             # CATALOGS P2 public read: version + content_hash (+ tree unless
             # fields=summary); since_hash match -> honest 304.
+            if u.path == "/catalogs":
+                # hardening: bare GET = public collection; prefix tightened
+                # so /catalogsXYZ can no longer match this branch.
+                with LOCK:
+                    _coll = [{"id": c["id"], "merchant": c["merchant"],
+                              "version": c["version"], "content_hash": c["content_hash"]}
+                             for c in CATALOGS.values()]
+                return self._json(200, {"count": len(_coll), "catalogs": _coll})
             _crid = u.path[len("/catalogs"):].lstrip("/")
             if not _crid or "/" in _crid or len(_crid) > 40:
                 return self._json(404, {"error": "no catalog"})
@@ -4552,8 +4585,6 @@ class Handler(BaseHTTPRequestHandler):
             # slug hygiene: lowercase kebab, no probes via weird names.
             _mslug = path[len("/merchants"):].lstrip("/")
             if path == "/merchants":
-                if u.method if False else False:
-                    pass
                 # POST create
                 _cred = self.headers.get("X-Hub-Token", "")
                 _p, _err = hublib.verify_token(BOOKING_KEY, _cred, "list", single_use=False) if _cred \
@@ -4614,49 +4645,64 @@ class Handler(BaseHTTPRequestHandler):
                 _m = MERCHANTS.get(_mslug)
             if not _m:
                 return self._json(404, {"error": f"no merchant {_mslug}"})
-            if self.command == "PUT" or (self.command == "POST" and data.get("action") == "update"):
-                _cred = self.headers.get("X-Hub-Token", "")
-                _p, _err = hublib.verify_token(BOOKING_KEY, _cred, "list", single_use=False) if _cred \
-                    else (None, "missing X-Hub-Token")
-                if _p:
-                    _p, _err = _gen_check(_p)
-                if not _p:
-                    return self._json(401, {"error": _err or "invalid list token"})
-                with LOCK:
-                    if _m.get("owner") != _p["sub"]:
-                        return self._json(403, {"error": "not your merchant"})
-                    for _k, _wall in (("name", 80), ("description", 500)):
-                        if _k in data:
-                            _m[_k] = str(data[_k]).strip()[:_wall]
-                    if "locations" in data:
-                        _cl = []
-                        locs = data.get("locations") or []
-                        if not isinstance(locs, list) or len(locs) > 10:
-                            return self._json(400, {"error": "locations must be a list (max 10)"})
-                        for _lo in locs:
-                            if not isinstance(_lo, dict):
-                                return self._json(400, {"error": "locations entries must be objects"})
-                            _cl.append({"city": str(_lo.get("city", ""))[:60],
-                                        "address": str(_lo.get("address", ""))[:120]})
-                        _m["locations"] = _cl
-                    if "fulfillment" in data:
-                        ful = data.get("fulfillment") or []
-                        if isinstance(ful, str):
-                            ful = [ful]
-                        if not isinstance(ful, list) or any(f not in _MERCH_FULFILL for f in ful):
-                            return self._json(400, {"error": f"fulfillment must be a list of {_MERCH_FULFILL}"})
-                        _m["fulfillment"] = ful
-                    if "promos" in data:
-                        promos = data.get("promos") or []
-                        if not isinstance(promos, list) or len(promos) > 5:
-                            return self._json(400, {"error": "promos must be a list (max 5)"})
-                        _m["promos"] = [{"label": str(_pr.get("label", ""))[:80],
-                                          "detail": str(_pr.get("detail", ""))[:200]} for _pr in promos
-                                         if isinstance(_pr, dict)]
+            # CATALOGS hardening: this hub routes GET/POST/DELETE only, so
+            # the old PUT arm was unreachable dead code. Writes = POST + an
+            # explicit action; delete gets a real, guarded lifecycle.
+            _maction = str(data.get("action", "")).strip()
+            if _maction not in ("update", "delete"):
+                return self._json(400, {"error": "action must be 'update' or 'delete'"})
+            _cred = self.headers.get("X-Hub-Token", "")
+            _p, _err = hublib.verify_token(BOOKING_KEY, _cred, "list", single_use=False) if _cred \
+                else (None, "missing X-Hub-Token")
+            if _p:
+                _p, _err = _gen_check(_p)
+            if not _p:
+                return self._json(401, {"error": _err or "invalid list token"})
+            with LOCK:
+                if _m.get("owner") != _p["sub"]:
+                    return self._json(403, {"error": "not your merchant"})
+                if _maction == "delete":
+                    _attached = sum(1 for l in LISTINGS
+                                    if l.get("merchant") == _mslug and not l.get("archived"))
+                    if _attached:
+                        return self._json(409, {"error": f"{_attached} active listing(s) still attached",
+                            "hint": "detach (manage detach_merchant) or archive them first"})
+                    del MERCHANTS[_mslug]
+                    for _cid in [c for c, cv in CATALOGS.items() if cv.get("merchant") == _mslug]:
+                        del CATALOGS[_cid]
                     _persist_locked()
+                    return self._json(200, {"ok": True, "deleted": _mslug})
+                # action == "update": bounded field walls (owner verified above)
+                for _k, _wall in (("name", 80), ("description", 500)):
+                    if _k in data:
+                        _m[_k] = str(data[_k]).strip()[:_wall]
+                if "locations" in data:
+                    _cl = []
+                    locs = data.get("locations") or []
+                    if not isinstance(locs, list) or len(locs) > 10:
+                        return self._json(400, {"error": "locations must be a list (max 10)"})
+                    for _lo in locs:
+                        if not isinstance(_lo, dict):
+                            return self._json(400, {"error": "locations entries must be objects"})
+                        _cl.append({"city": str(_lo.get("city", ""))[:60],
+                                    "address": str(_lo.get("address", ""))[:120]})
+                    _m["locations"] = _cl
+                if "fulfillment" in data:
+                    ful = data.get("fulfillment") or []
+                    if isinstance(ful, str):
+                        ful = [ful]
+                    if not isinstance(ful, list) or any(f not in _MERCH_FULFILL for f in ful):
+                        return self._json(400, {"error": f"fulfillment must be a list of {_MERCH_FULFILL}"})
+                    _m["fulfillment"] = ful
+                if "promos" in data:
+                    promos = data.get("promos") or []
+                    if not isinstance(promos, list) or len(promos) > 5:
+                        return self._json(400, {"error": "promos must be a list (max 5)"})
+                    _m["promos"] = [{"label": str(_pr.get("label", ""))[:80],
+                                      "detail": str(_pr.get("detail", ""))[:200]} for _pr in promos
+                                     if isinstance(_pr, dict)]
+                _persist_locked()
                 return self._json(200, {"ok": True, "merchant": _pub_merchant(_m)})
-            # writes only; public reads live in the GET region below
-            return self._json(405, {"error": "use GET for merchant reads"})
         if path == "/catalogs" or path.startswith("/catalogs/"):
             # CATALOGS P2 (owner GO): versioned catalog trees owned by a
             # merchant (restored: post-tail surgery had swallowed this block).
@@ -4672,6 +4718,11 @@ class Handler(BaseHTTPRequestHandler):
                 _p, _err = _gen_check(_p)
             if not _p:
                 return self._json(401, {"error": _err or "invalid list token"})
+            with LOCK:
+                # H7: every catalog write persists to disk - backstopped like
+                # every other mutating route (per-source fixed window).
+                if not _auth_allow("create", _source_of(self)):
+                    return self._json(429, {"error": "catalog write rate limit reached"})
             if path == "/catalogs":
                 mslug = str(data.get("merchant", "")).strip().lower()
                 tree = data.get("tree")
