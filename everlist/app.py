@@ -1078,6 +1078,21 @@ import base64
 PREMIUM_PRICE_USD = float(os.environ.get("HUB_PREMIUM_PRICE_USD", "0.01"))
 PAYTO = os.environ.get("HUB_PAYTO", "0x1111111111111111111111111111111111111111")  # SIMULATED default
 BASE_SEPOLIA_USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e"  # official testnet USDC
+
+# PA-5 (2026-11-13): UCP vendor capability schemas, bundled + FAIL-CLOSED.
+# Loaded once at boot; a missing/invalid file leaves doc=None and the
+# /.well-known/ucp + /ucp/events-capabilities.json faces answer 503 honestly
+# instead of serving garbage. Mirrors the community-schema fail-closed law.
+_UCP_CAPS = {"doc": None}
+try:
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "ucp", "events-capabilities.json"), encoding="utf-8") as _ucp_f:
+        _ucp_loaded = json.load(_ucp_f)
+    assert isinstance(_ucp_loaded.get("capabilities"), dict) and _ucp_loaded["capabilities"], "no capabilities"
+    _UCP_CAPS["doc"] = _ucp_loaded
+except Exception as _ucp_err:  # pragma: no cover - boot-time guard
+    sys.stderr.write("[ucp] capability schema NOT loaded (fail-closed): %r\n" % (_ucp_err,))
+
 # G5: identities stay memory-only by default (no persistence of secrets/PII);
 
 VERTICAL_SCHEMAS = {
@@ -1664,6 +1679,10 @@ def _openapi_spec():
             "/.well-known/agent-hub.json": {"get": op("Discovery manifest", "discovery")},
             "/.well-known/x402.json": {"get": op("x402 payment discovery (DL-1)", "discovery",
                                         note="machine-readable payment terms at the standard agents-probe location; built from the same constants as the live 402 on /premium/events")},
+            "/.well-known/ucp": {"get": op("UCP vendor profile (PA-5, spec draft)", "discovery",
+                                  note="UCP business profile declaring ONLY EverList vendor capabilities (network.everlist.events.*); NO dev.ucp.* wire-format claims - UCP checkout adapters are a tracked build item (PA-6). Schemas: /ucp/events-capabilities.json")},
+            "/ucp/events-capabilities.json": {"get": op("UCP vendor capability schemas v0.1.0", "discovery",
+                                      note="JSON Schema for the five network.everlist.events.* capabilities; semantics mirror SPEC 19 (booking=agreement, escrow default, permissionless timeout refund, auto-release to a payout key fixed at creation); served fail-closed from the bundled ucp/ file")},
             "/ticket/{token}": {"get": op("T5 door ticket honest status (capability URL)", "bookings",
                                  note="projection: event, date, qty, door name (buyer-chosen choice), redeemed state; capability law - the token holder IS the attendee (you_are_buyer), you_are_owner only with the listing owner token; page is noindex/no-store")},
             "/ticket/{token}/name": {"post": op("Door-display name via the ticket capability itself", "bookings",
@@ -2889,6 +2908,54 @@ class Handler(BaseHTTPRequestHandler):
                 _x402["cardano_rail"] = {"network": CARDANO_NET, "asset": CARDANO_ASSET,
                                          "live_terms": "GET /premium/events without X-PAYMENT"}
             return self._json(200, _x402)
+        if u.path == "/.well-known/ucp" or u.path == "/ucp/events-capabilities.json":
+            """PA-5 (2026-11-13): UCP vendor discovery face. HONESTY LAW:
+            declares ONLY EverList vendor capabilities (network.everlist.events.*)
+            backed by the bundled schema doc and shipped SPEC-19 mechanics.
+            NO dev.ucp.* capability is claimed - the hub does not speak UCP's
+            wire format yet (tracked PA-6); advertising it would promise dead
+            endpoints. Money labels derive from the SAME PAY_MODE constant
+            that powers the live x402 402, so this face cannot drift from
+            actual payment truth (same parity law as /well-known/x402.json)."""
+            _caps_doc = _UCP_CAPS.get("doc")
+            if _caps_doc is None:
+                return self._json(503, {"error": "UCP capability schema file missing or invalid (fail-closed); see ucp/events-capabilities.json"})
+            if u.path == "/ucp/events-capabilities.json":
+                return self._json(200, _caps_doc)
+            _ucp_rail_status = ("TESTNET - real EIP-3009 verification, testnet asset"
+                                if PAY_MODE == "testnet" else
+                                "SIMULATED payment verification - no real settlement")
+            _ucp = {
+                "ucp": {
+                    "version": "2026-11-13",
+                    "profile_kind": "vendor",
+                    "spec_draft": True,
+                    "business": {
+                        "name": HUB_NAME,
+                        "url": "https://everlist.network",
+                        "description": "Listing-first marketplace: a listing = something with a date where a human is needed or wanted. Discover, book, pay in escrow."
+                    },
+                    "honesty": {
+                        "wire_format": "none - this is a DISCOVERY-ONLY vendor profile; the hub does not accept UCP checkout sessions yet",
+                        "ucp_checkout_adapters": "tracked build item PA-6 (backlog-v3)",
+                        "real_surfaces": ["/openapi.json", "/.well-known/agent-hub.json", "/mcp", "/agents"]
+                    },
+                    "capabilities": [
+                        {"name": name, "version": "0.1.0",
+                         "schema": "https://everlist.network/ucp/events-capabilities.json#capabilities/" + name}
+                        for name in sorted(_caps_doc["capabilities"].keys())
+                    ],
+                    "payment_handlers": [{
+                        "id": "everlist-escrow",
+                        "methods": ["stablecoin"],
+                        "status": _ucp_rail_status,
+                        "description": "Protocol escrow: funds lock at booking; buyer-favoring permissionless refund until the refund deadline; auto-release to a payout key fixed at creation after the claim deadline. Public fail-closed proof per booking: /escrow/{id}/proof",
+                        "capabilities_ref": "network.everlist.events.escrow_state"
+                    }],
+                    "capability_schema_doc": "/ucp/events-capabilities.json"
+                }
+            }
+            return self._json(200, _ucp)
         if u.path == "/.well-known/agent-hub.json":
             # standard discovery location - agents probe any domain for this
             return self._json(200, {

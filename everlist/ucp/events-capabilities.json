@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://everlist.network/ucp/events-capabilities.json",
+  "title": "EverList Events capabilities for UCP (vendor namespace network.everlist.*)",
+  "description": "Vendor capability schemas, v0.1.0 (2026-11-13). Semantics mirror the hub's SPEC 19 payment-terms policy: booking = agreement, escrow default when real money attaches, permissionless buyer refund until the refund deadline, auto-release to a payout key fixed at creation. Opt-in negotiation: these activate only when both parties declare them.",
+  "capabilities": {
+    "network.everlist.events.listing": {
+      "extends": ["dev.ucp.shopping.catalog.search", "dev.ucp.shopping.catalog.lookup"],
+      "type": "object",
+      "required": ["name", "startDate", "role"],
+      "properties": {
+        "name": {"type": "string", "maxLength": 200},
+        "description": {"type": "string", "maxLength": 2000},
+        "startDate": {"type": "string", "format": "date-time", "description": "The date that makes it a listing: something with a date where a human is needed or wanted."},
+        "endDate": {"type": "string", "format": "date-time"},
+        "role": {"type": "string", "enum": ["offer", "seek"], "description": "offer = human wanted (workshop, job shift); seek = human needed (agent posts a seek for human work). Both first-class."},
+        "attendanceMode": {"type": "string", "enum": ["offline", "online", "mixed"]},
+        "location": {"type": "object", "properties": {"name": {"type": "string"}, "address": {"type": "string"}, "geo": {"type": "object", "properties": {"lat": {"type": "number"}, "lon": {"type": "number"}}}}},
+        "capacity": {"type": "integer", "minimum": 1},
+        "remaining": {"type": "integer", "minimum": 0},
+        "price": {"type": "object", "required": ["amount", "currency"], "properties": {"amount": {"type": "number"}, "currency": {"type": "string", "minLength": 3, "maxLength": 3}, "category": {"type": "string", "enum": ["free", "fixed", "donation"]}}},
+        "archetype": {"type": "string", "description": "Vertical archetype (events, classes, jobs, services, rides, marketplace). Schema data only - never renderer branching."},
+        "organizer": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}, "verified": {"type": "boolean"}}}
+      }
+    },
+    "network.everlist.events.booking": {
+      "extends": ["dev.ucp.shopping.checkout"],
+      "type": "object",
+      "required": ["listing_ref", "terms_echo"],
+      "properties": {
+        "listing_ref": {"type": "string", "description": "Listing id or permalink being booked."},
+        "quantity": {"type": "integer", "minimum": 1, "default": 1},
+        "attendee": {"type": "object", "properties": {"email": {"type": "string", "format": "email"}, "name": {"type": "string"}}},
+        "terms_echo": {"type": "object", "description": "EXACT copy of the terms the agent saw (total, rail, refund window, deposit). Stale/mismatched terms are rejected (409) - no silent re-pricing. Booking = agreement.", "required": ["total", "rail"], "properties": {"total": {"type": "number"}, "currency": {"type": "string"}, "rail": {"type": "string", "enum": ["escrow", "instant"]}, "refund_window_hours": {"type": "integer"}, "deposit_required": {"type": "boolean"}}},
+        "idempotency_key": {"type": "string", "description": "Client-generated key; repeated submits with the same key return the same booking."}
+      }
+    },
+    "network.everlist.events.escrow_terms": {
+      "extends": ["dev.ucp.common.payment.terms"],
+      "type": "object",
+      "description": "Escrow-aware payment terms advertised BEFORE booking.",
+      "required": ["rail"],
+      "properties": {
+        "rail": {"type": "string", "enum": ["escrow", "instant"], "description": "escrow = default whenever real money attaches; instant = x402, merchant opt-in, no refund window by design."},
+        "refund_window_hours": {"type": "integer", "minimum": 0, "description": "Defaults: events end+72h, services fulfillment+72h, marketplace delivery+7d. Merchant may override per listing."},
+        "deposit": {"type": "object", "properties": {"required": {"type": "boolean"}, "amount": {"type": "number"}}},
+        "asset": {"type": "string", "description": "Settlement asset identifier (stablecoin preferred; no proprietary token)."},
+        "changes_policy": {"type": "string", "const": "mutual", "description": "Post-booking changes require both parties; no unilateral rewrite."}
+      }
+    },
+    "network.everlist.events.escrow_state": {
+      "type": "object",
+      "description": "NEW PRIMITIVE - no UCP analog exists. Escrow lifecycle with permissionless deadline mechanics (buyer-favoring timeout refund; auto-release after a later claim deadline to a payout destination fixed at creation). EverList's original protocol contribution.",
+      "required": ["state"],
+      "properties": {
+        "state": {"type": "string", "enum": ["offered", "funded", "fulfilled", "released", "refunded", "disputed"], "description": "funded = money locked at booking; released = merchant paid; refunded = buyer made whole."},
+        "refund_deadline": {"type": "string", "format": "date-time", "description": "Before this instant the BUYER can refund themselves permissionlessly."},
+        "claim_deadline": {"type": "string", "format": "date-time", "description": "Strictly after refund_deadline. After this, refund paths are walled and ANYONE can trigger auto-release; the payout destination was fixed at creation and cannot be redirected."},
+        "proof_url": {"type": "string", "format": "uri", "description": "Public, fail-closed verification page proving the escrow contract and its guarantees."},
+        "on_chain": {"type": "object", "properties": {"chain": {"type": "string"}, "contract_ref": {"type": "string"}, "tx_fund": {"type": "string"}, "tx_settle": {"type": "string"}}}
+      }
+    },
+    "network.everlist.events.verify": {
+      "type": "object",
+      "description": "NEW PRIMITIVE - post-booking verification surface. Agents can prove claims about a booking's trust state without trusting the marketplace's word.",
+      "required": ["booking_ref", "checks"],
+      "properties": {
+        "booking_ref": {"type": "string"},
+        "checks": {"type": "array", "items": {"type": "object", "required": ["kind", "result", "evidence_url"], "properties": {"kind": {"type": "string", "enum": ["escrow_funded", "escrow_released", "escrow_refunded", "organizer_verified", "listing_exists"]}, "result": {"type": "string", "enum": ["pass", "fail", "unknown"]}, "evidence_url": {"type": "string", "format": "uri", "description": "Fail-closed: unknown/fail is the honest default when evidence cannot be produced."}}}}
+      }
+    }
+  },
+  "versioning": {
+    "schema_version": "0.1.0",
+    "date": "2026-11-13",
+    "policy": "Vendor capability: versioned on EverList's cadence. Minor bump for additive fields, major for breaking. Negotiation picks the highest mutually supported version."
+  }
+}
