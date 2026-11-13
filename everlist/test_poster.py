@@ -33,6 +33,19 @@ check("R A4 print rule (in external poster.css — CSP law)",
 check("R stylesheet EXTERNAL (CSP style-src strips inline)",
       '<link rel="stylesheet" href="/poster.css?v=' in en and "<style" not in en)
 check("R stylesheet carries version param", "poster.css?v=" in en)
+css = open(os.path.join(HERE, "static", "poster.css"), encoding="utf-8").read()
+check("R v2 self-hosted fonts (@font-face Fraunces+Inter)",
+      "@font-face" in css and "/fonts/fraunces-latin-700-normal.woff2" in css
+      and "/fonts/inter-latin-400-normal.woff2" in css)
+check("R v2 brand tokens (night band + accent)", "#1A252B" in css and "#86C0A6" in css)
+check("R v2 dark bands + wordmark + perforation + qrbox",
+      'class="band"' in en and 'class="band foot"' in en
+      and 'class="wordmark"' in en and 'class="perf"' in en and 'class="qrbox"' in en)
+check("R v2 PDF download link EN",
+      'href="https://everlist.network/poster/evt-99.pdf"' in en and 'class="dl"' in en)
+check("R v2 PDF download link DE (Als PDF herunterladen)",
+      'Als PDF herunterladen' in de
+      and 'href="https://everlist.network/poster/evt-99.pdf"' in de)
 check("R EN tagline", "Bookable via EverList" in en)
 check("R DE tagline", "Buchbar \u00fcber EverList" in de)
 check("R DE Sie-form footer", "Veranstalter:" in de)
@@ -76,11 +89,40 @@ check("W deploy matcher carries /poster.css", "/poster.css" in dep)
 
 mk = open(os.path.join(HERE, "Makefile"), encoding="utf-8").read()
 check("W Makefile registers test_poster.py", "test_poster.py" in mk)
+check("W Makefile registers test_poster_pdf.py", "test_poster_pdf.py" in mk)
 
 # ---- ship-list law (incident class: poster.py broke webchat boot on VPS) --
 ship = open(os.path.join(HERE, "..", "..", "ops", "ship.sh"), encoding="utf-8").read()
 check("S ship FILES carries poster.py", " poster.py " in ship)
 check("S ship FILES carries static/poster.css", "static/poster.css" in ship)
+check("S ship FILES carries poster_pdf.py", "poster_pdf.py" in ship)
+check("S ship FILES carries all font files", ship.count("static/fonts/") >= 10)
+
+# ---- PDF twin laws (B3-PDF, owner 2026-11-13: downloadable as PDF, A4) -----
+import poster_pdf
+_pdf = poster_pdf.poster_pdf_bytes(FX, "https://everlist.network", "en")
+check("P PDF renders valid bytes (%PDF magic)",
+      isinstance(_pdf, bytes) and _pdf[:5] == b"%PDF-")
+check("P PDF fail-open (empty listing -> bytes or None, never raises)",
+      isinstance(poster_pdf.poster_pdf_bytes({}, "https://everlist.network", "en"),
+                 (bytes, type(None))))
+_pdf_src = open(os.path.join(HERE, "poster_pdf.py"), encoding="utf-8").read()
+check("P PDF source keeps never-invented law", "never invented" in _pdf_src)
+_req = open(os.path.join(HERE, "requirements.txt"), encoding="utf-8").read()
+check("P fpdf2 pinned in requirements.txt", "fpdf2==" in _req)
+check("P fonts staged (TTF for PDF + woff2 for web)",
+      os.path.isfile(os.path.join(HERE, "static", "fonts", "fraunces-latin-700-normal.ttf"))
+      and os.path.isfile(os.path.join(HERE, "static", "fonts", "inter-latin-400-normal.woff2")))
+check("W webchat imports poster_pdf", "import poster_pdf as _poster_pdf" in wc)
+check("W .pdf route BEFORE html branch",
+      0 < wc.find('rest.startswith("/poster/") and rest.endswith(".pdf")')
+      < wc.find('elif rest.startswith("/poster/"):'))
+check("W PDF served as attachment (Content-Disposition)",
+      'Content-Disposition' in wc and 'attachment' in wc)
+check("W font + pdf MIME types registered", '".woff2"' in wc and '".ttf"' in wc
+      and '".pdf"' in wc)
+check("W deploy matcher carries /fonts/*", "/fonts/*" in dep)
+check("W _send_bytes supports extra headers", "extra_headers" in wc)
 
 # ---- enrich A3 pins (pdf flyer extraction shipped with SEEK ship) ----
 enrich_src = open(os.path.join(HERE, "enrich.py"), encoding="utf-8").read()
