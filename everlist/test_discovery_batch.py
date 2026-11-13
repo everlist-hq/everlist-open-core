@@ -114,6 +114,13 @@ check("indexnow key exact", body.decode("utf-8", "replace").strip() == pages.IND
 code, _ = get(BASEL + "/.well-known/wrongkey.txt")
 check("indexnow wrong key 404", code == 404)
 
+code, _ = get(BASEL + "/.well-known/agent-card.json")
+check("agent-card 200", code == 200)
+code, body = get(BASEL + "/.well-known/agent-card.json")
+check("agent-card valid json + name", b'"EverList Hub"' in body)
+code, _ = get(BASEL + "/.well-known/nope-card.json")
+check("agent-card wrong path 404", code == 404)
+
 # 4. hermetic law: default env leaves ping OFF (documented; no net attempted)
 check("indexnow ping env-gated off by default", os.environ.get("EVERLIST_INDEXNOW_PING") != "1")
 
