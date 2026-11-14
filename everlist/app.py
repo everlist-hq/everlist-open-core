@@ -668,6 +668,11 @@ def _load_state():
                 _pfx, _, _sfx = _lid.rpartition("-")
                 if _sfx.isdigit():
                     ID_COUNTERS[_pfx] = max(int(ID_COUNTERS.get(_pfx, 0)), int(_sfx))
+        # GSC 2026-11-14 backfill: listings predating the server-stamp get a
+        # stable boot-time epoch so public JSON-LD can emit offers.validFrom.
+        for _l in LISTINGS:
+            if not isinstance(_l.get("created"), (int, float)) or _l.get("created", 0) <= 0:
+                _l["created"] = time.time()
         # B3c-email + B1 migration: legacy accounts predate email/gen fields
         _EFIELDS = {"email": None, "email_verified": False, "notify_email": True, "marketing_email": True, "pending_email": None,
                     "pending_code_hash": None, "pending_exp": 0,
@@ -1209,7 +1214,7 @@ def normalize_tags(raw):
 RESERVED_LISTING_FIELDS = {"id", "registered", "available", "owner", "manage_code_hash", "claim_code_hash",
     "rating_sum", "rating_count", "rating_avg", "free_rating_sum", "free_rating_count",
     "rating_wsum", "rating_wtot", "review_flags", "rating_times",
-    "image", "_sponsor", "series_id"}  # owner = authenticated principal; manage_code_hash/claim_code_hash = server-only (anti-spoof, P2); rating aggregates = S6 server-owned (clients can never seed fake reputation); image is upload-only (B2: set via POST /listings/{id}/image, never client-settable)
+    "image", "_sponsor", "series_id", "created"}  # owner = authenticated principal; manage_code_hash/claim_code_hash = server-only (anti-spoof, P2); rating aggregates = S6 server-owned (clients can never seed fake reputation); image is upload-only (B2: set via POST /listings/{id}/image, never client-settable); created = server-stamped epoch (feeds public offers.validFrom, GSC 2026-11-14)
 
 # C12: payment-terms policy (SPEC §19, owner-pinned 2026-09-12). Terms live on
 # the LISTING; booking = acceptance (paid bookings echo custom terms via
@@ -1395,6 +1400,7 @@ _SCHEMAS = {
             "location": {"type": "string"},
             "capacity": {"type": "integer"},
             "registered": {"type": "integer", "description": "server-counted registrations (tracks_capacity verticals)"},
+            "created": {"type": "number", "description": "server-stamped creation epoch (unix seconds); surfaces publicly as offers.validFrom in Event JSON-LD"},
             "available": {"type": "boolean"},
             "visibility": {"type": "string", "enum": ["public", "private"]},
             "owner": {"type": "string", "description": "owner-anonymized: pseudonymous principal (agent name / acct- ref), never personal data"},
@@ -5233,6 +5239,7 @@ class Handler(BaseHTTPRequestHandler):
                 ID_COUNTERS[_pref] = _n
                 lid = f"{_pref}-{_n}"  # monotonic: never reused, even after deletes
                 data["id"] = lid
+                data["created"] = time.time()  # GSC 2026-11-14: server-stamped creation epoch, feeds public offers.validFrom
                 data["owner"] = p["sub"]   # SERVER-OWNED: authenticated principal, never client-set (anti-spoof for /orders)
                 manage_code = "mgr-" + secrets.token_hex(8)   # ownership secret (64-bit): shown ONCE, stored as sha256 only — NEVER echoed (H9 _pub_listing)
                 data["manage_code_hash"] = hashlib.sha256(manage_code.encode()).hexdigest()

@@ -48,7 +48,7 @@ _photo = "data:image/png;base64," + base64.b64encode(
     b"\x89PNG\r\n\x1a\n" + b"A" * 64).decode()
 _l = {"id": "evt-x", "title": "SEO Test Event", "description": "d", "date": "2027-01-15",
       "time": "19:00", "location": "Wien", "price": 25, "owner": "organizer-a",
-      "capacity": 10, "registered": 3, "image": _photo,
+      "capacity": 10, "registered": 3, "image": _photo, "created": 1767000000,
       "payment_terms": {"rail": "escrow", "refund_window_hours": 24}}
 jd = pages._jsonld(_l, "en")
 check("jsonld parses", isinstance(jd, dict) and jd.get("@type") == "Event")
@@ -56,12 +56,16 @@ check("jsonld startDate carries time", jd.get("startDate") == "2027-01-15T19:00:
 check("jsonld location place", jd.get("location", {}).get("name") == "Wien")
 check("jsonld provider organizer", jd.get("provider", {}).get("name") == "organizer-a")
 check("jsonld image real upload", jd.get("image") == pages.BASE + "/img/evt-x.png", str(jd.get("image")))
+check("jsonld organizer present", jd.get("organizer", {}).get("name") == "organizer-a")
+check("jsonld offer validFrom UTC", jd.get("offers", {}).get("validFrom") == "2025-12-29T09:20:00Z", str(jd.get("offers", {}).get("validFrom")))
+check("jsonld location address locality", jd.get("location", {}).get("address", {}).get("addressLocality") == "Wien")
 check("jsonld offer escrow desc", "held safely" in (jd.get("offers", {}).get("description") or ""))
 
 _l_free = dict(_l, price=0, image="")
 jd_free = pages._jsonld(_l_free, "en")
 check("free offer price 0", jd_free["offers"].get("price") == 0)
 check("free offer category free", jd_free["offers"].get("category") == "free")
+check("jsonld image fallback default", jd_free.get("image") == pages.BASE + "/og/default.jpg", str(jd_free.get("image")))
 
 _l_svc = {k: v for k, v in _l.items() if k != "date"}
 jd_svc = pages._jsonld(_l_svc, "en")
@@ -197,6 +201,9 @@ try:
     check("live detail Event JSON-LD parses", ldd.get("@type") == "Event")
     check("live Event carries provider", ldd.get("provider", {}).get("name") == "seo-test-org")
     check("live Event carries image", ldd.get("image", "").endswith(f"/img/{lid}.png"), str(ldd.get("image")))
+    check("live Event carries organizer", ldd.get("organizer", {}).get("name") == "seo-test-org")
+    check("live Event carries address", ldd.get("location", {}).get("address", {}).get("addressLocality") == "Graz")
+    check("live Event carries validFrom", bool(str(ldd.get("offers", {}).get("validFrom") or "")), str(ldd.get("offers", {}).get("validFrom")))
 
     # private listing photo = uniform 404 (no oracle)
     st, pv = req("POST", "/listings", {"vertical": "events", "title": "Priv",
