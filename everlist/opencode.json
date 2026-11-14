@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "everlist": {
+      "type": "remote",
+      "url": "https://everlist.network/mcp",
+      "enabled": true
+    }
+  }
+}

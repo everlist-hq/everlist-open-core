@@ -1,0 +1,10 @@
+{
+  "name": "everlist",
+  "description": "EverList: search, book, and verify dated listings (events, classes, services, jobs) in escrow via the EverList hub MCP server. Rail labels verbatim; checkout never charges in-conversation.",
+  "version": "0.1.0",
+  "author": { "name": "everlist-hq" },
+  "homepage": "https://everlist.network",
+  "repository": "https://github.com/everlist-hq/everlist-open-core",
+  "license": "MIT",
+  "keywords": ["booking", "escrow", "marketplace", "commerce", "x402", "events"]
+}

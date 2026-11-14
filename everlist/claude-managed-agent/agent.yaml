@@ -1,0 +1,75 @@
+# EverList shopping agent: Managed Agent manifest (PA-9, 2026-11-14).
+# Resolved by anthropics/commerce-agents scripts/deploy_managed_agent.sh into a
+# POST /v1/agents body: system_file inlined, skills uploaded via the Skills API,
+# ${VAR} placeholders from the environment (STOREFRONT_MCP_URL=https://everlist.network/mcp).
+# Tools follow the storefront contract; the manifest default-disables everything not
+# listed, so the everlist_* family on the same endpoint stays off.
+
+name: EverList Booking Agent
+model: claude-sonnet-5
+description: >-
+  Booking agent for EverList (everlist.network): a listing is something with a
+  date where a human is needed or wanted. Search dated listings, compare options,
+  stage a hosted booking page, and answer escrow and refund questions. Checkout
+  never charges in-conversation: the customer completes booking and any payment
+  on the hosted page, where the escrow state is visible.
+
+system_file: system.md
+
+skills:
+  - path: skills/escrow-care
+
+mcp_servers:
+  - type: url
+    name: storefront
+    url: ${STOREFRONT_MCP_URL}
+
+tools:
+  - type: agent_toolset_20260401
+    default_config:
+      enabled: false
+    configs:
+      - name: read
+        enabled: true
+        permission_policy: { type: always_allow }
+
+  - type: mcp_toolset
+    mcp_server_name: storefront
+    default_config:
+      enabled: false
+    configs:
+      # Reads run without confirmation.
+      - name: search_products
+        enabled: true
+        permission_policy: { type: always_allow }
+      - name: get_product_details
+        enabled: true
+        permission_policy: { type: always_allow }
+      - name: get_cart
+        enabled: true
+        permission_policy: { type: always_allow }
+      - name: search_policies
+        enabled: true
+        permission_policy: { type: always_allow }
+      # Cart staging pauses for the host's confirmation (writes).
+      - name: add_to_cart
+        enabled: true
+        permission_policy: { type: always_ask }
+      - name: update_cart_item
+        enabled: true
+        permission_policy: { type: always_ask }
+      - name: remove_from_cart
+        enabled: true
+        permission_policy: { type: always_ask }
+      # Money-adjacent: always confirm before staging checkout.
+      - name: checkout
+        enabled: true
+        permission_policy: { type: always_ask }
+      # Booking status needs the session credential; ask first.
+      - name: get_order_status
+        enabled: true
+        permission_policy: { type: always_ask }
+
+metadata:
+  agent: everlist-booking-agent
+  source: everlist/experiments/agent-hub-v2/claude-managed-agent
