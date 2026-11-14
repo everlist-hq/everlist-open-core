@@ -1,4 +1,5 @@
 import json
+import os
 import time
 import urllib.request
 import urllib.error
@@ -96,6 +97,61 @@ TOOLS = [
         },
     },
 ]
+
+# ---------------- PA-9 (2026-11-14): storefront-contract face ----------------
+# Tool names follow the Claude commerce-agents StorefrontBackend contract so an
+# Anthropic Managed Agent can drive this hub via its manifest (the manifest
+# default-disables every tool not listed, so the everlist_* family and this
+# family coexist on one endpoint). Laws unchanged: translator only; header-only
+# auth; checkout NEVER moves money - it stages a Track E hosted-checkout session
+# and returns the capability URL with the hub rail label VERBATIM; the cart is
+# an ephemeral session draft (TTL 1h), never a booking, never persisted.
+
+STOREFRONT_TOOLS = [
+    {'name': 'search_products',
+     'description': ('Search EverList listings (events, classes, food, services, jobs, p2p). '
+                     'Returns best matches with price, date, location, and spots left.'),
+     'inputSchema': {'type': 'object', 'required': ['query'],
+                     'properties': {'query': {'type': 'string'},
+                                    'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20}}}},
+    {'name': 'get_product_details',
+     'description': 'One listing in full: description, date, place, price, capacity left, escrow terms.',
+     'inputSchema': {'type': 'object', 'required': ['product_id'],
+                     'properties': {'product_id': {'type': 'string'}}}},
+    {'name': 'get_cart',
+     'description': ('The session draft (one item). Nothing is booked and no money has '
+                     'moved until the hosted checkout page is completed.'),
+     'inputSchema': {'type': 'object', 'properties': {}}},
+    {'name': 'add_to_cart',
+     'description': ('Stage one listing in the session draft (replaces any previous draft: '
+                     'EverList books one listing per booking). Does NOT book.'),
+     'inputSchema': {'type': 'object', 'required': ['product_id'],
+                     'properties': {'product_id': {'type': 'string'},
+                                    'quantity': {'type': 'integer', 'minimum': 1, 'maximum': 12}}}},
+    {'name': 'update_cart_item',
+     'description': 'Change the draft quantity.',
+     'inputSchema': {'type': 'object', 'required': ['quantity'],
+                     'properties': {'quantity': {'type': 'integer', 'minimum': 1, 'maximum': 12}}}},
+    {'name': 'remove_from_cart',
+     'description': 'Empty the session draft.',
+     'inputSchema': {'type': 'object', 'properties': {}}},
+    {'name': 'checkout',
+     'description': ('Stage the hosted booking page for the draft. Returns checkout_url for the '
+                     'customer to open; the rail label states exactly how money moves (or that '
+                     'it is a free/demo booking). No order is placed and no money moves here.'),
+     'inputSchema': {'type': 'object', 'properties': {}}},
+    {'name': 'get_order_status',
+     'description': ('Booking and escrow state for the token holder (X-Hub-Token header). '
+                     'Includes the wallet-less verify URL when an escrow reference exists.'),
+     'inputSchema': {'type': 'object', 'required': ['booking_id'],
+                     'properties': {'booking_id': {'type': 'string'}}}},
+    {'name': 'search_policies',
+     'description': ('Hub commerce policies: fee policy, payment mode, escrow and refund '
+                     "rules; optionally one listing's terms via listing_id."),
+     'inputSchema': {'type': 'object', 'properties': {'listing_id': {'type': 'string'}}}},
+]
+
+TOOLS = TOOLS + STOREFRONT_TOOLS
 
 
 class MCPError(Exception):
@@ -250,7 +306,198 @@ def _call_tool(handler, hub_port, name, args):
         if st != 200:
             raise MCPError(-32000, 'booking lookup failed (HTTP %s): %s' % (st, res.get('error', '')))
         return res
+    sf_fn = _SF_HANDLERS.get(name)
+    if sf_fn is not None:
+        return sf_fn(handler, hub_port, args)
     raise MCPError(-32602, 'unknown tool: %s' % name)
+
+
+# ---------------- PA-9 storefront implementations ----------------
+_CARTS = {}  # Mcp-Session-Id -> draft; ephemeral, TTL-pruned, never persisted
+_CART_TTL = 3600.0
+_CART_MAX_QTY = 12
+_PUBLIC_URL = os.environ.get('EVERLIST_PUBLIC_URL', 'https://everlist.network').rstrip('/')
+_SF_CART_NOTE = ('Draft only - nothing is booked and no money has moved. '
+                 'Call checkout to stage the hosted booking page.')
+
+
+def _sf_session(handler):
+    sid = handler.headers.get('Mcp-Session-Id', '') or getattr(handler, '_mcp_session', '')
+    if not sid:
+        sid = 'mcp-' + uuid.uuid4().hex
+    handler._mcp_session = sid
+    now = time.time()
+    for k in [k for k, v in _CARTS.items() if now - v.get('ts', 0) > _CART_TTL]:
+        _CARTS.pop(k, None)
+    return sid
+
+
+def _sf_token(handler):
+    tok = handler.headers.get('X-Hub-Token', '')
+    if not tok:
+        auth = handler.headers.get('Authorization', '') or ''
+        if auth.startswith('Bearer '):
+            tok = auth[len('Bearer '):].strip()
+    return tok
+
+
+def _sf_product(l):
+    left = None
+    try:
+        if l.get('capacity') is not None:
+            left = max(int(l['capacity']) - int(l.get('registered') or 0), 0)
+    except (TypeError, ValueError):
+        left = None
+    return {'product_id': l.get('id'), 'title': l.get('title'),
+            'price': l.get('price'), 'currency': 'EUR',
+            'date': l.get('date'), 'location': l.get('location'),
+            'vertical': l.get('vertical'), 'category': l.get('category'),
+            'description': (l.get('description') or '')[:200],
+            'spots_left': left}
+
+
+def _sf_cart_view(cart):
+    if not cart or not cart.get('items'):
+        return {'items': [], 'draft': True,
+                'note': 'Draft empty. Nothing is booked; no money has moved.'}
+    return {'items': [dict(cart['items'][0])], 'draft': True, 'note': _SF_CART_NOTE}
+
+
+def _sf_search_products(handler, hub_port, args):
+    q = urllib.request.quote(str(args.get('query', '')), safe='')
+    limit = int(args.get('limit') or 8)
+    st, res = _api(hub_port, 'GET', '/search?q=%s' % q)
+    if st != 200:
+        raise MCPError(-32000, 'search failed (HTTP %s): %s' % (st, res.get('error', '')))
+    ls = res.get('listings') or []
+    return {'products': [_sf_product(l) for l in ls[:max(1, min(limit, 20))]],
+            'count': len(ls)}
+
+
+def _sf_get_product_details(handler, hub_port, args):
+    pid = str(args.get('product_id', '')).strip()
+    if not pid or '/' in pid or '..' in pid:
+        raise MCPError(-32602, 'invalid product id')
+    st, res = _api(hub_port, 'GET', '/listings/' + pid)
+    if st == 404:
+        raise MCPError(-32000, 'no such listing: %s' % pid)
+    if st != 200:
+        raise MCPError(-32000, 'fetch failed (HTTP %s)' % st)
+    res['product'] = _sf_product(res)
+    return res
+
+
+def _sf_get_cart(handler, hub_port, args):
+    return _sf_cart_view(_CARTS.get(_sf_session(handler)))
+
+
+def _sf_add_to_cart(handler, hub_port, args):
+    pid = str(args.get('product_id', '')).strip()
+    if not pid or '/' in pid or '..' in pid:
+        raise MCPError(-32602, 'invalid product id')
+    qty = int(args.get('quantity') or 1)
+    if qty < 1 or qty > _CART_MAX_QTY:
+        raise MCPError(-32602, 'quantity must be 1..%d' % _CART_MAX_QTY)
+    st, l = _api(hub_port, 'GET', '/listings/' + pid)
+    if st == 404:
+        raise MCPError(-32000, 'no such listing: %s' % pid)
+    if st != 200:
+        raise MCPError(-32000, 'fetch failed (HTTP %s)' % st)
+    sid = _sf_session(handler)
+    _CARTS[sid] = {'items': [dict(_sf_product(l), quantity=qty)], 'ts': time.time()}
+    return _sf_cart_view(_CARTS[sid])
+
+
+def _sf_update_cart_item(handler, hub_port, args):
+    sid = _sf_session(handler)
+    cart = _CARTS.get(sid)
+    if not cart or not cart.get('items'):
+        raise MCPError(-32000, 'cart is empty: add a listing first')
+    qty = int(args.get('quantity') or 1)
+    if qty < 1 or qty > _CART_MAX_QTY:
+        raise MCPError(-32602, 'quantity must be 1..%d' % _CART_MAX_QTY)
+    cart['items'][0]['quantity'] = qty
+    cart['ts'] = time.time()
+    return _sf_cart_view(cart)
+
+
+def _sf_remove_from_cart(handler, hub_port, args):
+    _CARTS.pop(_sf_session(handler), None)
+    return _sf_cart_view(None)
+
+
+def _sf_checkout(handler, hub_port, args):
+    sid = _sf_session(handler)
+    cart = _CARTS.get(sid)
+    if not cart or not cart.get('items'):
+        raise MCPError(-32000, 'cart is empty: add a listing with add_to_cart first')
+    it = cart['items'][0]
+    payload = {'listing_id': it['product_id'], 'quantity': int(it.get('quantity') or 1)}
+    st, res = _api(hub_port, 'POST', '/checkout/sessions', payload)
+    if st == 409:
+        return {'isError': True, 'error': res.get('error', 'checkout refused'),
+                'hint': res.get('hint', ''), 'left': res.get('left'),
+                'note': 'The hub refused this checkout; nothing was staged.'}
+    if st != 201:
+        raise MCPError(-32000, 'checkout staging failed (HTTP %s): %s' % (st, res.get('error', '')))
+    _CARTS.pop(sid, None)
+    url = res.get('url', '')
+    return {'status': 'staged',
+            'checkout_url': (url if url.startswith('http') else _PUBLIC_URL + url),
+            'rail': res.get('rail', ''), 'exp': res.get('exp'),
+            'listing_id': it['product_id'], 'quantity': payload['quantity'],
+            'note': ('No money has moved. The customer completes booking (and payment, if '
+                     'any) on the hosted page, where the escrow state is displayed. The rail '
+                     "label above is the hub's own, verbatim.")}
+
+
+def _sf_get_order_status(handler, hub_port, args):
+    tok = _sf_token(handler)
+    if not tok:
+        raise MCPError(-32001, 'missing hub token: pass the X-Hub-Token header')
+    bid = str(args.get('booking_id', '')).strip()
+    if not bid or '/' in bid or '..' in bid:
+        raise MCPError(-32602, 'invalid booking id')
+    st, res = _api(hub_port, 'GET', '/bookings/' + bid, token=tok)
+    if st != 200:
+        raise MCPError(-32000, 'booking lookup failed (HTTP %s): %s' % (st, res.get('error', '')))
+    ref = res.get('escrow_ref')
+    if isinstance(ref, dict) and ref.get('contract') and ref.get('escrow_id'):
+        res['verify_url'] = (_PUBLIC_URL + '/verify?contract=%s&escrow=%s'
+                             % (ref['contract'], ref['escrow_id']))
+    return res
+
+
+def _sf_search_policies(handler, hub_port, args):
+    st, c = _api(hub_port, 'GET', '/.well-known/agent-hub.json')
+    if st != 200:
+        raise MCPError(-32000, 'policy source unavailable (HTTP %s)' % st)
+    out = {'fee_policy': c.get('fees') or c.get('fee_policy'),
+           'payment': c.get('payment') or c.get('payment_mode'),
+           'escrow': ('Funds are held in escrow until the organizer confirms the service '
+                      'happened, or the refund window lapses (permissionless timeout '
+                      'refund). After the claim deadline the booking auto-releases to '
+                      'the organizer.'),
+           'source': _PUBLIC_URL + '/how'}
+    lid = str(args.get('listing_id', '')).strip()
+    if lid and '/' not in lid and '..' not in lid:
+        st2, l = _api(hub_port, 'GET', '/listings/' + lid)
+        if st2 == 200:
+            out['listing_terms'] = l.get('payment_terms') or l.get('terms')
+    return out
+
+
+_SF_HANDLERS = {
+    'search_products': _sf_search_products,
+    'get_product_details': _sf_get_product_details,
+    'get_cart': _sf_get_cart,
+    'add_to_cart': _sf_add_to_cart,
+    'update_cart_item': _sf_update_cart_item,
+    'remove_from_cart': _sf_remove_from_cart,
+    'checkout': _sf_checkout,
+    'get_order_status': _sf_get_order_status,
+    'search_policies': _sf_search_policies,
+}
 
 
 def handle(handler, data, hub_port):

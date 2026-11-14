@@ -105,9 +105,13 @@ check("notification accepted (202)", st == 202, (st, body))
 # --- tool surface ---
 st, _, tl = mcp({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
 names = [t["name"] for t in tl.get("result", {}).get("tools", [])]
-check("six tools advertised", len(names) == 6 and set(names) == {
-    "everlist_contract", "everlist_verticals", "everlist_search",
-    "everlist_listing", "everlist_book", "everlist_booking"}, names)
+sf_names = {"search_products", "get_product_details", "get_cart", "add_to_cart",
+            "update_cart_item", "remove_from_cart", "checkout", "get_order_status",
+            "search_policies"}
+check("fifteen tools advertised (6 everlist + 9 storefront/PA-9)", len(names) == 15
+      and set(names) == {"everlist_contract", "everlist_verticals", "everlist_search",
+                         "everlist_listing", "everlist_book", "everlist_booking"} | sf_names,
+      names)
 
 st, _, call = mcp({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
                    "params": {"name": "everlist_contract", "arguments": {}}})
