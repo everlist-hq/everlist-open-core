@@ -32,19 +32,24 @@ TOOLS = [
     },
     {
         'name': 'everlist_search',
-        'description': ('Search public listings. q = free text; optional vertical, category, '
-                        'tags (comma-separated), from/to (YYYY-MM-DD), min_price/max_price (numbers), sort.'),
+        'description': ('Search the public EverList catalog of bookable listings (events, classes, '
+                        'food, services, jobs, p2p). Free-text q plus optional filters: vertical, '
+                        'category, tags (comma-separated), date window from/to (YYYY-MM-DD), '
+                        'min_price/max_price, sort (date|price|newest). Returns matches with id, '
+                        'title, date, location, price, spots left. Next step: everlist_listing for '
+                        'one full record, then everlist_book. Storefront twin: search_products '
+                        '(same handler, Claude commerce contract name).'),
         'inputSchema': {
             'type': 'object',
             'properties': {
                 'q': {'type': 'string', 'description': 'free-text query'},
                 'vertical': {'type': 'string', 'description': 'events|food|services|jobs|classes|p2p'},
-                'category': {'type': 'string'},
+                'category': {'type': 'string', 'description': 'vertical-specific category (see everlist_verticals)'},
                 'tags': {'type': 'string', 'description': 'comma-separated tags'},
-                'from': {'type': 'string', 'description': 'YYYY-MM-DD'},
-                'to': {'type': 'string', 'description': 'YYYY-MM-DD'},
-                'min_price': {'type': 'number'},
-                'max_price': {'type': 'number'},
+                'from': {'type': 'string', 'description': 'window start, YYYY-MM-DD (inclusive)'},
+                'to': {'type': 'string', 'description': 'window end, YYYY-MM-DD (inclusive)'},
+                'min_price': {'type': 'number', 'description': 'minimum price in major units (0 = free included)'},
+                'max_price': {'type': 'number', 'description': 'maximum price in major units'},
                 'sort': {'type': 'string', 'enum': ['date', 'price', 'newest'],
                          'description': 'date | price | newest (invalid values are rejected)'},
             },
@@ -52,7 +57,10 @@ TOOLS = [
     },
     {
         'name': 'everlist_listing',
-        'description': 'One listing, full record: title, date, place, price, escrow terms, capacity, rating.',
+        'description': ('Fetch ONE full listing record by id: title, description, '
+                        'date/time, location, price, escrow payment terms (rail + refund window), '
+                        'capacity and spots left, rating. Use after everlist_search to inspect '
+                        'before everlist_book. Storefront twin: get_product_details (same handler).'),
         'inputSchema': {
             'type': 'object',
             'required': ['id'],
@@ -61,7 +69,8 @@ TOOLS = [
     },
     {
         'name': 'everlist_book',
-        'description': ('Book (or apply+pay for jobs) a listing into escrow. Requires a hub token '
+        'description': ('CREATE a booking (or apply+pay for jobs) holding funds in Midnight-blockchain '
+                        'escrow; read status afterward with everlist_booking. Requires a hub token '
                         'in the X-Hub-Token header on the MCP request (header-only auth; obtain via '
                         'the hub auth contract: POST /accounts/signup + /accounts/login, keypair '
                         'stays client-side). human_verified must be true (interim credential; '
@@ -71,28 +80,32 @@ TOOLS = [
             'type': 'object',
             'required': ['listing_id'],
             'properties': {
-                'listing_id': {'type': 'string'},
-                'quantity': {'type': 'integer', 'minimum': 1},
-                'human_verified': {'type': 'boolean'},
-                'attendee': {'type': 'string'},
-                'buyer': {'type': 'string'},
-                'client': {'type': 'string'},
-                'worker': {'type': 'string'},
+                'listing_id': {'type': 'string', 'description': 'listing id from everlist_search/everlist_listing, e.g. even-1'},
+                'quantity': {'type': 'integer', 'minimum': 1, 'description': 'seats/units to book (capacity verticals)'},
+                'human_verified': {'type': 'boolean', 'description': 'must be true: interim human-attestation (production = zk-personhood)'},
+                'attendee': {'type': 'string', 'description': 'events vertical: attendee identity ref'},
+                'buyer': {'type': 'string', 'description': 'food/p2p vertical: buyer identity ref'},
+                'client': {'type': 'string', 'description': 'services vertical: client identity ref'},
+                'worker': {'type': 'string', 'description': 'jobs vertical: worker identity ref (the human who takes the job)'},
                 # M-B: token removed from the advertised schema — auth is
                 # header-only (X-Hub-Token); a token in tool arguments lands
                 # in the client LLM's visible transcript (injection/exfil risk)
-                'idempotency_key': {'type': 'string'},
+                'idempotency_key': {'type': 'string', 'description': 'optional client key: retry-safe booking (same key = same booking, never a duplicate)'},
             },
         },
     },
     {
         'name': 'everlist_booking',
-        'description': 'Booking status for the token holder: escrow state, amount, confirmation code.',
+        'description': ('READ the status of ONE booking you created: escrow state (HELD/RELEASED/'
+                        'REFUNDED/...), amount, confirmation code. Naming: everlist_book CREATES, '
+                        'everlist_booking READS - booking_id comes from the everlist_book response. '
+                        'Auth: same X-Hub-Token header as everlist_book. Storefront twin: '
+                        'get_order_status.'),
         'inputSchema': {
             'type': 'object',
             'required': ['booking_id'],
             'properties': {
-                'booking_id': {'type': 'string'},
+                'booking_id': {'type': 'string', 'description': 'booking id from the everlist_book response, e.g. bk-...'},
             },
         },
     },
@@ -102,7 +115,12 @@ TOOLS = [
 # Tool names follow the Claude commerce-agents StorefrontBackend contract so an
 # Anthropic Managed Agent can drive this hub via its manifest (the manifest
 # default-disables every tool not listed, so the everlist_* family and this
-# family coexist on one endpoint). Laws unchanged: translator only; header-only
+# family coexist on one endpoint).
+# NOTE (Glama TDQS 2026-11-14): on a raw tools/list both families are visible
+# and score as 'duplicates'. DO NOT collapse them: everlist_* = native hub
+# protocol, storefront names = contract-mandated by the Claude commerce-agents
+# StorefrontBackend spec. Every description cross-references its twin so
+# agents never have to guess the boundary. Laws unchanged: translator only; header-only
 # auth; checkout NEVER moves money - it stages a Track E hosted-checkout session
 # and returns the capability URL with the hub rail label VERBATIM; the cart is
 # an ephemeral session draft (TTL 1h), never a booking, never persisted.
@@ -110,30 +128,42 @@ TOOLS = [
 STOREFRONT_TOOLS = [
     {'name': 'search_products',
      'description': ('Search EverList listings (events, classes, food, services, jobs, p2p). '
-                     'Returns best matches with price, date, location, and spots left.'),
+                     'Returns best matches with price, date, location, and spots left. '
+                     'Storefront-contract alias of everlist_search (same handler) - use '
+                     'whichever family your manifest enabled.'),
      'inputSchema': {'type': 'object', 'required': ['query'],
-                     'properties': {'query': {'type': 'string'},
-                                    'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20}}}},
+                     'properties': {'query': {'type': 'string', 'description': 'free-text search, e.g. "yoga class Vienna"'},
+                                    'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20, 'description': 'max matches to return'}}}},
     {'name': 'get_product_details',
-     'description': 'One listing in full: description, date, place, price, capacity left, escrow terms.',
+     'description': ('Storefront-contract alias of everlist_listing (same handler): one listing in '
+                     'full - description, date/time, place, price, capacity left, escrow terms '
+                     '(rail + refund window). Inspect before add_to_cart.'),
      'inputSchema': {'type': 'object', 'required': ['product_id'],
-                     'properties': {'product_id': {'type': 'string'}}}},
+                     'properties': {'product_id': {'type': 'string', 'description': 'listing id from search_products, e.g. even-1'}}}},
     {'name': 'get_cart',
-     'description': ('The session draft (one item). Nothing is booked and no money has '
-                     'moved until the hosted checkout page is completed.'),
+     'description': ('The session draft (at most ONE staged listing). Nothing is booked and no '
+                     'money has moved until the hosted checkout page is completed. Pair: '
+                     'add_to_cart stages, update_cart_item edits quantity, remove_from_cart '
+                     'empties, checkout hands off.'),
      'inputSchema': {'type': 'object', 'properties': {}}},
     {'name': 'add_to_cart',
      'description': ('Stage one listing in the session draft (replaces any previous draft: '
-                     'EverList books one listing per booking). Does NOT book.'),
+                     'EverList books one listing per booking). Does NOT book. Follow with '
+                     'checkout when the customer is ready.'),
      'inputSchema': {'type': 'object', 'required': ['product_id'],
-                     'properties': {'product_id': {'type': 'string'},
-                                    'quantity': {'type': 'integer', 'minimum': 1, 'maximum': 12}}}},
+                     'properties': {'product_id': {'type': 'string', 'description': 'listing id from search_products, e.g. even-1'},
+                                    'quantity': {'type': 'integer', 'minimum': 1, 'maximum': 12, 'description': 'seats/units (capped at 12)'}}}},
     {'name': 'update_cart_item',
-     'description': 'Change the draft quantity.',
+     'description': ('Change the quantity (1-12) of the staged draft item. EverList carts hold '
+                     'exactly ONE listing, so quantity is the only editable field; get_cart '
+                     'shows the draft. Session-local (TTL 1h) - nothing is booked and no money '
+                     'moves until checkout completes.'),
      'inputSchema': {'type': 'object', 'required': ['quantity'],
-                     'properties': {'quantity': {'type': 'integer', 'minimum': 1, 'maximum': 12}}}},
+                     'properties': {'quantity': {'type': 'integer', 'minimum': 1, 'maximum': 12, 'description': 'new seats/units for the staged listing'}}}},
     {'name': 'remove_from_cart',
-     'description': 'Empty the session draft.',
+     'description': ('Empty the session draft cart (EverList drafts hold at most one listing). '
+                     'Nothing is booked and no money has moved; add_to_cart can stage a '
+                     'different listing afterward.'),
      'inputSchema': {'type': 'object', 'properties': {}}},
     {'name': 'checkout',
      'description': ('Stage the hosted booking page for the draft. Returns checkout_url for the '
@@ -141,13 +171,16 @@ STOREFRONT_TOOLS = [
                      'it is a free/demo booking). No order is placed and no money moves here.'),
      'inputSchema': {'type': 'object', 'properties': {}}},
     {'name': 'get_order_status',
-     'description': ('Booking and escrow state for the token holder (X-Hub-Token header). '
-                     'Includes the wallet-less verify URL when an escrow reference exists.'),
+     'description': ('Storefront-contract alias of everlist_booking (same handler): booking and '
+                     'escrow state for the token holder (X-Hub-Token header), including the '
+                     'wallet-less verify URL when an escrow reference exists. Create a booking '
+                     'via everlist_book or the cart flow (add_to_cart -> checkout).'),
      'inputSchema': {'type': 'object', 'required': ['booking_id'],
-                     'properties': {'booking_id': {'type': 'string'}}}},
+                     'properties': {'booking_id': {'type': 'string', 'description': 'booking id from the booking/checkout response, e.g. bk-...'}}}},
     {'name': 'search_policies',
      'description': ('Hub commerce policies: fee policy, payment mode, escrow and refund '
-                     "rules; optionally one listing's terms via listing_id."),
+                     "rules; optionally one listing's terms via listing_id (e.g. refund window "
+                     'before you book).'),
      'inputSchema': {'type': 'object', 'properties': {'listing_id': {'type': 'string'}}}},
 ]
 
