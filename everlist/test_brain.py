@@ -534,14 +534,24 @@ class CardFormat(unittest.TestCase):
 
     def test_card_fixed_order(self):
         c = chatlib._fmt_listing(self._l())
-        self.assertTrue(c.startswith("╔═፨"))
-        self.assertIn(" " + chatlib._mb("Rooftop Jazz Night"), c)
+        # C10 flat-sheet law (owner redesign 2026-11-14): no frame anywhere,
+        # title leads (no number = no mark), glyphs are semantic only
+        self.assertNotIn("╔", c)
+        self.assertNotIn("═", c)
+        self.assertTrue(c.lstrip().startswith("Rooftop Jazz Night"))
         self.assertNotIn("even-2", c)  # C9f: id removed, number is the handle
-        self.assertIn("⌂ Berlin rooftop · ◷ " + chatlib._mb("Sat 2026-10-03") + " · €15", c)
-        self.assertIn("♟ 18 left · ✪ protected · refund window 72h", c)
-        self.assertIn("✪ protected · refund window 72h", c)
+        self.assertIn("Berlin rooftop", c)
+        self.assertIn("◷ ", c)                      # time glyph present
+        self.assertIn("€15", c)
+        self.assertIn("♟ 18 left", c)
+        self.assertIn("⚖ escrow · refund 72h", c)
         self.assertIn("» Live jazz on the rooftop", c)
-        self.assertIn("⇗ https://rooftopjazz.example", c)
+        # order: title < place < time < price < seats/escrow < story < link
+        seq = [c.index("Rooftop Jazz Night"), c.index("Berlin rooftop"),
+               c.index("◷"), c.index("€15"), c.index("♟ 18 left"),
+               c.index("» Live jazz"), c.index("➜")]
+        self.assertEqual(seq, sorted(seq))
+        self.assertIn("➜ https://rooftopjazz.example", c)
 
     def test_card_variants(self):
         self.assertIn("♟ 0 left",
@@ -556,7 +566,7 @@ class CardFormat(unittest.TestCase):
         c = chatlib._fmt_listing(self._l(capacity=None))
         self.assertNotIn("♟", c)
         c = chatlib._fmt_listing(self._l(date=None))
-        self.assertIn("⌂ Berlin rooftop", c)
+        self.assertIn("Berlin rooftop", c)
         self.assertNotIn("· ·", c)
         self.assertNotIn("None", c)
 
@@ -582,14 +592,16 @@ class SearchPagination(unittest.TestCase):
 
     def test_short_list_full_cards(self):
         r = self._run(4)
-        self.assertIn("4 found", r)
+        self.assertIn("4 dates", r)
+        self.assertIn("☰L everlist — dates worth circling", r)
+        self.assertNotIn("═", r)  # C10: no frame rules
         self.assertIn(chatlib._mb("Event 1"), r)
 
     def test_long_list_index_and_preview(self):
         r = self._run(10)
-        self.assertIn("10 found", r)
-        self.assertIn("10  " + chatlib._mb("Event 10"), r)          # index covers ALL results
-        self.assertIn(chatlib._mb("Event 1"), r)      # first preview card shown
+        self.assertIn("10 dates", r)
+        self.assertIn("➓ Event 10", r)          # index covers ALL results
+        self.assertIn("Event 1", r)      # first preview card shown
         self.assertIn("» Description 1", r)          # first preview card shown
         self.assertNotIn("» Description 6", r)      # card 6 NOT auto-flooded
         self.assertIn("book <n>", r)                 # footer marker (all voice variants)

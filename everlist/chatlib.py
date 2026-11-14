@@ -490,11 +490,11 @@ def _booking_status(hub_url: str, sender: str, arg: str) -> str:
 # The knot frame ships in the brain (C9e) - webchat CSS pins monospace so it
 # locks perfectly; foreign chats may drift slightly - accepted trade. Monochrome text symbols only
 # (U+FE0E pinned where emoji-prone) - no generic color emoji, ever.
-_G_MARK = "֎"      # eternity sign - the brand mark
+_G_MARK = "☰L"      # eternity sign - the brand mark
 _G_PLACE = "⌂"     # house = place
 _G_TIME = "◷"      # clock face = time
 _G_PERSON = "♟"    # pawn = a human wanted; closes every row
-_G_ESCROW = "✪"    # seal = escrow-protected
+_G_ESCROW = "⚖"    # seal = escrow-protected
 
 # ---- Secret placeholders (A0-style, spec 2026-10-18) -----------------------
 _SECRET_STASH: dict = {}          # sender -> {ref: {kind, value, ts}}
@@ -539,22 +539,23 @@ def _escrow_journey(esc_state: str, amount) -> str:
     sentences (owner: friendly, not robotic). Real states only — WAIVED/DIRECT
     honestly show 'nothing to pay' instead of a fake timeline."""
     if str(esc_state) in ("WAIVED", "DIRECT") or not float(amount or 0) > 0:
-        return "✪ Nothing to pay — honestly."
+        return "⚖ Nothing to pay — honestly."
     if esc_state == "REFUNDED":
-        return "✪ Escrow refunded — your money is back with you in full."
+        return "⚖ Escrow refunded — your money is back with you in full."
     if esc_state == "RELEASED":
-        return "✪ Payment released to the organizer — all settled!"
+        return "⚖ Payment released to the organizer — all settled!"
     if esc_state == "HELD":
-        return ("✪ Your money is held safely in escrow — the organizer "
+        return ("⚖ Your money is held safely in escrow — the organizer "
                 "can't touch it until the event has ended.")
     # unknown state: show it honestly, no invented steps
-    return "✪ Payment status: %s — see your Bookings tab for what you can do." % esc_state
+    return "⚖ Payment status: %s — see your Bookings tab for what you can do." % esc_state
 
 
 _G_INSTANT = "⇢"   # instant settlement
 _G_QUOTE = "»"     # description
-_G_LINK = "⇗"      # external link
-_G_OK = "✓"        # verified gate
+_G_LINK = "➜"      # external link
+_G_OK = "✔"
+_TAGLINE = "☰L everlist — dates worth circling"  # C10 sign-off        # verified gate
 _CUR = {"USD": "$"}    # real currency symbols (hub amounts are USD)
 
 _BOLD = {}
@@ -566,8 +567,9 @@ for _i, _c in enumerate("0123456789"):
 
 
 def _mb(t) -> str:
-    """Math-bold text - renders BOLD in every chat, no markdown needed."""
-    return "".join(_BOLD.get(c, c) for c in str(t))
+    """C10 2026-11-14: identity - math-bold retired (misaligned proportional
+    chats, mangled by screen readers). Kept as a styling hook."""
+    return str(t)
 
 
 # C9e: the knot frame ships IN THE BRAIN - the sheet is one framed document
@@ -586,18 +588,19 @@ def _row(t) -> str:
 
 
 def _frame(header, blocks):
-    """One knot-framed sheet: top rule, optional header + mid rule, entry
-    blocks separated by thin seams, bottom rule. All lines exactly _FW+3."""
-    fill = "\u2550" * (_FW - 3)
-    out = ["\u2554\u2550\u1368" + fill + "\u1368\u2550\u2557"]
+    """C10 flat sheet (owner redesign 2026-11-14): no rules, no rails - blank
+    lines only, reads clean in every proportional chat. Brand-headed replies
+    carry the tagline footer."""
+    out = []
     if header is not None:
-        out.append(_row(header))
-        out.append("\u2560\u2550\u1368" + fill + "\u1368\u2550\u2563")
-    for i, blk in enumerate(blocks):
-        if i:
-            out.append("\u2570" + "\u2500" * (_FW + 1) + "\u256f")
-        out.extend(_row(x) for x in blk)
-    out.append("\u255a\u2550\u1368" + fill + "\u1368\u2550\u255d")
+        out.append(str(header))
+    for blk in blocks:
+        if out:
+            out.append("")
+        out.extend(str(x) for x in blk)
+    if header is not None and "☰L" in str(header):
+        out.append("")
+        out.append(_TAGLINE)
     return "\n".join(out)
 
 # C9c: result-list display limits
@@ -745,7 +748,7 @@ def _fmt_facts(l: dict, full_date: bool = False, person: bool = True) -> str:
     Rows show 'Sat 10-03' (year dropped); the card shows the full date."""
     bits = []
     if l.get("location"):
-        bits.append("%s %s" % (_G_PLACE, str(l["location"]).strip()))
+        bits.append(str(l["location"]).strip())
     if l.get("date"):
         d = str(l["date"])
         wd = _weekday(d)
@@ -763,29 +766,62 @@ def _fmt_facts(l: dict, full_date: bool = False, person: bool = True) -> str:
     return " · ".join(bits)
 
 
+_CIRCLED = {1: "➊", 2: "➋", 3: "➌", 4: "➍", 5: "➎",
+            6: "➏", 7: "➐", 8: "➑", 9: "➒", 10: "➓",
+            # owner call 2026-11-14: circled all the way to 20 (outline
+            # family ⓫–⓴, verified in NotoSansSymbols - the web fallback
+            # that carries the filled ➊➋➌ family too)
+            11: "⓫", 12: "⓬", 13: "⓭", 14: "⓮", 15: "⓯",
+            16: "⓰", 17: "⓱", 18: "⓲", 19: "⓳", 20: "⓴"}
+
+
+def _num_mark(i) -> str:
+    """C10: the circled number IS the book button ('book 2'); plain past 20."""
+    try:
+        return _CIRCLED.get(int(i), "%d." % int(i))
+    except (TypeError, ValueError):
+        return "?"
+
+
 def _listing_rows(l: dict, num=None) -> list:
-    """Inner rows of one listing (no side rails): number + bold title, full-date
-    facts row, person + terms, gate, story, link. Minimal-text law: no id, no
-    instruction rows - the leading number is the handle ('book <n>')."""
+    """C10 flat card (owner redesign 2026-11-14): circled number + title, then
+    place · ◷ when, price · ♟ seats · ⚖ escrow, gate, story, link.
+    Every glyph is semantic - nothing decorative."""
     title = str(l.get("title", "?")).strip() or "?"
-    head = ("%2d  %s" % (num, _mb(title))) if num else _mb(title)
+    head = ("%s %s" % (_num_mark(num), title)) if num else title
     rows = [head]
-    rows.append(_fmt_facts(l, full_date=True, person=False))
-    money = []
+    facts_a = []
+    if l.get("location"):
+        facts_a.append(str(l["location"]).strip())
+    if l.get("date"):
+        d = str(l["date"])
+        wd = _weekday(d)
+        if wd:
+            d = "%s %s" % (wd, d)
+        if l.get("time"):
+            d += " " + str(l["time"])
+        try:
+            dd = _dt.strptime(str(l["date"]), "%Y-%m-%d")
+            d = dd.strftime("%a %d %b")
+        except Exception:
+            pass
+        facts_a.append("%s %s" % (_G_TIME, d))
+    if facts_a:
+        rows.append(" · ".join(facts_a))
+    money = [_fmt_price(l)]
     spots = _fmt_spots(l)
     if spots:
         money.append(spots)
-    pt = l.get("payment_terms")  # C12: terms are part of the public listing face
+    pt = l.get("payment_terms")
     if isinstance(pt, dict):
         if pt.get("rail") == "instant":
-            money.append("%s instant rail - settled at booking, no refund window" % _G_INSTANT)
+            money.append("%s instant rail - settled at booking" % _G_INSTANT)
         else:
             _dep = " · deposit %s" % pt["deposit_required"] if pt.get("deposit_required") else ""
-            money.append("%s protected · refund window %sh%s" % (_G_ESCROW, pt.get("refund_window_hours", "?"), _dep))
-    if money:
-        rows.append(" · ".join(money))
-    if l.get("require_verified_buyer"):  # C11: the gate is part of the public face
-        rows.append("%s verified buyers only - Tier-2 Midnight sign-in required to book" % _G_OK)
+            money.append("%s escrow · refund %sh%s" % (_G_ESCROW, pt.get("refund_window_hours", "?"), _dep))
+    rows.append(" · ".join(money))
+    if l.get("require_verified_buyer"):
+        rows.append("%s verified buyers only - Tier-2 Midnight sign-in to book" % _G_OK)
     if l.get("description"):
         d = str(l["description"]).strip()
         rows.append("%s %s" % (_G_QUOTE, d[:100] + "…" if len(d) > 100 else d))
@@ -796,8 +832,7 @@ def _listing_rows(l: dict, num=None) -> list:
 
 def _fmt_listing(l: dict, num=None) -> str:
     """Level-2 card - ONE fixed shape on every surface (webchat, Agentverse
-    wrapper, CLI share this brain). Horizontal knot rules + seams only, no
-    side rails, so it aligns in every chat with the bold letters intact."""
+    wrapper, CLI share this brain). C10 flat sheet: no rules, no rails."""
     return _frame(None, [_listing_rows(l, num)])
 
 
@@ -2671,7 +2706,7 @@ def _show_results(hub_url: str, sender: str, arg: str) -> str:
     if sel == "all":
         if len(results) > _HARD_CAP:
             blocks = [_listing_rows(x, i + 1) for i, x in enumerate(results[:_HARD_CAP])]
-            return (_frame("From your last search (first %d of %d):" % (_HARD_CAP, len(results)), blocks)
+            return (_frame("%s · first %d of %d dates from your last search:" % (_G_MARK, _HARD_CAP, len(results)), blocks)
                     + "\nRefine with 'search <keyword> under <price>' to narrow further.")
         picks, hidden, start = results, 0, 1
     elif re.fullmatch(r"\d+", sel):
@@ -2688,7 +2723,7 @@ def _show_results(hub_url: str, sender: str, arg: str) -> str:
     else:
         return "Say a number ('3'), a range ('2-6') or 'all' from your last search."
     blocks = [_listing_rows(x, start + i) for i, x in enumerate(picks)]
-    out = _frame("From your last search (%d result(s)):" % len(results), blocks)
+    out = _frame("%s · %d date%s from your last search:" % (_G_MARK, len(results), "" if len(results) == 1 else "s"), blocks)
     if hidden:
         out += "\n(%d more — say 'all' or a range like '2-6'.)" % hidden
     return out
@@ -3479,14 +3514,14 @@ def _smart_search(hub_url: str, text: str, sender: str = "") -> str:
     _LAST_SEARCH[sender] = {"q": " ".join(words) if words else "", "filters": _stash_fl,
                             "ts": time.time()}  # owner 2026-10-17: recovery guard ts
     n = len(listings)
-    head = "%s %s · %d found%s" % (_G_MARK, _mb("EverList"), n, qualifier)
+    head = "%s · %d %s%s" % (_G_MARK, n, "date" if n == 1 else "dates", qualifier)
     tail = _book_tail(sender, listings)
     if n <= _INLINE_LIMIT:
         return _frame(head, [_listing_rows(l, i + 1) for i, l in enumerate(listings[:_HARD_CAP])]) + tail + _consume_note(sender)
 
     def _idx_line(i: int, x: dict) -> str:
         title = str(x.get("title", "?")).strip() or "?"
-        return "%2d  %s · %s" % (i, _mb(title), _fmt_facts(x))
+        return "%s %s · %s" % (_num_mark(i), title, _fmt_facts(x))
 
     blocks = [[_idx_line(i, x) for i, x in enumerate(listings[:_INDEX_CAP], 1)]]
     if n > _INDEX_CAP:
@@ -3593,7 +3628,7 @@ _LISTING_HOW = (
 _NAV_TOKEN = "[[nav:%s]]"
 
 _ESCROW_EXPLAINER = (
-    "✪ How the money works: when you book a paid listing, your payment is held "
+    "⚖ How the money works: when you book a paid listing, your payment is held "
     "safely — the organizer can see it's there but can't touch it.\n"
     "It's released to them after the event ends, and every listing shows its "
     "refund window before you book. Say 'search' to find something worth booking."
@@ -5272,7 +5307,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
             if len(_LAST_RESULTS) > 500:
                 _LAST_RESULTS.clear()
             _LAST_RESULTS[sender] = listings
-            return (_frame("%s %s · %d found (without %s)" % (_G_MARK, _mb("EverList"), len(listings), excl or "that"),
+            return (_frame("%s · %d %s (without %s)" % (_G_MARK, len(listings), "date" if len(listings) == 1 else "dates", excl or "that"),
                            [_listing_rows(l, i + 1) for i, l in enumerate(listings[:_HARD_CAP])])
                     + _book_tail(sender, listings))
         return ("Got it — no %s on the board right now anyway. "
@@ -5574,7 +5609,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
                     "· Changed your mind? Cancel from your Bookings tab (/?view=dash).\n"
                     "· You can check status anytime by asking: booking " + str(res.get('id'))
                     # verification 2026-10-01: booking replies must carry the
-                    # [[focus:]] marker so the UI chain (✓ chip, share chip,
+                    # [[focus:]] marker so the UI chain (✔ chip, share chip,
                     # 🎟 pill) fires — same marker brain_show uses.
                     + "\n[[focus:" + str(lid) + "]]"
                     )
@@ -5725,7 +5760,7 @@ def _handle_text_core(hub_url: str, text: str, sender: str = "") -> str:
         return nav_reply(hub_url, "home", sender)
     if _tl in ("more", "next") and (_LAST_RESULTS.get(sender) or []):
         _res = _LAST_RESULTS.get(sender) or []
-        _head = "%s %s \u00b7 %d found" % (_G_MARK, _mb("EverList"), len(_res))
+        _head = "%s · %d %s" % (_G_MARK, len(_res), "date" if len(_res) == 1 else "dates")
         return (_frame(_head, [_listing_rows(x, i + 1)
                                for i, x in enumerate(_res[:_HARD_CAP])])
                 + _book_tail(sender, _res))

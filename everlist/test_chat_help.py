@@ -64,7 +64,7 @@ atexit.register(lambda: (proc.terminate(), logf.close()))
 def is_fallback(reply):
     """The fallback re-enters as search; with a reachable hub its signatures are
     '֎ EverList ...' / 'No listings matched ...' (smart-search)."""
-    return reply.startswith("╔") or reply.startswith("No listings matched")
+    return reply.startswith("☰L") or reply.startswith("No listings matched")
 
 
 # ---- required command coverage (backlog B10 list) ----
@@ -136,7 +136,7 @@ import time as _t
 _t0 = _t.monotonic()
 _r = chatlib.handle_text(HUB, "concert", "upg-fast")
 _fast_s = _t.monotonic() - _t0
-check("upgrade: plain keyword search is instant (<1.5s) and framed", _fast_s < 1.5 and (_r.startswith("╔") or "Nothing matched" in _r), f"{_fast_s:.2f}s {_r[:60]}")
+check("upgrade: plain keyword search is instant (<1.5s) and framed", _fast_s < 1.5 and (_r.startswith("☰L") or "Nothing matched" in _r), f"{_fast_s:.2f}s {_r[:60]}")
 
 _r = chatlib.handle_text(HUB, "search zzzqqq", "upg-empty")
 check("upgrade: empty search suggests upcoming listings or stays friendly", "Nothing matched" in _r and ("coming up" in _r or "new things" in _r), _r[:90])
@@ -326,7 +326,7 @@ check("r4: 'book it' resolves the single-result stash (no pronoun search)",
       "Margherita" in _r and "Nothing matched" not in _r, _r[:90])
 _r = chatlib.handle_text(HUB, "search pizza then show my bookings", _S7)
 check("r4: chained command answers both halves",
-      "found" in _r and "bookings" in _r.lower(), _r[:90])
+      "date" in _r and "bookings" in _r.lower(), _r[:90])
 _r = chatlib.handle_text(HUB, "show my bookings", _S7)
 check("r4: booking status stays in chat (chat-first law)",
       "bookings" in _r.lower() and "dashboard" not in _r.lower(), _r[:90])
@@ -379,7 +379,7 @@ check("r5: dead keyword honestly empty", "Nothing matched" in _r1, _r1[:90])
 _r2 = chatlib.handle_text(HUB, "then what else is going on next week?", _R)
 _check_ok = (chatlib._mb("R5 NextWeek Special") in _r2
              and "Nothing matched" not in _r2
-             and "cheapest first" not in _r2 and "found" in _r2)
+             and "cheapest first" not in _r2 and "date" in _r2)
 check("r5: window pivot shows in-window listing (no self-contradiction)", _check_ok, _r2[:120])
 check("r5: window pivot is instant (<1.5s, was 8.8s brain turn)", time.time() - _t0 < 1.5, "%.2fs" % (time.time() - _t0))
 _r3 = chatlib.handle_text(HUB, "nothing outdoors?", _R)
