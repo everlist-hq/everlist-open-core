@@ -277,6 +277,17 @@ check("ticket mail: hero QR card with booking caption",
 check("ticket mail: German calendar wording",
       "Zum Kalender hinzufügen" in _em_de["html"])
 
+_ds = open(os.path.join(HERE, "tools", "deploy.sh")).read()
+check("deploy.sh: @chat matcher routes /t/* to the webchat face", "/t/*" in _ds)
+_js = open(os.path.join(HERE, "static", "app.js")).read()
+check("app.js: ticket reveal opens the ticket page (not copy-only)",
+      's.kind === "ticket"' in _js and "window.open(d.value" in _js)
+check("app.js: chat transcript survives new tabs (localStorage)",
+      "localStorage.getItem(TS_KEY)" in _js and "localStorage.setItem(TS_KEY" in _js)
+_wc = open(os.path.join(HERE, "webchat.py")).read()
+check("webchat: ticket secret label is the action (Show ticket)",
+      '"ticket": "Show ticket"' in _wc)
+
 _tk_hy = tkmod.mint("bk-EX2", "t", "w", 1)
 tkmod.set_name(_tk_hy, "Jean-Luc", "full")
 check("name law: hyphens survive (Jean-Luc stays Jean-Luc)",
