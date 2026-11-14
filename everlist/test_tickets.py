@@ -250,7 +250,7 @@ _tk_nav = _tk_page.split('<nav', 1)[-1].split('</nav>', 1)[0]
 check("door page: capability focus — no dash nav_extra",
       "/?view=dash" not in _tk_nav)
 check("door page: stylesheet cache-bust current",
-      "style.css?v=20261105d" in _tk_page)
+      "style.css?v=20261114d" in _tk_page)
 _tk_used = _pdl.ticket_html(dict(_tk_info, redeemed=True, redeemed_ts="2026-11-01 09:41 UTC",
                                  you_are_owner=False, you_are_buyer=False),
                             "PinTokenPinTokenPinTok1", "https://everlist.network",
