@@ -288,6 +288,29 @@ _wc = open(os.path.join(HERE, "webchat.py")).read()
 check("webchat: ticket secret label is the action (Show ticket)",
       '"ticket": "Show ticket"' in _wc)
 
+# owner call 2026-11-14: 'Add to calendar' must OPEN a calendar, not download
+# a file. Google TEMPLATE deep link everywhere; bare .ics demoted to small link.
+_gp = _pdl.gcal_url({"date": "2026-12-05", "title": "Pin Event", "location": "Hall 2",
+                     "id": "l-ex1", "description":"d"})
+check("gcal url: TEMPLATE deep link, all-day dates mirror ics (+1d law)",
+      "calendar.google.com/calendar/render?action=TEMPLATE" in _gp
+      and "dates=20261205/20261206" in _gp and "location=Hall%202" in _gp)
+check("gcal url: no parsable date -> empty string (file-chip fallback law)",
+      _pdl.gcal_url({"title": "x"}) == "")
+_gc_info = dict(_tk_info, listing_id="l-ex1", date="2026-12-05", location="Hall 2")
+_gc_page = _pdl.ticket_html(_gc_info, "PinTokenPinTokenPinTok1", "https://everlist.network",
+                            l={"date": "2026-12-05", "location": "Hall 2", "title": "Pin Event",
+                               "id": "l-ex1", "description": ""}).decode("utf-8")
+check("ticket page: chip opens Google Calendar prefilled (no download)",
+      "calendar.google.com/calendar/render?action=TEMPLATE" in _gc_page
+      and "Add to Google Calendar" in _gc_page)
+check("ticket page: raw .ics stays as small link (Apple/Outlook path)",
+      'class="icslink"' in _gc_page and "/l/l-ex1.ics" in _gc_page)
+_gc_used = _pdl.ticket_html(dict(_gc_info, redeemed=True, redeemed_ts="2026-11-01 09:41 UTC"),
+                            "PinTokenPinTokenPinTok1", "https://everlist.network",
+                            l={"date": "2026-12-05"}).decode("utf-8")
+check("ticket page: used ticket keeps no calendar affordance", "tkcal" not in _gc_used)
+
 _tk_hy = tkmod.mint("bk-EX2", "t", "w", 1)
 tkmod.set_name(_tk_hy, "Jean-Luc", "full")
 check("name law: hyphens survive (Jean-Luc stays Jean-Luc)",
