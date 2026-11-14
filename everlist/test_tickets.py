@@ -301,9 +301,11 @@ _gc_info = dict(_tk_info, listing_id="l-ex1", date="2026-12-05", location="Hall 
 _gc_page = _pdl.ticket_html(_gc_info, "PinTokenPinTokenPinTok1", "https://everlist.network",
                             l={"date": "2026-12-05", "location": "Hall 2", "title": "Pin Event",
                                "id": "l-ex1", "description": ""}).decode("utf-8")
-check("ticket page: chip opens Google Calendar prefilled (no download)",
+check("ticket page: chip opens a prefilled calendar (no download)",
       "calendar.google.com/calendar/render?action=TEMPLATE" in _gc_page
-      and "Add to Google Calendar" in _gc_page)
+      and "Add to calendar" in _gc_page and "Add to Google" not in _gc_page)
+check("ticket page: chip carries the webcal hook for the native default app",
+      'data-webcal="/l/l-ex1.ics"' in _gc_page)
 check("ticket page: raw .ics stays as small link (Apple/Outlook path)",
       'class="icslink"' in _gc_page and "/l/l-ex1.ics" in _gc_page)
 _gc_used = _pdl.ticket_html(dict(_gc_info, redeemed=True, redeemed_ts="2026-11-01 09:41 UTC"),
