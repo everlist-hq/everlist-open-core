@@ -1093,6 +1093,24 @@ try:
 except Exception as _ucp_err:  # pragma: no cover - boot-time guard
     sys.stderr.write("[ucp] capability schema NOT loaded (fail-closed): %r\n" % (_ucp_err,))
 
+# ChatGPT Actions face (2026-11-14, owner order: "fully in ChatGPT, payments too"):
+# bundled OpenAPI 3.0 SUBSET for Custom GPT Actions (ChatGPT rejects 3.1).
+# Mirrors the real hub wire exactly (same /search, /book, /checkout/sessions
+# gates - zero drift law); served fail-closed like the UCP face. Auth note:
+# GPT Actions use server-side config auth (static token pasted ONCE in GPT
+# setup, never in transcripts - M-B law); /access bootstrap stays public for
+# the interim open bootstrap per SPEC.
+_CHATGPT_ACTIONS = {"doc": None}
+try:
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "chatgpt", "openapi-actions.json"), encoding="utf-8") as _cga_f:
+        _cga_loaded = json.load(_cga_f)
+    assert _cga_loaded.get("openapi", "").startswith("3.0"), "ChatGPT Actions require OpenAPI 3.0"
+    assert isinstance(_cga_loaded.get("paths"), dict) and _cga_loaded["paths"], "no paths"
+    _CHATGPT_ACTIONS["doc"] = _cga_loaded
+except Exception as _cga_err:  # pragma: no cover - boot-time guard
+    sys.stderr.write("[chatgpt] Actions spec NOT loaded (fail-closed): %r\n" % (_cga_err,))
+
 # G5: identities stay memory-only by default (no persistence of secrets/PII);
 
 VERTICAL_SCHEMAS = {
@@ -1683,6 +1701,8 @@ def _openapi_spec():
                                   note="UCP business profile declaring ONLY EverList vendor capabilities (network.everlist.events.*); NO dev.ucp.* wire-format claims - UCP checkout adapters are a tracked build item (PA-6). Schemas: /ucp/events-capabilities.json")},
             "/ucp/events-capabilities.json": {"get": op("UCP vendor capability schemas v0.1.0", "discovery",
                                       note="JSON Schema for the five network.everlist.events.* capabilities; semantics mirror SPEC 19 (booking=agreement, escrow default, permissionless timeout refund, auto-release to a payout key fixed at creation); served fail-closed from the bundled ucp/ file")},
+            "/openapi-actions.json": {"get": op("ChatGPT Actions spec (OpenAPI 3.0 subset)", "discovery",
+                                  note="Curated OpenAPI 3.0 subset for ChatGPT Custom GPT Actions (owner order 2026-11-14: fully in ChatGPT); mirrors the REAL hub wire only (search/book/checkout/cancel/proof - same gates, zero drift); auth = static GPT-config token (never in transcripts, M-B law); payment honesty: free listings book fully in-chat (WAIVED), paid listings surface ONE hosted checkout link; rail label from the same PAY_MODE constant as the live x402 face")},
             "/ticket/{token}": {"get": op("T5 door ticket honest status (capability URL)", "bookings",
                                  note="projection: event, date, qty, door name (buyer-chosen choice), redeemed state; capability law - the token holder IS the attendee (you_are_buyer), you_are_owner only with the listing owner token; page is noindex/no-store")},
             "/ticket/{token}/name": {"post": op("Door-display name via the ticket capability itself", "bookings",
@@ -2956,6 +2976,20 @@ class Handler(BaseHTTPRequestHandler):
                 }
             }
             return self._json(200, _ucp)
+        if u.path == "/openapi-actions.json":
+            """ChatGPT Actions face (2026-11-14, owner order: "fully in
+            ChatGPT, payments too"). Bundled OpenAPI 3.0 SUBSET for Custom
+            GPT Actions (ChatGPT Actions reject 3.1). HONESTY LAW: mirrors
+            the REAL hub wire only - every listed path exists and the gates
+            are the same gates (zero drift); no payment capability is
+            claimed beyond what the hub actually serves (rail labels come
+            from the same PAY_MODE constant as the live x402 402). Auth is
+            GPT-config static (owner pastes a book token once in GPT setup;
+            never in user transcripts - M-B law)."""
+            _cga_doc = _CHATGPT_ACTIONS.get("doc")
+            if _cga_doc is None:
+                return self._json(503, {"error": "ChatGPT Actions spec file missing or invalid (fail-closed); see chatgpt/openapi-actions.json"})
+            return self._json(200, _cga_doc)
         if u.path == "/.well-known/agent-hub.json":
             # standard discovery location - agents probe any domain for this
             return self._json(200, {
