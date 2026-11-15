@@ -1,0 +1,120 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "EverList Hub - ChatGPT Actions subset",
+    "description": "Curated OpenAPI 3.0 subset for ChatGPT Custom GPT Actions. Mirrors the real hub wire (SPEC.md); full contract: /openapi.json (OpenAPI 3.1). Booking law: the GPT must always confirm with the user BEFORE POST /book. Payment honesty: free listings book fully in-chat (WAIVED, nothing moves); paid listings surface ONE hosted payment link (https://everlist.network/checkout?sid=...) - the booking lands server-side at verify time through the exact /book gates; the hub response rail field labels the money state (wallet-testnet/demo) and must be reported verbatim, never upgraded.",
+    "version": "0.1.0"
+  },
+  "servers": [{"url": "https://everlist.network"}],
+  "components": {
+    "securitySchemes": {
+      "HubToken": {"type": "apiKey", "in": "header", "name": "X-Hub-Token"}
+    },
+    "schemas": {
+      "Listing": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string"}, "title": {"type": "string"},
+          "vertical": {"type": "string"}, "price": {"type": "string"},
+          "date": {"type": "string"}, "location": {"type": "string"},
+          "description": {"type": "string"}, "available": {"type": "integer"},
+          "url": {"type": "string"}, "image": {"type": "string"}
+        }
+      }
+    }
+  },
+  "paths": {
+    "/search": {
+      "get": {
+        "operationId": "searchListings",
+        "summary": "Search EverList listings (dated, human-involved)",
+        "description": "Public. Returns matching listings with id, title, price, date, location, availability and public URL.",
+        "parameters": [
+          {"name": "q", "in": "query", "schema": {"type": "string"}, "description": "free-text term"},
+          {"name": "vertical", "in": "query", "schema": {"type": "string"}, "description": "vertical filter (e.g. events, workshops, jobs)"},
+          {"name": "location", "in": "query", "schema": {"type": "string"}, "description": "location text filter"},
+          {"name": "max_price", "in": "query", "schema": {"type": "string"}, "description": "max price filter"},
+          {"name": "from", "in": "query", "schema": {"type": "string"}, "description": "date-from filter (YYYY-MM-DD)"},
+          {"name": "to", "in": "query", "schema": {"type": "string"}, "description": "date-to filter (YYYY-MM-DD)"},
+          {"name": "sort", "in": "query", "schema": {"type": "string"}, "description": "sort order (e.g. date, price)"}
+        ],
+        "responses": {"200": {"description": "matches", "content": {"application/json": {"schema": {"type": "object", "additionalProperties": true}}}}}
+      }
+    },
+    "/listings/{id}": {
+      "get": {
+        "operationId": "getListing",
+        "summary": "Full listing detail (terms, date, capacity)",
+        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "listing", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Listing"}}}}, "404": {"description": "not found"}}
+      }
+    },
+    "/access": {
+      "post": {
+        "operationId": "getAccessTokens",
+        "summary": "Bootstrap book/list tokens (interim open bootstrap)",
+        "description": "Public interim bootstrap (production = Midnight zk-personhood). Returns tokens.book for X-Hub-Token. NOTE: GPT deployments normally use a static token pasted once in GPT auth config instead of calling this per session.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["agent"], "properties": {"agent": {"type": "string", "description": "agent name, max 128 chars, no control chars"}, "acts": {"type": "array", "items": {"type": "string", "enum": ["book", "list"]}}, "ttl": {"type": "integer"}}}}}},
+        "responses": {"201": {"description": "tokens", "content": {"application/json": {"schema": {"type": "object", "properties": {"tokens": {"type": "object", "properties": {"book": {"type": "string"}, "list": {"type": "string"}}}}}}}}}
+      }
+    },
+    "/book": {
+      "post": {
+        "operationId": "createBooking",
+        "summary": "Book a listing into escrow (ALWAYS ask the user to confirm first)",
+        "description": "Creates a booking. Free listing: escrow WAIVED, booking complete in chat. Paid listing WITHOUT escrow_ref: book first, then pay via the hosted checkout link returned in flow/checkout - never fake a payment. Fields depend on vertical: events=attendee, commerce=buyer+quantity, freelance/custom=client, jobs=worker.",
+        "security": [{"HubToken": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["listing_id"], "properties": {
+          "listing_id": {"type": "string"}, "quantity": {"type": "integer", "minimum": 1},
+          "human_verified": {"type": "boolean", "description": "interim human credential; production = zk-personhood"},
+          "attendee": {"type": "string"}, "buyer": {"type": "string"}, "client": {"type": "string"}, "worker": {"type": "string"},
+          "idempotency_key": {"type": "string", "description": "client-chosen idempotency key; safe to reuse on retry"}
+        }}}}},
+        "responses": {
+          "201": {"description": "BookingCreated (booking_secret shown ONCE - surface to the user immediately)", "content": {"application/json": {"schema": {"type": "object", "properties": {
+            "id": {"type": "string"}, "status": {"type": "string"}, "listing_id": {"type": "string"},
+            "booking_secret": {"type": "string"}, "cancel_token": {"type": "string"}, "flow": {"type": "array", "items": {"type": "string"}}
+          }, "additionalProperties": true}}}},
+          "401": {"description": "missing/invalid token"}, "403": {"description": "verified-human gate or not authorized"}, "409": {"description": "capacity/sold out"}, "429": {"description": "rate limit"}
+        }
+      }
+    },
+    "/bookings/{id}": {
+      "get": {
+        "operationId": "getBooking",
+        "summary": "Booking status: escrow state, amount, confirmation code",
+        "security": [{"HubToken": []}],
+        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "booking projection", "content": {"application/json": {"schema": {"type": "object", "additionalProperties": true}}}}, "404": {"description": "not found"}}
+      }
+    },
+    "/book/{id}/cancel": {
+      "post": {
+        "operationId": "cancelBooking",
+        "summary": "Cancel a booking (refund per terms; WAIVED listings: no money moves)",
+        "description": "Requires the cancel token from booking creation. Use ONLY after explicit user confirmation.",
+        "security": [{"HubToken": []}],
+        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "properties": {"cancel_token": {"type": "string"}}}}}},
+        "responses": {"200": {"description": "REFUNDED / cancelled", "content": {"application/json": {"schema": {"type": "object", "additionalProperties": true}}}}, "403": {"description": "invalid token or already terminal"}}
+      }
+    },
+    "/escrow/{id}/proof": {
+      "get": {
+        "operationId": "getEscrowProof",
+        "summary": "Public escrow proof: on-chain state for a booking",
+        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "proof", "content": {"application/json": {"schema": {"type": "object", "additionalProperties": true}}}}, "404": {"description": "no escrow for this id"}}
+      }
+    },
+    "/checkout/sessions": {
+      "post": {
+        "operationId": "createCheckoutSession",
+        "summary": "Create hosted checkout session for a PAID listing (one link, in-chat)",
+        "description": "Returns url (hosted payment page path) + rail. Money moves at the hosted verify step through the exact /book gates (atomic pay+book, E7). Free listings do NOT need this - use createBooking directly.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["listing_id"], "properties": {"listing_id": {"type": "string"}, "quantity": {"type": "integer", "minimum": 1}, "lang": {"type": "string", "enum": ["en", "de"]}}}}}},
+        "responses": {"201": {"description": "checkout session", "content": {"application/json": {"schema": {"type": "object", "properties": {"ok": {"type": "boolean"}, "sid": {"type": "string"}, "url": {"type": "string"}, "rail": {"type": "string"}, "total_c": {"type": "integer"}}}}}}, "400": {"description": "bad request"}}
+      }
+    }
+  }
+}

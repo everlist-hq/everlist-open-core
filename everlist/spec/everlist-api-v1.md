@@ -15,7 +15,7 @@
 **Contract version:** agent-hub/0.2  
 **Description:** Open, community-driven commerce hub for AI agents. Credentials travel ONLY in the X-Hub-Token header; writes carry an Idempotency-Key. Normative contract: SPEC.md. Schema note (run #9 H13b): core response schemas live under components/schemas (Listing, Booking, OrderList, LedgerEntry, Error, ...), sampled from live-wire responses; vertical-specific request fields come from /verticals. Error strings remain non-normative.
 
-## Endpoints (49 paths)
+## Endpoints (64 paths)
 
 ### `/openapi.json`
 
@@ -43,9 +43,9 @@
 
 ### `/search`
 
-#### `GET /search` — Search listings (q, from/to date, min/max_price, tags=, sort, ...)
+#### `GET /search` — Search listings (q, from/to date, min/max_price, tags=, sort, near=lat,lon, radius_km=, after/before=HH:MM, ...)
 
-from/to = YYYY-MM-DD on the listing date (dateless listings excluded); tags=comma,any-of; sort=date|price|newest (newest = creation order reversed)
+from/to = YYYY-MM-DD on the listing date (dateless listings excluded); tags=comma,any-of; sort=date|price|newest|distance (newest = creation order reversed); geo: near=lat,lon + optional radius_km= (listings without lat/lon excluded); time: after=/before=HH:MM zero-padded 24h on the listing time (time-less listings excluded); sort=distance requires near=; matched listings carry distance_km; sponsorship: admin-granted listings ride the LAST page position (capped 1), labeled sponsored=true
 
 **Responses:**
 
@@ -77,6 +77,18 @@ optional payment_terms {rail: escrow|instant, refund_window_hours 1-720, deposit
 **Responses:**
 
 - `200`: Discovery manifest (`application/json`: `Manifest`)
+
+### `/.well-known/ucp`
+
+#### `GET /.well-known/ucp` — UCP vendor profile (PA-5, spec draft)
+
+UCP business profile declaring ONLY EverList vendor capabilities (network.everlist.events.*); NO dev.ucp.* wire-format claims - UCP checkout adapters are a tracked build item (PA-6). Schemas: /ucp/events-capabilities.json
+
+### `/.well-known/x402.json`
+
+#### `GET /.well-known/x402.json` — x402 payment discovery (DL-1)
+
+machine-readable payment terms at the standard agents-probe location; built from the same constants as the live 402 on /premium/events
 
 ### `/access`
 
@@ -147,6 +159,12 @@ fail-closed; mode (chain|simulated) labels the verification source
 ### `/accounts/vouch`
 
 #### `POST /accounts/vouch` — Operator vouches for a human (pilot-era)
+
+### `/admin/sponsor`
+
+#### `POST /admin/sponsor` — Sponsor a listing (admin): labeled, capped placement — organic order is never for sale
+
+body {listing_id, days 1..60}; sponsored listing appears LAST per results page with sponsored=true; grant is admin-only
 
 ### `/admin/sync-escrow`
 
@@ -236,6 +254,26 @@ buyer's own book token; escrow must be RELEASED, WAIVED or DIRECT (instant = set
 
 unknown-or-not-yours = indistinguishable 404 (no existence oracle)
 
+### `/branding`
+
+#### `GET /branding` — Public page branding (partner-editable fields only)
+
+#### `POST /branding` — Update branding (owner acct- token ONLY; fixed rails rejected)
+
+fields: brand_name, tagline, hero_text, logo_url(https), location, accent(#RRGGBB), accent2(#RRGGBB), theme(dark|light), about_text, site_url(https), instagram_url(https, instagram.com host), lang(de|en); MERGE: absent=unchanged, empty=cleared
+
+### `/branding/image`
+
+#### `POST /branding/image` — Upload branding image (owner acct- token ONLY)
+
+body {kind: logo|hero, data_url: data:image/png|jpeg|webp;base64,...}; SVG refused; decoded caps logo 90KB / hero 420KB; stored same-origin as data URL
+
+### `/catalogs`
+
+#### `POST /catalogs` — Create a versioned catalog tree for a merchant (depth<=3, items need title, price numeric)
+
+one catalog per merchant; replace via POST /catalogs/{id}/replace bumps version and REQUIRES content change (same content_hash -> 409); public GET /catalogs/{id} returns version+content_hash+tree, ?fields=summary omits the tree, ?since_hash=<hash> -> 304 when unchanged; catalog items NEVER appear in /listings or /search listing results - they surface as grouped catalog_items
+
 ### `/challenge`
 
 #### `GET /challenge` — Registry ownership proof (echo nonce)
@@ -244,7 +282,7 @@ unknown-or-not-yours = indistinguishable 404 (no existence oracle)
 
 #### `POST /checkout/sessions` — Create embeddable checkout session (TRACK E)
 
-Public, rate-limited. Creates a hosted checkout session (chk- capability URL) for a PUBLIC listing. FREE listings: demo rail, escrow WAIVED at booking (no money moves). PAID listings: wallet rail (E7) on testnet hubs (HUB_PAY_MODE=testnet) - the session face carries payment_request (receiver/units/asset) and the verify step takes the buyer's EIP-3009 signature; money moves exactly when the booking lands. Paid sessions are refused honestly on non-testnet hubs (TRACK E4/E5 fiat deferred). Payment terms + total are snapshotted at create; listing changes stale the session.
+Public listings carry checkout:{eligible,mode}, a non-secret UI hint; sessions revalidate all walls. Public, rate-limited. Creates a hosted checkout session (chk- capability URL) for a PUBLIC listing. FREE listings: demo rail, escrow WAIVED at booking (no money moves). PAID listings: wallet rail (E7) on testnet hubs (HUB_PAY_MODE=testnet) - the session face carries payment_request (receiver/units/asset) and the verify step takes the buyer's EIP-3009 signature; money moves exactly when the booking lands. Paid sessions are refused honestly on non-testnet hubs (TRACK E4/E5 fiat deferred). Payment terms + total are snapshotted at create; listing changes stale the session.
 
 **Responses:**
 
@@ -280,6 +318,12 @@ POST {code} proves mailbox control (bind-or-create account, Tier-1 email law) an
 
 - `201`: Checkout booking created (`application/json`: `CheckoutBooked`)
 
+### `/escrow/{id}/proof`
+
+#### `GET /escrow/{id}/proof` — Verify-without-trust escrow proof (DL-2)
+
+?contract=<address> (or HUB_ESCROW_CONTRACT); escrow re-read from indexer(s), dual-source when configured, FAIL-CLOSED on disagreement; no booking details, pseudonymous booking_ref only
+
 ### `/ledger`
 
 #### `GET /ledger` — Public append-only money ledger (pseudonymous)
@@ -287,6 +331,12 @@ POST {code} proves mailbox control (bind-or-create account, Tier-1 email law) an
 **Responses:**
 
 - `200`: Public money ledger (`application/json`: `Ledger`)
+
+### `/listing/draft`
+
+#### `POST /listing/draft` — Paste-a-flyer OR share-a-link: free text or an existing page URL -> prefilled listing DRAFT (never creates; organizer confirms then POSTs /listings); engine: regex always, LLM-assisted when the enrichment chain is live, URL pages read schema.org JSON-LD first (response names engine+model)
+
+body {text} or {url} (not both); deterministic extraction (title/date/time/price/location); URL fetches are SSRF-walled (public hosts only, 1MB cap, html-only) and rate-limited per source; response carries needs_confirm [date,price] — never trust AI-extracted prices without review
 
 ### `/listings/{id}`
 
@@ -298,15 +348,35 @@ POST {code} proves mailbox control (bind-or-create account, Tier-1 email law) an
 
 - `200`: Full listing record (`application/json`: `Listing`)
 
+### `/listings/{id}/image`
+
+#### `POST /listings/{id}/image` — Set or clear the listing photo (owning acct- token, or list token + manage_code; clear:true removes)
+
+body {data_url: data:image/png|jpeg|webp;base64,...} or {clear:true}; SVG refused; decoded cap 380KB; stored same-origin as a data URL (CSP img-src data:)
+
 ### `/listings/{id}/manage`
 
-#### `POST /listings/{id}/manage` — Edit/archive/unarchive/make_private/make_public/delete a listing
+#### `POST /listings/{id}/manage` — Edit/archive/unarchive/make_private/make_public/delete a listing (plus archive_series/delete_series on recurring series)
+
+series acts: action=archive_series hides every dated sibling at once; delete_series removes the family — both refuse while any member holds active bookings
 
 ### `/mcp`
 
-#### `POST /mcp` — Model Context Protocol endpoint (JSON-RPC 2.0): initialize / tools/list / tools/call over the six everlist_* tools
+#### `POST /mcp` — Model Context Protocol endpoint (JSON-RPC 2.0): initialize / tools/list / tools/call over the 15 hub tools (everlist_* protocol family + storefront contract family)
 
 thin adapter onto this same REST contract; auth = X-Hub-Token header only (a token in tool arguments is ignored - MCP-ARGS law)
+
+### `/merchants`
+
+#### `POST /merchants` — Create a merchant profile (unique kebab slug; fulfillment pickup/delivery/shipping/onsite; locations + promos; per-owner cap); update/delete via POST /merchants/{slug} action=update|delete (owner-walled; delete refuses 409 while active listings are attached and cascades the catalog)
+
+owner = token principal; listings attach via {merchant: slug} at create or manage action attach_merchant/detach_merchant (ownership-walled both ways); public GET /merchants/{slug} returns profile + the merchant's OWN uncapped listings + catalog summary; feed quota (default 2/merchant) applies only to the general /listings feed
+
+### `/openapi-actions.json`
+
+#### `GET /openapi-actions.json` — ChatGPT Actions spec (OpenAPI 3.0 subset)
+
+Curated OpenAPI 3.0 subset for ChatGPT Custom GPT Actions (owner order 2026-11-14: fully in ChatGPT); mirrors the REAL hub wire only (search/book/checkout/cancel/proof - same gates, zero drift); auth = static GPT-config token (never in transcripts, M-B law); payment honesty: free listings book fully in-chat (WAIVED), paid listings surface ONE hosted checkout link; rail label from the same PAY_MODE constant as the live x402 face
 
 ### `/orders`
 
@@ -347,6 +417,30 @@ pilot mirror check with the honesty of earnings.compact proveEarningsFloor; on-c
 #### `GET /premium/events` — Premium data (x402 payment)
 
 402 + payment instructions without a valid payment header
+
+### `/ticket/{token}`
+
+#### `GET /ticket/{token}` — T5 door ticket honest status (capability URL)
+
+projection: event, date, qty, door name (buyer-chosen choice), redeemed state; capability law - the token holder IS the attendee (you_are_buyer), you_are_owner only with the listing owner token; page is noindex/no-store
+
+### `/ticket/{token}/name`
+
+#### `POST /ticket/{token}/name` — Door-display name via the ticket capability itself
+
+holder of the ticket token IS the attendee (capability law); body display_name + display_choice full|first|guest; name is explicit UGC, never silently persisted identity
+
+### `/ticket/{token}/redeem`
+
+#### `POST /ticket/{token}/redeem` — ONE-TIME door check-in (owner action)
+
+owner proof like /confirm: admin confirm token, owning acct- list token, or listing manage_code; first scan wins, later scans honestly report first_time=false with the original time
+
+### `/ucp/events-capabilities.json`
+
+#### `GET /ucp/events-capabilities.json` — UCP vendor capability schemas v0.1.0
+
+JSON Schema for the five network.everlist.events.* capabilities; semantics mirror SPEC 19 (booking=agreement, escrow default, permissionless timeout refund, auto-release to a payout key fixed at creation); served fail-closed from the bundled ucp/ file
 
 ## Schemas (20)
 
@@ -453,11 +547,13 @@ object
 - `location`: string
 - `capacity`: integer
 - `registered`: integer — server-counted registrations (tracks_capacity verticals)
+- `created`: number — server-stamped creation epoch (unix seconds); surfaces publicly as offers.validFrom in Event JSON-LD
 - `available`: boolean
 - `visibility`: string
 - `owner`: string — owner-anonymized: pseudonymous principal (agent name / acct- ref), never personal data
 - `category`: string
 - `tags`: array
+- `image`: string — listing photo as data URL - set ONLY via POST /listings/{id}/image (B2 upload-only law)
 - `description`: string
 - `url`: string
 - `merchant`: string
@@ -469,6 +565,9 @@ object
 - `rating_count`: integer
 - `free_rating_sum`: integer
 - `free_rating_count`: integer
+- `checkout`: object — Non-secret UI hint only; session creation and booking revalidate all gates.
+- `price_preview`: object — Server-calculated one-place total, same rounding as hosted checkout. Organizer commission is not added to the buyer price.
+- `demo`: boolean — true only on seed/curated-example supply (server-derived, never client-claimed) — demo boards must never read as live organizers (A6 2026-11-04)
 
 ### `ListingCreated`
 

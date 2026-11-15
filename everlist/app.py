@@ -1775,7 +1775,7 @@ def _openapi_spec():
                                 note="buyer's own book token; escrow must be RELEASED, WAIVED or DIRECT (instant = settled at booking); free (amount 0; channel set by economic value, not the mutable escrow label - run #5) ratings go to a separate free-feedback channel, paid aggregates are amount-weighted, self-reviews rejected (S6); ledger untouched")},
             "/admin/sync-escrow": {"post": op("Mirror sync: pull chain escrow state into the hub (admin)", "admin",
                                               note="X-Admin-Key required; chain is source of truth; downward overwrites refused (C7)")},
-            "/mcp": {"post": op("Model Context Protocol endpoint (JSON-RPC 2.0): initialize / tools/list / tools/call over the six everlist_* tools", "discovery",
+            "/mcp": {"post": op("Model Context Protocol endpoint (JSON-RPC 2.0): initialize / tools/list / tools/call over the 15 hub tools (everlist_* protocol family + storefront contract family)", "discovery",
                                 note="thin adapter onto this same REST contract; auth = X-Hub-Token header only (a token in tool arguments is ignored - MCP-ARGS law)")},
             "/access": {"post": op("Bootstrap tokens for an agent identity (interim open)", "accounts",
                                   note="acct- principals refused; accounts use /accounts/login")},
