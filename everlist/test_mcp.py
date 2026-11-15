@@ -108,9 +108,11 @@ names = [t["name"] for t in tl.get("result", {}).get("tools", [])]
 sf_names = {"search_products", "get_product_details", "get_cart", "add_to_cart",
             "update_cart_item", "remove_from_cart", "checkout", "get_order_status",
             "search_policies"}
-check("fifteen tools advertised (6 everlist + 9 storefront/PA-9)", len(names) == 15
+check("twenty-one tools advertised (12 everlist + 9 storefront/PA-9)", len(names) == 21
       and set(names) == {"everlist_contract", "everlist_verticals", "everlist_search",
-                         "everlist_listing", "everlist_book", "everlist_booking"} | sf_names,
+                         "everlist_listing", "everlist_book", "everlist_booking",
+                         "everlist_bookings", "everlist_cancel", "everlist_confirm",
+                         "everlist_dispute", "everlist_rate", "everlist_escrow_proof"} | sf_names,
       names)
 
 st, _, call = mcp({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
@@ -172,6 +174,51 @@ st, _, call = mcp({"jsonrpc": "2.0", "id": 10, "method": "tools/call",
                        "booking_id": bid}}}, tok=btok)
 bstat = json.loads(result_text(call)) if st == 200 else {}
 check("booking status via MCP", bstat.get("escrow") in ("HELD", "WAIVED"), call)
+
+# --- booking lifecycle via MCP (owner-approved 2026-11-15): the escrow promise closes ---
+st, _, call = mcp({"jsonrpc": "2.0", "id": 30, "method": "tools/call",
+                   "params": {"name": "everlist_bookings", "arguments": {}}}, tok=btok)
+bookings = json.loads(result_text(call)) if st == 200 else {}
+check("bookings list via MCP (principal-scoped)",
+      bid in [b.get("id") for b in bookings.get("bookings", [])], call)
+
+cancel_tok = booking.get("cancel_token", "")
+st, _, call = mcp({"jsonrpc": "2.0", "id": 31, "method": "tools/call",
+                   "params": {"name": "everlist_cancel", "arguments": {"booking_id": bid}}}, tok=cancel_tok)
+cancelled = json.loads(result_text(call)) if st == 200 else {}
+check("cancel E2E via MCP (cancel_token header -> REFUNDED)", cancelled.get("escrow") == "REFUNDED", call)
+
+st, _, call = mcp({"jsonrpc": "2.0", "id": 32, "method": "tools/call",
+                   "params": {"name": "everlist_book", "arguments": {
+                       "listing_id": lid, "quantity": 1, "human_verified": True,
+                       "attendee": "Ana Attendee"}}}, tok=btok)
+b2 = json.loads(result_text(call)) if st == 200 else {}
+bid2 = b2.get("id", "")
+
+st, _, call = mcp({"jsonrpc": "2.0", "id": 33, "method": "tools/call",
+                   "params": {"name": "everlist_confirm", "arguments": {"booking_id": bid2}}}, tok=ltok)
+confirmed = json.loads(result_text(call)) if st == 200 else {}
+check("confirm E2E via MCP (organizer -> RELEASED)", confirmed.get("escrow") == "RELEASED", call)
+
+st, _, call = mcp({"jsonrpc": "2.0", "id": 34, "method": "tools/call",
+                   "params": {"name": "everlist_rate", "arguments": {"booking_id": bid2, "rating": 5}}}, tok=btok)
+rated = json.loads(result_text(call)) if st == 200 else {}
+check("rate E2E via MCP (buyer, after settlement)", rated.get("ok") is True, call)
+
+st, _, call = mcp({"jsonrpc": "2.0", "id": 35, "method": "tools/call",
+                   "params": {"name": "everlist_rate", "arguments": {"booking_id": bid2, "rating": 4}}}, tok=btok)
+check("double rating = honest isError", call.get("result", {}).get("isError") is True
+      and "already rated" in result_text(call), call)
+
+st, _, call = mcp({"jsonrpc": "2.0", "id": 36, "method": "tools/call",
+                   "params": {"name": "everlist_cancel", "arguments": {"booking_id": bid2}}}, tok=btok)
+check("cancel after release = honest isError", call.get("result", {}).get("isError") is True, call)
+
+st, _, call = mcp({"jsonrpc": "2.0", "id": 37, "method": "tools/call",
+                   "params": {"name": "everlist_escrow_proof", "arguments": {"escrow_id": 1}}})
+proof = json.loads(result_text(call)) if not call.get("result", {}).get("isError") else {}
+check("escrow proof honest without chain config", call.get("result", {}).get("isError") is True
+      or bool(proof.get("contract")), call)
 
 # --- protocol errors ---
 st, _, call = mcp({"jsonrpc": "2.0", "id": 11, "method": "resources/list"})

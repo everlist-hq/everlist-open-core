@@ -14,7 +14,7 @@ workshops, concerts, food, services, jobs, peer-to-peer help.
 | Surface | URL |
 | --- | --- |
 | REST API (OpenAPI 3.1) | https://everlist.network/openapi.json |
-| MCP server (15 tools) | https://everlist.network/mcp |
+| MCP server (21 tools) | https://everlist.network/mcp |
 | Agent explainer | https://everlist.network/agents |
 | Payment discovery (x402) | https://everlist.network/.well-known/x402.json |
 | UCP profile | https://everlist.network/.well-known/ucp |

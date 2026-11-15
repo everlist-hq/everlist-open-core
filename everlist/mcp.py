@@ -109,6 +109,79 @@ TOOLS = [
             },
         },
     },
+    {'description': 'LIST YOUR bookings: every booking made with your principal, with escrow '
+                    'state, amount and listing. Use it to find booking_ids before everlist_booking '
+                    '/ everlist_cancel. Auth: your usual X-Hub-Token header (book or list token). '
+                    'Principal-scoped: you see only your own.',
+     'inputSchema': {'properties': {}, 'type': 'object'},
+     'name': 'everlist_bookings'},
+    {'description': 'CANCEL a booking before fulfillment: full refund out of escrow (escrow flips '
+                    'to REFUNDED). Works while escrow is HELD and inside the listing refund window '
+                    '(free/WAIVED bookings cancel too; instant-rail DIRECT bookings have no refund '
+                    "window). Auth for THIS call: THIS booking's cancel_token as the X-Hub-Token "
+                    'header. The chain claim deadline is authoritative - past it only the contract '
+                    'auto-release applies.',
+     'inputSchema': {'properties': {'booking_id': {'description': 'booking id to cancel, e.g. '
+                                                                  'bk-...',
+                                                   'type': 'string'}},
+                     'required': ['booking_id'],
+                     'type': 'object'},
+     'name': 'everlist_cancel'},
+    {'description': 'ORGANIZER action: confirm fulfillment - escrow RELEASES to the organizer '
+                    '(owner_received reports the payout; free/WAIVED bookings confirm too and no '
+                    'money moves). Buyers correctly get a 403 - fulfillment belongs to the listing '
+                    'owner. Auth: your organizer list token as the X-Hub-Token header (or an admin '
+                    'confirm token). Instant-rail (DIRECT) bookings settled at booking and have '
+                    'nothing to confirm.',
+     'inputSchema': {'properties': {'booking_id': {'description': 'booking id to confirm, e.g. '
+                                                                  'bk-...',
+                                                   'type': 'string'}},
+                     'required': ['booking_id'],
+                     'type': 'object'},
+     'name': 'everlist_confirm'},
+    {'description': 'FREEZE a HELD booking for arbitration (DISPUTED): no release and no refund '
+                    'while frozen; if the arbiter vanishes, arbiterTimeoutRefund returns buyer '
+                    'funds after the deadline. Buyer side via MCP: your cancel_token (or book '
+                    'token) as the X-Hub-Token header. Organizer side stays on REST (manage_code '
+                    'never belongs in tool arguments - MCP-ARGS law). Only HELD bookings can be '
+                    'disputed.',
+     'inputSchema': {'properties': {'booking_id': {'description': 'booking id to freeze, e.g. '
+                                                                  'bk-...',
+                                                   'type': 'string'}},
+                     'required': ['booking_id'],
+                     'type': 'object'},
+     'name': 'everlist_dispute'},
+    {'description': 'RATE a settled booking 1-5 (once, buyer-only, owner-immutable). Opens after '
+                    'settlement (escrow RELEASED / WAIVED / DIRECT). Paid reviews are '
+                    'amount-weighted, self-reviews rejected; ratings touch no ledger entries. '
+                    'Auth: your book token as the X-Hub-Token header.',
+     'inputSchema': {'properties': {'booking_id': {'description': 'your settled booking id, e.g. '
+                                                                  'bk-...',
+                                                   'type': 'string'},
+                                    'rating': {'description': '1-5 (integer)',
+                                               'maximum': 5,
+                                               'minimum': 1,
+                                               'type': 'integer'}},
+                     'required': ['booking_id', 'rating'],
+                     'type': 'object'},
+     'name': 'everlist_rate'},
+    {'description': 'VERIFY-WITHOUT-TRUST: read the escrow straight from the Midnight indexer '
+                    '(dual-source when configured, fail-closed) and get the raw chain projection + '
+                    'verification metadata. No booking details, no identities - only what the '
+                    'chain itself says. Public: no token needed. escrow_id and contract come from '
+                    'a booking escrow_ref (everlist_booking / get_order_status responses) or the '
+                    '/verify link.',
+     'inputSchema': {'properties': {'contract': {'description': 'escrow contract address (optional '
+                                                                'when the hub has '
+                                                                'HUB_ESCROW_CONTRACT configured)',
+                                                 'type': 'string'},
+                                    'escrow_id': {'description': 'chain escrow id from the booking '
+                                                                 'escrow_ref',
+                                                  'minimum': 1,
+                                                  'type': 'integer'}},
+                     'required': ['escrow_id'],
+                     'type': 'object'},
+     'name': 'everlist_escrow_proof'},
 ]
 
 # ---------------- PA-9 (2026-11-14): storefront-contract face ----------------
@@ -241,7 +314,7 @@ def _handle_one(handler, data, hub_port):
                 'EverList: a listing = something with a date where a human is needed or wanted. '
                 'Call everlist_contract first (payment mode + fees are declared, never hidden). '
                 'Search, inspect, then book with everlist_book; escrow holds the funds until '
-                'the organizer confirms or the refund window lapses.'),
+                'the organizer confirms or the refund window lapses. The full booking lifecycle lives on this face: everlist_bookings lists yours; everlist_cancel (buyer, cancel_token as header) refunds; everlist_confirm (organizer) releases; everlist_dispute freezes; everlist_rate rates after settlement; everlist_escrow_proof verifies the chain without trusting this hub.'),
         }
         handler._mcp_session = getattr(handler, '_mcp_session', None) or ('mcp-' + uuid.uuid4().hex)
         return _rpc(result, rid), {'Mcp-Session-Id': handler._mcp_session}
@@ -338,6 +411,75 @@ def _call_tool(handler, hub_port, name, args):
         st, res = _api(hub_port, 'GET', '/bookings/' + bid, token=token)
         if st != 200:
             raise MCPError(-32000, 'booking lookup failed (HTTP %s): %s' % (st, res.get('error', '')))
+        return res
+    if name == 'everlist_bookings':
+        token = handler.headers.get('X-Hub-Token', '')
+        if not token:
+            raise MCPError(-32001, 'missing hub token: pass the X-Hub-Token header')
+        st, res = _api(hub_port, 'GET', '/bookings', token=token)
+        if st != 200:
+            raise MCPError(-32000, 'bookings lookup failed (HTTP %s): %s' % (st, res.get('error', '')))
+        return res
+    if name == 'everlist_cancel':
+        token = handler.headers.get('X-Hub-Token', '')
+        if not token:
+            raise MCPError(-32001, 'missing hub token: pass THIS booking cancel_token as the X-Hub-Token header')
+        bid = str(args.get('booking_id', '')).strip()
+        if not bid or '/' in bid or '..' in bid:
+            raise MCPError(-32602, 'invalid booking id')
+        st, res = _api(hub_port, 'POST', '/book/%s/cancel' % bid, {}, token=token)
+        if st != 200:
+            return {'isError': True, 'http_status': st, 'error': res.get('error', 'cancel refused'),
+                    'hint': res.get('hint', res.get('note', ''))}
+        return res
+    if name == 'everlist_confirm':
+        token = handler.headers.get('X-Hub-Token', '')
+        if not token:
+            raise MCPError(-32001, 'missing hub token: pass your organizer list token as the X-Hub-Token header')
+        bid = str(args.get('booking_id', '')).strip()
+        if not bid or '/' in bid or '..' in bid:
+            raise MCPError(-32602, 'invalid booking id')
+        st, res = _api(hub_port, 'POST', '/book/%s/confirm' % bid, {}, token=token)
+        if st != 200:
+            return {'isError': True, 'http_status': st, 'error': res.get('error', 'confirm refused'),
+                    'hint': res.get('hint', res.get('note', ''))}
+        return res
+    if name == 'everlist_dispute':
+        token = handler.headers.get('X-Hub-Token', '')
+        if not token:
+            raise MCPError(-32001, 'missing hub token: pass your cancel_token (or book token) as the X-Hub-Token header')
+        bid = str(args.get('booking_id', '')).strip()
+        if not bid or '/' in bid or '..' in bid:
+            raise MCPError(-32602, 'invalid booking id')
+        st, res = _api(hub_port, 'POST', '/book/%s/dispute' % bid, {}, token=token)
+        if st != 200:
+            return {'isError': True, 'http_status': st, 'error': res.get('error', 'dispute refused'),
+                    'hint': res.get('hint', res.get('note', ''))}
+        return res
+    if name == 'everlist_rate':
+        token = handler.headers.get('X-Hub-Token', '')
+        if not token:
+            raise MCPError(-32001, 'missing hub token: pass your book token as the X-Hub-Token header')
+        bid = str(args.get('booking_id', '')).strip()
+        if not bid or '/' in bid or '..' in bid:
+            raise MCPError(-32602, 'invalid booking id')
+        val = args.get('rating')
+        if isinstance(val, bool) or not isinstance(val, int) or not (1 <= val <= 5):
+            raise MCPError(-32602, 'rating must be an integer in [1, 5]')
+        st, res = _api(hub_port, 'POST', '/book/%s/rate' % bid, {'rating': val}, token=token)
+        if st != 200:
+            return {'isError': True, 'http_status': st, 'error': res.get('error', 'rating refused'),
+                    'hint': res.get('hint', res.get('note', ''))}
+        return res
+    if name == 'everlist_escrow_proof':
+        eid = str(args.get('escrow_id', '')).strip()
+        if not (eid.isdigit() and 1 <= int(eid) <= 999999999999):
+            raise MCPError(-32602, 'escrow_id must be a positive integer (from the booking escrow_ref)')
+        contract = str(args.get('contract', '')).strip()
+        qs = ('?contract=' + urllib.request.quote(contract, safe='')) if contract else ''
+        st, res = _api(hub_port, 'GET', '/escrow/%s/proof%s' % (eid, qs))
+        if st != 200:
+            raise MCPError(-32000, 'escrow proof unavailable (HTTP %s): %s' % (st, res.get('error', '')))
         return res
     sf_fn = _SF_HANDLERS.get(name)
     if sf_fn is not None:
