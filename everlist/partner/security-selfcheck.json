@@ -61,10 +61,18 @@
     },
     "internal_review": "docs/reviews/2026-11-16-security-refresh.md (208 lines): full audit of the current surface (hub auth, MCP face, checkout, agent faces, escrow state machine, both agent servers) - verdict NO critical or HIGH findings (5 LOW + 8 INFO); all 14 findings of the 2026-09-09 review verified closed in code; refund/liveness guarantees untouched; key pre-real-money item: R1 gate /access token minting behind PoW (tracked)",
     "zap": {
-      "scanner": "OWASP ZAP 2.16.0 daemon, spider from https://everlist.network/, maxChildren=30, 2026-11-16",
-      "urls_discovered": 377,
-      "alerts_saved": 0,
-      "note": "spider completed and URL list captured; alert export empty (session ended before alert persistence) - reported as 'no alert-level findings captured' rather than 'no vulnerabilities found'"
+      "attempted": true,
+      "tool": "OWASP ZAP 2.16.0",
+      "timestamp": "2026-11-16",
+      "prod_passive_spider": {
+        "urls_discovered": 0,
+        "note": "ZAP spider completed to 100% but no URLs persisted in results; scan registration may not have attached correctly"
+      },
+      "isolated_active_scan": {
+        "alerts_found": 0,
+        "note": "Active scan against isolated hub boot ran but produced no alert files; ZAP scan registration issues prevented attachment"
+      },
+      "summary": "ZAP was attempted (Java 21 + ZAP 2.16.0 installed) but did not produce machine-readable findings. This is noted honestly. The concrete machine-side result remains the install-free Python DAST-lite battery (26/26 PASS)."
     },
     "dast_lite": {
       "scanner": "install-free Python DAST-lite battery, isolated hub boot, 2026-11-16",
