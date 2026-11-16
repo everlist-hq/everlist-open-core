@@ -1,0 +1,23 @@
+# EverList security.txt — RFC 9116
+# Served at /.well-known/security.txt
+Contact: mailto:legal@everlist.network
+Contact: https://everlist.network/support
+Expires: 2027-05-16T00:00:00.000Z
+Preferred-Languages: de, en
+Canonical: https://everlist.network/.well-known/security.txt
+Policy: https://everlist.network/partner/disclosure.json
+
+# Disclosure policy (summary; full text at Policy URL):
+# - Safe harbor: we will not pursue legal action against good-faith
+#   researchers who report vulnerabilities responsibly, avoid privacy
+#   violations, give us reasonable time to fix, and do not exfiltrate
+#   more data than needed to demonstrate the issue.
+# - Acknowledgement target: 72 hours. Status updates at least weekly
+#   until resolved. Reporters credited (opt-in).
+# - Scope: everlist.network (hub API, checkout, MCP face, agent surfaces).
+#   Out of scope: third-party services we link to, volumetric DoS,
+#   social engineering, spam.
+# - Testnet honesty: payment rails run in TESTNET mode; report anything
+#   that moves real value without saying so.
+#
+# This file is served as UTF-8 text/plain per RFC 9116.

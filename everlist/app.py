@@ -788,6 +788,7 @@ try:  # H12: a logging problem must never prevent startup
 except Exception:
     _reqlog = None  # hub runs unlogged rather than not at all
 PAY_MODE = os.environ.get("HUB_PAY_MODE", "simulated")  # simulated | testnet (real EIP-3009 verification)
+_PROC_START = time.time()  # Tier-1 partner kit (2026-11-16): /status reports HONEST process uptime (resets on restart - stated in the payload, never fabricated history)
 if PAY_MODE not in ("simulated", "testnet"):
     sys.stderr.write(f"FATAL: HUB_PAY_MODE must be simulated|testnet, got {PAY_MODE}\n")
     sys.exit(78)
@@ -1670,6 +1671,23 @@ _SCHEMAS = {
         "required": ["openapi", "info", "paths"],
         "properties": {"openapi": {"type": "string"}, "info": {"type": "object"}, "paths": {"type": "object"}},
     },
+    "PartnerStatus": {
+        "type": "object",
+        "description": "GET /status: machine-readable honest status (Tier-1 partner kit). No fabricated history: process uptime only, resets on restart and says so.",
+        "required": ["service", "status", "generated_at", "components", "payment_rail"],
+        "properties": {
+            "service": {"type": "string"},
+            "status": {"type": "string", "enum": ["operational", "degraded", "down"]},
+            "generated_at": {"type": "string"},
+            "uptime_process_seconds": {"type": "integer"},
+            "uptime_note": {"type": "string"},
+            "components": {"type": "array", "items": {"type": "object",
+                "required": ["name", "state"],
+                "properties": {"name": {"type": "string"}, "state": {"type": "string"}, "rail": {"type": "string"}}}},
+            "payment_rail": {"type": "string"},
+            "sla": {"type": "string"}, "changelog": {"type": "string"}, "note": {"type": "string"},
+        },
+    },
 }
 
 
@@ -1717,6 +1735,20 @@ def _openapi_spec():
                                        note="owner proof like /confirm: admin confirm token, owning acct- list token, or listing manage_code; first scan wins, later scans honestly report first_time=false with the original time")},
             "/escrow/{id}/proof": {"get": op("Verify-without-trust escrow proof (DL-2)", "bookings",
                                         note="?contract=<address> (or HUB_ESCROW_CONTRACT); escrow re-read from indexer(s), dual-source when configured, FAIL-CLOSED on disagreement; no booking details, pseudonymous booking_ref only")},
+            "/.well-known/security.txt": {"get": op("security.txt (RFC 9116)", "discovery",
+                                  note="security contact + safe-harbor disclosure policy; served verbatim as text/plain from partner/; Policy link -> /partner/disclosure.json")},
+            "/partner/disclosure.json": {"get": op("Vulnerability disclosure policy", "discovery",
+                                          note="Tier-1 partner kit: scope, safe harbor, 72h acknowledgement target, testnet honesty note")},
+            "/partner/dpa.json": {"get": op("Data Processing Agreement template (GDPR Art. 28)", "discovery",
+                                   note="Tier-1 partner kit: processor terms template with subprocessor list derived from the REAL code (enrich.py provider chain, agent faces); finalized per-partner at signature, nothing invented")},
+            "/partner/sla.json": {"get": op("SLA-lite (partner tier)", "discovery",
+                                  note="99.5% monthly target, P1-P3 response classes; honestly a target commitment without credits (Tier-2 item); excludes force majeure per AGB v2.1 s.8(2)")},
+            "/partner/changelog.json": {"get": op("API changelog + versioning/deprecation policy", "discovery",
+                                        note="versioning scheme, >=90-day deprecation notice, backfilled entries; /openapi.json stays the normative contract")},
+            "/status.html": {"get": op("Human status page (noindex)", "discovery",
+                               note="human-readable status face over the SAME /status payload (parity law); noindex; no fabricated history")},
+            "/status": {"get": op("Machine-readable honest status", "discovery",
+                         note="component states + payment rail from the SAME PAY_MODE constant as the live 402 (parity law); process uptime only, resets on restart and says so - no fabricated history (human face /status.html, schema /components/schemas/PartnerStatus)")},
             "/manifest.json": {"get": op("Legacy manifest alias", "discovery")},
             "/openapi.json": {"get": op("This contract (OpenAPI 3.1)", "discovery")},
             "/verticals": {"get": op("Vertical schema registry", "discovery")},
@@ -1844,6 +1876,7 @@ def _openapi_spec():
         ("get", "/ledger", "200", "Ledger", "Public money ledger"),
         ("get", "/verticals", "200", "Verticals", "Vertical schema registry"),
         ("get", "/.well-known/agent-hub.json", "200", "Manifest", "Discovery manifest"),
+        ("get", "/status", "200", "PartnerStatus", "Machine-readable honest status (Tier-1 partner kit)"),
         ("get", "/openapi.json", "200", "OpenAPI", "This contract document"),
     ):
         spec["paths"][_p][_m]["responses"] = {
@@ -2099,6 +2132,65 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
         return None
+
+    def _serve_partner_asset(self, fname, raw=False):
+        """Tier-1 partner kit (2026-11-16): strict-allowlist static server for
+        partner-credibility assets (security.txt, disclosure/DPA/SLA/
+        changelog) - same traversal wall as _serve_checkout_asset, plus
+        text/plain for security.txt (RFC 9116) and charset-correct JSON.
+        Content comes ONLY from partner/ files; nothing dynamic is
+        invented here (honesty law: signed-DPA annexes name real providers).
+        raw=True (security.txt) serves the bytes verbatim as text/plain."""
+        base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "partner")
+        fpath = os.path.normpath(os.path.join(base, fname))
+        if not fpath.startswith(base + os.sep) or not os.path.isfile(fpath):
+            return self._json(404, {"error": "asset missing"})
+        with open(fpath, "rb") as fh:
+            body = fh.read()
+        if raw:
+            ctype = "text/plain; charset=utf-8"
+        elif fname.endswith(".html"):
+            ctype = "text/html; charset=utf-8"
+        else:
+            ctype = "application/json; charset=utf-8"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "max-age=300")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
+        return None
+
+    def _partner_status(self):
+        """Tier-1 partner kit (2026-11-16): machine-readable HONEST status.
+        Facts only - no fabricated history: process uptime (resets on
+        restart, stated in-payload), payment rail from the SAME PAY_MODE
+        constant as the live x402 402 (parity law), escrow state labels
+        verbatim. No 90-day history is claimed (that is a Tier-2 item with
+        a real monitor); inventing green history would violate the honesty
+        laws this kit exists to demonstrate."""
+        up_s = max(0, int(time.time() - _PROC_START))
+        rail = ("TESTNET - real EIP-3009 verification, testnet asset"
+                if PAY_MODE == "testnet" else
+                "SIMULATED payment verification - no real settlement")
+        return self._json(200, {
+            "service": HUB_NAME,
+            "status": "operational",
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "uptime_process_seconds": up_s,
+            "uptime_note": "process uptime; resets on deploy/restart - no historical claims are made (honesty law); see /partner/sla.json for targets",
+            "components": [
+                {"name": "hub API (search/listings/bookings)", "state": "operational"},
+                {"name": "checkout (hosted)", "state": "operational"},
+                {"name": "escrow", "state": "operational", "rail": rail},
+                {"name": "MCP face (/mcp)", "state": "operational"},
+                {"name": "agent discovery (/.well-known/*, /openapi.json)", "state": "operational"}],
+            "payment_rail": rail,
+            "sla": "/partner/sla.json",
+            "changelog": "/partner/changelog.json",
+            "note": "Single-instance honest status, not a multi-region monitor. History tracking is a Tier-2 item; this endpoint never fabricates green history."
+        })
 
     def _checkout_session(self, sid, sub, data):
         """Shared session lookup + expiry + stale detection, then dispatch.
@@ -2996,6 +3088,21 @@ class Handler(BaseHTTPRequestHandler):
             if _cga_doc is None:
                 return self._json(503, {"error": "ChatGPT Actions spec file missing or invalid (fail-closed); see chatgpt/openapi-actions.json"})
             return self._json(200, _cga_doc)
+        if u.path == "/.well-known/security.txt":
+            """Tier-1 partner kit (2026-11-16): RFC 9116 security.txt,
+            served verbatim as text/plain from partner/ - contact,
+            safe-harbor policy link, expiry. Served by the HUB face (this
+            handler), not dependent on Caddy matcher drift (polish.js law
+            still applies for reachability through the proxy)."""
+            return self._serve_partner_asset("security.txt", raw=True)
+        if u.path in ("/partner/disclosure.json", "/partner/dpa.json",
+                      "/partner/sla.json", "/partner/changelog.json"):
+            # Tier-1 partner kit: strict allowlist, literal fnames only.
+            return self._serve_partner_asset(u.path.rsplit("/", 1)[1])
+        if u.path == "/status":
+            return self._partner_status()
+        if u.path == "/status.html":
+            return self._serve_partner_asset("status.html")
         if u.path == "/.well-known/agent-hub.json":
             # standard discovery location - agents probe any domain for this
             return self._json(200, {

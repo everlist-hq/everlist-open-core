@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>EverList Status</title>
+<style>
+  body{font-family:system-ui,sans-serif;max-width:640px;margin:3rem auto;padding:0 1rem;color:#1a1a2e;background:#fafafa}
+  h1{font-size:1.4rem} .ok{color:#1a7f37;font-weight:600}
+  .card{background:#fff;border:1px solid #e4e4e7;border-radius:10px;padding:1rem 1.25rem;margin:.6rem 0}
+  .muted{color:#71717a;font-size:.85rem}
+  code{font-size:.8rem}
+</style>
+</head>
+<body>
+<h1>EverList Status</h1>
+<p class="ok">All components operational</p>
+<div class="card" id="uptime">Loading…</div>
+<div class="card">
+  <strong>Payment rail</strong>
+  <p id="rail" class="muted">Loading…</p>
+</div>
+<div class="card">
+  <strong>Honesty notes</strong>
+  <p class="muted">This page shows the <em>current process</em> state only. It resets on deploy and makes no historical claims — no fabricated green history. Targets are in the <a href="/partner/sla.json">SLA-lite</a>; changes in the <a href="/partner/changelog.json">changelog</a>.</p>
+</div>
+<p class="muted">Machine-readable face: <code>GET /status</code> · Security contact: see <code>/.well-known/security.txt</code></p>
+<script>
+fetch('/status').then(r=>r.json()).then(s=>{
+  const h=Math.floor(s.uptime_process_seconds/3600), m=Math.floor(s.uptime_process_seconds%3600/60);
+  document.getElementById('uptime').innerHTML='<strong>Process uptime:</strong> '+h+'h '+m+'m <span class="muted">(current process; resets on deploy)</span>';
+  document.getElementById('rail').textContent=s.payment_rail;
+  for(const c of s.components){const d=document.createElement('p');d.innerHTML='<span class="ok">●</span> '+c.name;document.body.insertBefore(d,document.querySelector('.card'));}
+}).catch(()=>{document.getElementById('uptime').textContent='Status temporarily unavailable - try the machine face: GET /status';});
+</script>
+</body>
+</html>

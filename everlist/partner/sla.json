@@ -1,0 +1,15 @@
+{
+  "title": "EverList SLA-lite (Partner Tier)",
+  "version": "1.0",
+  "updated": "2026-11-16",
+  "monthly_uptime_target": "99.5%",
+  "measurement": "Monthly, measured at /api/health and /search on the production endpoint; excludes scheduled maintenance announced >= 48h in advance and force-majeure events (AGB v2.1 s.8(2)).",
+  "response_classes": {
+    "P1": {"definition": "Public booking or escrow-status surface unavailable or materially wrong", "response_target": "acknowledgement <= 4h (Mo-Fr 9-17 CET; best-effort outside)", "work_target": "mitigation started <= 24h"},
+    "P2": {"definition": "Degraded non-critical feature (e.g. enrichment, notifications)", "response_target": "acknowledgement <= 1 business day"},
+    "P3": {"definition": "Cosmetic or documentation issues", "response_target": "acknowledgement <= 3 business days"}
+  },
+  "status_page": "https://everlist.network/status (JSON face /status; machine-readable)",
+  "credits": "None in this lite tier: SLA-lite is a target commitment, not a money-back SLA. Credit-backed SLAs are a Tier-2 contract item.",
+  "honesty_note": "EverList is a solo-founder pre-revenue service; this SLA states targets honestly instead of promising penalties it cannot honor. Enterprise partners get a negotiated SLA at Tier 2/3."
+}

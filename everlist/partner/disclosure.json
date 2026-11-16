@@ -1,0 +1,30 @@
+{
+  "title": "EverList Vulnerability Disclosure Policy",
+  "version": "1.0",
+  "updated": "2026-11-16",
+  "contact": "legal@everlist.network",
+  "response_targets": {
+    "acknowledgement": "72 hours",
+    "status_updates": "at least weekly until resolved",
+    "fix_target": "best-effort; critical issues prioritized"
+  },
+  "safe_harbor": "We will not pursue legal action against good-faith researchers who report vulnerabilities responsibly, avoid privacy violations and service degradation, give us reasonable time to fix before public disclosure, and limit data access to what is needed to demonstrate the issue.",
+  "scope": [
+    "https://everlist.network (hub API, checkout, web pages)",
+    "https://everlist.network/mcp (MCP face)",
+    "agent discovery surfaces (/.well-known/*, /openapi.json, /agents)"
+  ],
+  "out_of_scope": [
+    "third-party services we link to or depend on",
+    "volumetric denial-of-service",
+    "social engineering of staff",
+    "spam or content-policy reports (use the DSA notice channel in /terms)"
+  ],
+  "reporting": {
+    "email": "legal@everlist.network",
+    "include": ["description", "reproduction steps", "impact assessment", "contact for follow-up"],
+    "encryption_note": "No PGP key is published yet; state this in your first mail if you need encrypted exchange and we will set one up."
+  },
+  "credit": "Reporters are credited on request (opt-in). We do not run a paid bounty program.",
+  "honesty_note": "Payment rails currently run in TESTNET mode. If you find anything that moves real value or mislabels a rail, that is a critical report."
+}

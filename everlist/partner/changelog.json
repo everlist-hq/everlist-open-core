@@ -1,0 +1,19 @@
+{
+  "title": "EverList Hub API Changelog & Versioning Policy",
+  "updated": "2026-11-16",
+  "versioning_policy": {
+    "current": "agent-hub/0.2",
+    "scheme": "Additive changes (new fields, new endpoints) may land without a version bump; breaking changes (removed/renamed fields or endpoints, changed semantics) ship under a new path prefix (/v2/) or a new media type.",
+    "deprecation": "Deprecated endpoints stay functional for at least 90 days and are announced via this changelog, the OpenAPI document (deprecated: true) and llms.txt before removal.",
+    "contract": "/openapi.json is normative and test-enforced: every documented route is really handled; the spec cannot lie about a route.",
+    "idempotency": "Writes carry an Idempotency-Key; replays return the original result."
+  },
+  "entries": [
+    {"date": "2026-11-16", "version": "0.2.x", "type": "additive", "summary": "Partner-credibility faces: /.well-known/security.txt, /partner/disclosure.json, /partner/dpa.json, /partner/sla.json, /partner/changelog.json, /status (machine-readable status)."},
+    {"date": "2026-11-15", "version": "0.2.x", "type": "additive", "summary": "ChatGPT plugin package published in repo; legal pages /terms, /imprint, /support live; AGB v2.1."},
+    {"date": "2026-11-15", "version": "0.2.1", "type": "patch", "summary": "MCP server registered in the official MCP Registry (io.github.everlist-hq/everlist-hub, remote streamable-http, no-auth)."},
+    {"date": "2026-11-14", "version": "0.2.x", "type": "additive", "summary": "ChatGPT Actions spec (/openapi-actions.json), Layer-1 AI findability (JSON-LD, robots, llms.txt, sitemap)."},
+    {"date": "2026-11-13", "version": "0.2.x", "type": "additive", "summary": "UCP vendor capability profile (/.well-known/ucp + schemas)."}
+  ],
+  "note": "Historical entries predate this changelog's creation; they are backfilled from the worklog. Entries are added with every shipped change touching the public wire."
+}

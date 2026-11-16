@@ -1,0 +1,50 @@
+{
+  "title": "EverList Data Processing Agreement (Template v1.0)",
+  "updated": "2026-11-16",
+  "parties": {
+    "controller": "The partner entity integrating EverList services (or, for direct users: EverList acts as controller under /privacy).",
+    "processor": "EverList (operator: Nico Ernst Schlager, 7432 Oberschuetzen, Austria; contact legal@everlist.network)"
+  },
+  "subject_matter": "Processing of personal data contained in listings, bookings, account identifiers and support communications, to the extent EverList processes such data on the partner's documented instructions (partner-as-controller integration mode, partner terms s.3).",
+  "duration": "For the term of the partner agreement plus legally required retention periods.",
+  "nature_and_purpose": [
+    "provision of the hub API, search, booking, checkout and escrow status services",
+    "provision of the MCP/agent integration faces",
+    "technical support and incident handling",
+    "security logging and abuse prevention"
+  ],
+  "data_categories": [
+    "account identifiers and authentication material (hashed credentials, tokens server-side)",
+    "listing and booking content as entered by users",
+    "transaction and escrow status metadata",
+    "support correspondence"
+  ],
+  "data_subjects": ["buyers", "organizers", "partner end-users", "partner administrative users"],
+  "processing_instructions": "Documented instructions are these terms plus the partner agreement; additional instructions require written agreement. EverList informs the controller if an instruction infringes data protection law.",
+  "confidentiality": "All persons authorized to process data are bound by confidentiality obligations.",
+  "security_measures": [
+    "transport encryption (TLS) for all public endpoints",
+    "credentials server-side only; secrets never embedded in public artifacts (leak-gated ship pipeline)",
+    "least-privilege service users on the production host",
+    "capability-scoped tokens with idempotency-keyed writes",
+    "fail-closed honesty gates on payment and escrow surfaces",
+    "regular offsite encrypted backups with verified restore procedure"
+  ],
+  "subprocessors": {
+    "notice_period_days": 30,
+    "objection_right": "Controller may object on reasonable data-protection grounds; parties work out an alternative or the affected processing is dropped.",
+    "current": [
+      {"name": "AI enrichment providers (listing keyword enrichment, fail-open, no blocking dependency)", "role": "transient prompt processing of listing text snippets", "note": "Provider chain is configurable; current defaults include OpenAI-compatible endpoints (OpenAI API, OpenRouter, an operator-proxied Venice endpoint) and Z.AI via proxy. Confirmed list is published at each DPA signature date."},
+      {"name": "Anthropic (Claude Managed Agent face, partner-owned key)", "role": "agent turn processing", "note": "Applies only to the Claude agent surfaces; key custody is the agent operator's."},
+      {"name": "OpenAI (ChatGPT plugin surface)", "role": "agent/chat channel", "note": "Processing occurs on OpenAI's side under their terms; EverList receives only the API traffic."},
+      {"name": "Hosting provider (EU VPS)", "role": "infrastructure hosting", "note": "EU datacenter; provider named in the signed DPA annex."},
+      {"name": "Email delivery (transactional notifications)", "role": "booking/verification mail", "note": "Provider named in the signed DPA annex."}
+    ]
+  },
+  "subprocessor_list_honesty": "The list above reflects the code as of 2026-11-16 (enrich.py provider chain; agent faces). It is finalized per-partner at signature; nothing here is invented.",
+  "audits": "Controller may audit EverList's processing annually on reasonable notice; EverList provides its latest internal security review summary and (when commissioned) pen-test summary letter.",
+  "assistance": "EverList assists the controller with data-subject requests and breach notifications without undue delay.",
+  "deletion_return": "On termination, data is returned or deleted per the partner agreement; escrow/ledger records subject to legal retention are retained only as required.",
+  "transfers": "EU/EEA hosting; any third-country transfer is covered by Standard Contractual Clauses and named in the annex.",
+  "note": "Template for partner signature; not legal advice. Alignment: GDPR Art. 28 (processor terms), EverList AGB v2.1."
+}
