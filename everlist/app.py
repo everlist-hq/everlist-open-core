@@ -1745,6 +1745,8 @@ def _openapi_spec():
                                   note="99.5% monthly target, P1-P3 response classes; honestly a target commitment without credits (Tier-2 item); excludes force majeure per AGB v2.1 s.8(2)")},
             "/partner/changelog.json": {"get": op("API changelog + versioning/deprecation policy", "discovery",
                                         note="versioning scheme, >=90-day deprecation notice, backfilled entries; /openapi.json stays the normative contract")},
+            "/partner/security-selfcheck.json": {"get": op("Security self-check (honest)", "discovery",
+                                         note="free automated battery + internal review, results AND gaps documented (TLS/headers/dependency scan); explicitly NOT a penetration test - professional test is a pre-real-money gate; disclosure channel: /.well-known/security.txt")},
             "/status.html": {"get": op("Human status page (noindex)", "discovery",
                                note="human-readable status face over the SAME /status payload (parity law); noindex; no fabricated history")},
             "/status": {"get": op("Machine-readable honest status", "discovery",
@@ -3096,7 +3098,8 @@ class Handler(BaseHTTPRequestHandler):
             still applies for reachability through the proxy)."""
             return self._serve_partner_asset("security.txt", raw=True)
         if u.path in ("/partner/disclosure.json", "/partner/dpa.json",
-                      "/partner/sla.json", "/partner/changelog.json"):
+                      "/partner/sla.json", "/partner/changelog.json",
+                      "/partner/security-selfcheck.json"):
             # Tier-1 partner kit: strict allowlist, literal fnames only.
             return self._serve_partner_asset(u.path.rsplit("/", 1)[1])
         if u.path == "/status":

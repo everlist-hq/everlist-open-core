@@ -1,0 +1,56 @@
+{
+  "title": "EverList Security Self-Check",
+  "version": "1.0",
+  "updated": "2026-11-16",
+  "method": "Free automated battery + internal review, documented honestly. No professional penetration test commissioned yet (scheduled as a gate before real-money operation).",
+  "scopes_run": [
+    "TLS/certificate configuration (openssl probes against everlist.network:443)",
+    "HTTP security headers on representative public endpoints (/, /partner/sla.json, /status)",
+    "Dependency vulnerability scan of pinned hub requirements (pip-audit 2.10.1, PYSEC/OSV database, 2026-11-16)",
+    "Internal security review (docs/reviews/2026-09-09-security.md, older surface)"
+  ],
+  "not_run_yet": [
+    "Manual penetration test (business-logic / escrow-flow attack paths) - owner-gated budget item, targeted before real-money launch",
+    "Dynamic application scanning (OWASP ZAP full scan) - not available in the build environment at scan time; covered partially by header/TLS probes and the internal review",
+    "TLS 1.0 client probe (test client no longer supports the protocol; TLS 1.1 explicitly rejected by the server, see below; Caddy defaults disable TLS 1.0/1.1)"
+  ],
+  "results": {
+    "tls": {
+      "certificate": "Let's Encrypt, CN=everlist.network, valid 2026-11-13 to 2027-02-11 (auto-renewing)",
+      "tls_1_3": "supported",
+      "tls_1_1": "rejected (server alert: protocol version 70, probed 2026-11-16)",
+      "hsts": "max-age=31536000; includeSubDomains on all probed endpoints"
+    },
+    "security_headers": {
+      "content_security_policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+      "x_frame_options": "SAMEORIGIN",
+      "x_content_type_options": "nosniff",
+      "referrer_policy": "strict-origin-when-cross-origin",
+      "note": "verified on /, /partner/*, /status"
+    },
+    "dependencies": {
+      "scanner": "pip-audit 2.10.1 against pinned requirements.txt, 2026-11-16",
+      "findings": [
+        {
+          "package": "pynacl", "version": "1.6.0",
+          "ids": ["PYSEC-2026-1448", "PYSEC-2026-3002"],
+          "fix_version": "1.6.2",
+          "class": "libsodium point-validation edge case in atypical use cases (DoS class)",
+          "exposure": "transitive via cosmpy (Agentverse/chat integration), not the hub money path; zero direct imports in hub code",
+          "mitigation": "fix upgrade attempted; cosmpy 0.12.2 hard-pins pynacl==1.6.0 - upgrading pynacl alone breaks the dependency tree, so the pin stands and the risk is accepted + monitored; re-scan on cosmpy update"
+        },
+        {
+          "package": "ecdsa", "version": "0.19.2",
+          "ids": ["PYSEC-2026-1325"],
+          "fix_version": null,
+          "class": "Minerva timing side-channel on P-256 signing",
+          "exposure": "transitive via cosmpy and uagents-core (Agentverse/chat integration); zero direct imports in hub code; hub account signatures use Ed25519 via the cryptography package, not ecdsa; signing with this library happens on the agent side, not the server",
+          "mitigation": "no upstream fix exists; accepted risk with exposure documented; monitor for upstream release"
+        }
+      ],
+      "summary": "4 advisory hits, 2 packages, both transitive on the Agentverse integration side; no known-vulnerable package is on the booking/escrow money path; no direct hub imports of either package"
+    },
+    "internal_review": "docs/reviews/2026-09-09-security.md covers the then-current surface; a refresh against the expanded 2026-11 surface (MCP, checkout, agent faces, partner kit) is tracked in the backlog"
+  },
+  "honesty_note": "This is an automated-plus-review self-check, not a penetration test. It is published as evidence of diligence and process, not as a security guarantee. The vulnerability disclosure channel (/.well-known/security.txt) is the live mechanism for external testing."
+}

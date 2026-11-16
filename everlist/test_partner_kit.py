@@ -56,7 +56,8 @@ try:
 
     print("== partner kit: JSON faces ==")
     for path in ("/partner/disclosure.json", "/partner/dpa.json",
-                 "/partner/sla.json", "/partner/changelog.json"):
+                 "/partner/sla.json", "/partner/changelog.json",
+                 "/partner/security-selfcheck.json"):
         st, hd, body = req(BASE, "GET", path)
         ok = st == 200 and "application/json" in hd.get("Content-Type", "")
         doc = {}
@@ -73,6 +74,12 @@ try:
     st, hd, body = req(BASE, "GET", "/partner/sla.json")
     sla = json.loads(body)
     check("SLA states no-credits honestly", "credits" in sla and "None" in str(sla["credits"]))
+    st, hd, body = req(BASE, "GET", "/partner/security-selfcheck.json")
+    sc = json.loads(body)
+    check("self-check is honest (not a pentest)", "not a penetration test" in sc.get("honesty_note", ""))
+    check("self-check lists what was NOT run", bool(sc.get("not_run_yet")))
+    check("self-check dependency findings carry mitigations",
+          all(f.get("mitigation") for f in sc.get("results", {}).get("dependencies", {}).get("findings", [])))
 
     print("== partner kit: /status honesty ==")
     st, hd, body = req(BASE, "GET", "/status")
@@ -109,7 +116,8 @@ try:
     spec = json.loads(body)
     for p in ("/.well-known/security.txt", "/status", "/status.html",
               "/partner/disclosure.json", "/partner/dpa.json",
-              "/partner/sla.json", "/partner/changelog.json"):
+              "/partner/sla.json", "/partner/changelog.json",
+              "/partner/security-selfcheck.json"):
         check(f"openapi documents {p}", p in spec.get("paths", {}))
     check("PartnerStatus schema exists",
           "PartnerStatus" in spec.get("components", {}).get("schemas", {}))
