@@ -50,7 +50,7 @@
       ],
       "summary": "4 advisory hits, 2 packages, both transitive on the Agentverse integration side; no known-vulnerable package is on the booking/escrow money path; no direct hub imports of either package"
     },
-    "internal_review": "docs/reviews/2026-09-09-security.md covers the then-current surface; a refresh against the expanded 2026-11 surface (MCP, checkout, agent faces, partner kit) is tracked in the backlog"
+    "internal_review": "docs/reviews/2026-11-16-security-refresh.md (208 lines): full audit of the current surface (hub auth, MCP face, checkout, agent faces, escrow state machine, both agent servers) - verdict NO critical or HIGH findings (5 LOW + 8 INFO); all 14 findings of the 2026-09-09 review verified closed in code; refund/liveness guarantees untouched; key pre-real-money item: R1 gate /access token minting behind PoW (tracked)"
   },
   "honesty_note": "This is an automated-plus-review self-check, not a penetration test. It is published as evidence of diligence and process, not as a security guarantee. The vulnerability disclosure channel (/.well-known/security.txt) is the live mechanism for external testing."
 }
