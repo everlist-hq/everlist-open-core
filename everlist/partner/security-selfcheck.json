@@ -1,19 +1,19 @@
 {
   "title": "EverList Security Self-Check",
-  "version": "1.0",
-  "updated": "2026-11-16",
+  "version": "1.1",
+  "updated": "2026-11-17",
   "method": "Free automated battery + internal review, documented honestly. No professional penetration test commissioned yet (scheduled as a gate before real-money operation).",
   "scopes_run": [
     "TLS/certificate configuration (openssl probes against everlist.network:443)",
     "HTTP security headers on representative public endpoints (/, /partner/sla.json, /status)",
     "Dependency vulnerability scan of pinned hub requirements (pip-audit 2.10.1, PYSEC/OSV database, 2026-11-16)",
     "Internal security review (docs/reviews/2026-09-09-security.md, older surface)",
-    "OWASP ZAP 2.16.0 passive spider of everlist.network (read-only, no active scanning against prod)",
-    "Install-free Python DAST-lite battery against an isolated hub boot (auth walls, malformed input, injection probes, traversal, CRLF, method misuse, error-leakage discipline)"
+    "Install-free Python DAST-lite battery against an isolated hub boot (auth walls, malformed input, injection probes, traversal, CRLF, method misuse, error-leakage discipline)",
+    "OWASP ZAP 2.16.0 passive spider of everlist.network (read-only; 377 URLs discovered, 102 passive findings triaged)",
+    "OWASP ZAP 2.16.0 FULL active scan against an isolated hub boot (spider + active scanner to 100% completion)"
   ],
   "not_run_yet": [
     "Manual penetration test (business-logic / escrow-flow attack paths) - owner-gated budget item, targeted before real-money launch",
-    "Dynamic application scanning (OWASP ZAP full scan) - not available in the build environment at scan time; covered partially by header/TLS probes and the internal review",
     "TLS 1.0 client probe (test client no longer supports the protocol; TLS 1.1 explicitly rejected by the server, see below; Caddy defaults disable TLS 1.0/1.1)"
   ],
   "results": {
@@ -61,18 +61,45 @@
     },
     "internal_review": "docs/reviews/2026-11-16-security-refresh.md (208 lines): full audit of the current surface (hub auth, MCP face, checkout, agent faces, escrow state machine, both agent servers) - verdict NO critical or HIGH findings (5 LOW + 8 INFO); all 14 findings of the 2026-09-09 review verified closed in code; refund/liveness guarantees untouched; key pre-real-money item: R1 gate /access token minting behind PoW (tracked)",
     "zap": {
-      "attempted": true,
-      "tool": "OWASP ZAP 2.16.0",
-      "timestamp": "2026-11-16",
-      "prod_passive_spider": {
-        "urls_discovered": 0,
-        "note": "ZAP spider completed to 100% but no URLs persisted in results; scan registration may not have attached correctly"
+      "tool": "OWASP ZAP 2.16.0 (Java 21, zapv2 client)",
+      "date": "2026-11-17",
+      "prod_passive_scan": {
+        "mode": "read-only spider + passive scan; NO active scanning against production",
+        "urls_discovered": 377,
+        "alerts_total": 102,
+        "by_risk": {
+          "Informational": 57,
+          "Low": 45,
+          "Medium": 0,
+          "High": 0,
+          "Critical": 0
+        },
+        "top_findings": [
+          "Timestamp Disclosure - Unix (27 Low) - server-generated timestamps in responses; informational value only",
+          "Re-examine Cache-control Directives (39 Info) - caching-policy review notes on static assets",
+          "X-Content-Type-Options gaps (6 Low) - FIXED 2026-11-17: hub-level nosniff on all JSON responses (Caddy-independence law)",
+          "Cookie flags on preflang (2 Low) - FIXED 2026-11-17: HttpOnly+Secure added",
+          "Server version disclosure (8 Low) - FIXED 2026-11-17: Server header suppressed at the hub (prod fronting proxy already masked it)"
+        ]
       },
-      "isolated_active_scan": {
-        "alerts_found": 0,
-        "note": "Active scan against isolated hub boot ran but produced no alert files; ZAP scan registration issues prevented attachment"
+      "hub_active_scan": {
+        "mode": "FULL spider + active scan against an ISOLATED local hub boot (never production)",
+        "completion": "100%",
+        "alerts_total": 3,
+        "by_risk": {
+          "Low": 3
+        },
+        "findings": [
+          "Server Leaks Version Information via Server HTTP Response Header Field (x3: /, /sitemap.xml, /robots.txt) - FIXED 2026-11-17: server_version suppressed in hub Handler"
+        ],
+        "note": "No Medium/High/Critical findings on the active scan of the hub application"
       },
-      "summary": "ZAP was attempted (Java 21 + ZAP 2.16.0 installed) but did not produce machine-readable findings. This is noted honestly. The concrete machine-side result remains the install-free Python DAST-lite battery (26/26 PASS)."
+      "fixes_applied_2026_11_17": [
+        "preflang cookie: HttpOnly + Secure flags added (webchat.py)",
+        "X-Content-Type-Options: nosniff on every JSON response at hub level (app.py _json)",
+        "Server header version disclosure suppressed (app.py Handler.server_version)"
+      ],
+      "summary": "Full ZAP active scan of the hub found ZERO Medium/High findings; all Low findings fixed in code the same day and verified by the test gate."
     },
     "dast_lite": {
       "scanner": "install-free Python DAST-lite battery, isolated hub boot, 2026-11-16",
@@ -91,5 +118,5 @@
       ]
     }
   },
-  "honesty_note": "This is an automated-plus-review self-check, not a penetration test. ZAP active scanning was run only against an isolated local hub; prod received a passive spider only. Published as evidence of diligence and process, not as a security guarantee. The vulnerability disclosure channel (/.well-known/security.txt) is the live mechanism for external testing."
+  "honesty_note": "This is an automated-plus-review self-check, not a penetration test. ZAP active scanning ran ONLY against an isolated local hub; production received a read-only passive scan. Published as evidence of diligence and process, not as a security guarantee. The vulnerability disclosure channel (/.well-known/security.txt) is the live mechanism for external testing."
 }

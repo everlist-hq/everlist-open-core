@@ -1893,6 +1893,12 @@ def _openapi_spec():
 
 
 class Handler(BaseHTTPRequestHandler):
+    # ZAP 2026-11-17 (Server Leaks Version Information): suppress the default
+    # "BaseHTTP/0.6 Python/3.x" Server header - version disclosure is a free
+    # recon win for attackers. Prod Caddy already masks it; this makes the hub
+    # itself clean regardless of the fronting proxy (Caddy-independence law).
+    server_version = "EverList"
+    sys_version = ""
     def _json(self, code, data, extra_headers=None):
         # CATALOGS hardening (RFC 9110): 204/304 MUST NOT carry a body - a
         # 304 especially must not imply a Content-Length for representation
@@ -1917,6 +1923,7 @@ class Handler(BaseHTTPRequestHandler):
         rid = "req-" + secrets.token_hex(8)  # H12: per-request trace id
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
+        self.send_header("X-Content-Type-Options", "nosniff")  # ZAP 2026-11-17: hub-level nosniff (Caddy-independence law)
         self.send_header("X-Request-Id", rid)  # H12: echoed for support/traceability
         for k, v in (extra_headers or {}).items():
             self.send_header(k, v)
