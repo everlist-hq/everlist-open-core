@@ -188,6 +188,11 @@ try:
         h0 = urllib.request.urlopen("http://127.0.0.1:" + str(wport0) + "/", timeout=10).read().decode()
         check("footer has no legal links without file",
               'href="/imprint"' not in h0 and 'href="/support"' not in h0)
+        # 2026-11-17 law: /privacy exists unconditionally (owner-independent
+        # data-handling honesty) — its footer link and route need NO legal file.
+        check("footer keeps privacy link without file", 'href="/privacy"' in h0)
+        rd0 = urllib.request.urlopen("http://127.0.0.1:" + str(wport0) + "/datenschutz", timeout=10)
+        check("/datenschutz 200 without legal file", rd0.status == 200)
         # live SSR through webchat: a REAL organizer listing never renders the
         # curated-example banner (hub API flag absence -> detail_html path)
         rl = urllib.request.urlopen("http://127.0.0.1:" + str(wport0) + "/l/" + lid, timeout=10)
@@ -232,6 +237,22 @@ try:
         check("/support 200 with legal file", rr.status == 200)
         r2 = urllib.request.urlopen(f"http://127.0.0.1:{wport}/terms", timeout=10)
         check("/terms 200 with legal file", r2.status == 200)
+        # 2026-11-17: privacy renders EXACTLY ONCE per footer (legal strip is
+        # the single home; Trust column duplicate removed), DE alias parity.
+        home1 = urllib.request.urlopen(f"http://127.0.0.1:{wport}/", timeout=10).read().decode()
+        check("privacy linked exactly once on home",
+              home1.count('href="/privacy"') == 1, "n=" + str(home1.count('href="/privacy"')))
+        rde = urllib.request.urlopen(f"http://127.0.0.1:{wport}/datenschutz", timeout=10)
+        dde = rde.read().decode()
+        rpriv = urllib.request.urlopen(f"http://127.0.0.1:{wport}/privacy", timeout=10)
+        dpriv = rpriv.read().decode()
+        check("/datenschutz 200 bytes == /privacy",
+              rde.status == 200 and dde == dpriv)
+        rde2 = urllib.request.urlopen(f"http://127.0.0.1:{wport}/de/datenschutz", timeout=10)
+        check("/de/datenschutz 200 DE parity", rde2.status == 200)
+        rsx = urllib.request.urlopen(f"http://127.0.0.1:{wport}/sitemap.xml", timeout=10).read().decode()
+        check("sitemap lists /privacy", "/privacy" in rsx)
+        check("sitemap lists /datenschutz", "/datenschutz" in rsx)
         # home footnav carries the legal links now
         rh = urllib.request.urlopen(f"http://127.0.0.1:{wport}/", timeout=10)
         check("footer legal links with file", "href=\"/imprint\"" in rh.read().decode())
