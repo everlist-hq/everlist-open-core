@@ -3134,6 +3134,10 @@ class Handler(BaseHTTPRequestHandler):
                               "mirror": {"sync": "/admin/sync-escrow",
                                          "rail": "midnight-shielded-escrow",
                                          "policy": "chain is source of truth; sync never overwrites downward (C7)"}},
+        "security": {"disclosure": "/.well-known/security.txt",
+                     "selfcheck": "/partner/security-selfcheck.json",
+                     "sla": "/partner/sla.json",
+                     "summary": "scanned (ZAP + DAST battery, 2026-11-17: zero Medium/High findings), independently reviewed (docs/reviews/), honest gaps published; disclosure safe harbor in effect"},
                 "identity": {"booking_requires": "interim: open bootstrap (no credential enforced yet); flagship target: verified-human credential (ZK: real human, private by default)",
                               "adapters": [
                                   {"scheme": "midnight-zk-personhood", "status": "flagship (ZK: real human, identity stays private)"},

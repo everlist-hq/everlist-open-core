@@ -18,6 +18,20 @@ discover → search → register & pay (escrow) → confirm/cancel → transpare
   code-mapped: see [PRIVACY.md](PRIVACY.md)
 - **schemas are versioned + community-extensible** (verticals via schema files)
 
+## Security (scanned + reviewed, gaps published)
+
+Security is treated as published evidence, not promises: automated scans (OWASP ZAP,
+DAST battery, TLS/headers, dependency audit) run regularly — full active scan of the
+hub found **zero Medium/High findings** (2026-11-17, all Low findings fixed same day).
+An independent internal review (208 lines, file:line evidence) found no critical or
+high issues. Honest gaps are published, and the vulnerability-disclosure channel
+([security.txt](https://everlist.network/.well-known/security.txt)) grants a safe
+harbor for external researchers.
+
+- disclosure policy + safe harbor: `/.well-known/security.txt`
+- results and gaps: [`/partner/security-selfcheck.json`](https://everlist.network/partner/security-selfcheck.json)
+- review: `docs/reviews/` (project docs)
+
 ## Components
 
 | File | Purpose |
