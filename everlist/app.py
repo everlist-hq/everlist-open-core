@@ -1071,6 +1071,7 @@ def _evm_chain_gate_read(er, dual=False):
         return None, (400, {"error": "escrow_ref.escrow does not match the hub's pinned escrow contract",
                             "note": "fail-closed (M14): the hub verifies only its own pinned contract"})
     try:
+        _evm_assert_chain_id()  # F4: cached pin check before any money read
         raw_word = _evm_rpc("eth_call", [
             {"to": EVM_ESCROW_ADDRESS, "data": _EVM_ESCROW_SELECTOR + eid[2:]}, "latest"])
         raw = (raw_word or "")[2:]
@@ -1114,7 +1115,12 @@ def _evm_chain_gate_read(er, dual=False):
     return {"state_name": _EVM_STATE_NAMES[state_num],
             "amount": amount_micro / 1e6,
             "deadline": float(refund_dl),
-            "tx": ev_tx}, None
+            "tx": ev_tx,
+            # F2a (review): party words exposed for binding walls; consumers of
+            # the Midnight shape ignore extra keys.
+            "buyer": "0x" + words[0][-40:],
+            "organizer": "0x" + words[1][-40:],
+            "arbiter": "0x" + words[2][-40:]}, None
 
 
 def _chain_gate_read(er, dual=False):
@@ -1159,6 +1165,25 @@ def _chain_gate_read(er, dual=False):
 RATE_BOOKS_PER_MIN = int(os.environ.get("HUB_RATE_BOOKS_PER_MIN", "10"))
 
 
+_EVM_CHAIN_VERIFIED = False  # F4: cached after first successful pin check
+
+
+def _evm_assert_chain_id():
+    """F4 (adversarial review): pin the RPC's chain id ONCE per process.
+    Dual-source defends against event/struct desync at ONE endpoint - not
+    against a lying/misrouted RPC. Default expectation: Arbitrum Sepolia
+    421614 (env HUB_EVM_CHAIN_ID). Fail-closed: mismatch raises -> honest 503."""
+    global _EVM_CHAIN_VERIFIED
+    if _EVM_CHAIN_VERIFIED:
+        return
+    expected = int(os.environ.get("HUB_EVM_CHAIN_ID", "421614").strip())
+    got = _evm_rpc("eth_chainId", [])
+    got_int = int(str(got), 16)
+    if got_int != expected:
+        raise RuntimeError("RPC chain id %d != pinned %d" % (got_int, expected))
+    _EVM_CHAIN_VERIFIED = True
+
+
 def _evm_rpc(method, params):
     """One JSON-RPC call against the pinned RPC; raises on RPC error objects."""
     import urllib.request
@@ -1190,7 +1215,10 @@ def _gate_wants_chain(er):
     if not isinstance(er, dict):
         return False
     if er.get("type") == "arbsep-escrow":
-        return EVM_ESCROW_PINNED
+        # F8 (review): EVM refs gate UNCONDITIONALLY. Unpinning between booking
+        # and terminal flip must produce honest 503 refusals (the read path
+        # refuses fail-closed when unpinned), never a silent gate skip.
+        return True
     return CHAIN_GATE
 
 
@@ -2944,11 +2972,25 @@ class Handler(BaseHTTPRequestHandler):
                     _cdl = float(str(_chain_v.get("deadline")))
                 except (TypeError, ValueError):
                     _cdl = None
-                if _cdl is not None and time.time() > _cdl:
+                if _cdl is not None and time.time() >= _cdl:  # F5 hub-side: inclusive boundary closes the 1-second race
                     return self._bk_json(409, {
                         "error": "escrow claim deadline already passed on-chain",
                         "deadline": _chain_v.get("deadline"),
                         "note": "a spent or expiring escrow cannot back a new booking"})
+                # F2b (review, sect 7.1.6 LOCKED default: hub = arbiter of record):
+                # when the hub declares its arbiter, an escrow ruled by anyone
+                # else cannot back a booking. Opt-in env until E7 lands the
+                # full buyer/organizer bindings (bid is born in-LOCK, so the
+                # sect 7.1.3 escrowId derivation assert belongs to two-phase
+                # checkout wiring, not to tonight's one-phase intake).
+                _hub_arb = os.environ.get("HUB_EVM_ARBITER", "").strip().lower()
+                if _hub_arb and isinstance(er, dict) and er.get("type") == "arbsep-escrow":
+                    _chain_arb = str(_chain_v.get("arbiter") or "").lower()
+                    if _chain_arb != _hub_arb:
+                        return self._bk_json(409, {
+                            "error": "escrow arbiter does not match this hub's arbiter of record",
+                            "chain_arbiter": _chain_arb,
+                            "note": "the hub can only honor disputes it rules itself (sect 7.1.6)"})
             # S1 red-team 3: duplicate (contract, escrow_id) would let two
             # bookings claim the same on-chain escrow (double-claim / squat
             # before the real buyer books) - wall lives inside the LOCK

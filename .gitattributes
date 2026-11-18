@@ -1,0 +1,2 @@
+# Prover keys are large derived binaries (~235 MB); excluded from archive downloads (Cursor scan limit) — still present in git clones for CI/tests. Regenerate via compactc build if needed.
+everlist/midnight-contract/managed*/keys/*.prover export-ignore

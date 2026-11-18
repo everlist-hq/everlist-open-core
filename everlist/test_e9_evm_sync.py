@@ -57,16 +57,19 @@ def eid(n):
 NOW = int(time.time())
 CHAIN = {}
 
-def set_chain(n, state, amount_micro=50000000, deadline=None):
+def set_chain(n, state, amount_micro=50000000, deadline=None, arbiter_word="0" * 64):
     CHAIN[eid(n)[2:]] = {"state": state, "amount": amount_micro,
                          "deadline": NOW + 86400 if deadline is None else deadline,
-                         "block": len(CHAIN) + 1}
+                         "block": len(CHAIN) + 1, "arbiter_word": arbiter_word}
 
 def struct_hex(st):
     w = []
-    w.append("11" * 20 + "0" * 24)          # buyer
-    w.append("22" * 20 + "0" * 24)          # organizer
-    w.append("0" * 64)                       # arbiter
+    # Real Solidity ABI right-aligns address fields (low 20 bytes of the word):
+    # fixed 2026-11-18 when F2a exposed the words — the left-aligned encoding
+    # was never readable by a correct ABI decoder (reader output proved it).
+    w.append("0" * 24 + "11" * 20)          # buyer
+    w.append("0" * 24 + "22" * 20)          # organizer
+    w.append(st.get("arbiter_word", "0" * 64))  # arbiter (F2b: nonzero for wall tests)
     w.append("%064x" % st["amount"])
     w.append("%064x" % st["deadline"])
     w.append("%064x" % (st["deadline"] + 604800))
@@ -146,6 +149,7 @@ while time.time() < end:
         with socket.create_connection(("127.0.0.1", PORT), timeout=0.5): ready = True; break
     except OSError: time.sleep(0.2)
 assert ready, "test hub did not start"
+EXTRA_PROCS = []  # F2b/F4 wall-test hubs; cleaned up in finally
 
 try:
     print("== E9 setup: owner, paid listing, buyer ==")
@@ -297,10 +301,122 @@ try:
                               "escrow_id": eid(1)}}, B)
     check("re-claiming booked escrow -> 409", c == 409, "%s %s" % (c, e))
 
+    # ═══ review-wall proofs (2026-11-18 adversarial review F2b/F4/F8) ═══
+    def mkreq(base):
+        def _r(method, path, body=None, headers=None):
+            r = urllib.request.Request(base + path, method=method,
+                data=json.dumps(body).encode() if body is not None else None,
+                headers={"Content-Type": "application/json", **(headers or {})})
+            try:
+                with urllib.request.urlopen(r, timeout=10) as resp:
+                    return resp.status, json.loads(resp.read().decode())
+            except urllib.error.HTTPError as ex:
+                try: return ex.code, json.loads(ex.read().decode())
+                except Exception: return ex.code, {}
+            except Exception as ex: return -1, {"error": str(ex)}
+        return _r
+
+    def spawn_hub(extra_env, tag):
+        p2 = free_port(); b2 = "http://127.0.0.1:%d" % p2
+        e2 = {**env, "HUB_STATE_FILE": os.path.join(TMP, "state-%s.json" % tag), **extra_env}
+        lg2 = open(os.path.join(TMP, "hub-%s.log" % tag), "a")
+        pr2 = subprocess.Popen([PYEXE, os.path.join(HERE, "app.py"), str(p2)],
+                               stdout=lg2, stderr=subprocess.STDOUT, env=e2)
+        EXTRA_PROCS.append((pr2, lg2))
+        rd2 = False; en2 = time.time() + 15
+        while time.time() < en2:
+            try:
+                with socket.create_connection(("127.0.0.1", p2), timeout=0.5): rd2 = True; break
+            except OSError: time.sleep(0.2)
+        assert rd2, "%s test hub did not start" % tag
+        return b2, mkreq(b2)
+
+    def mini_flow(rq, tag):
+        def _pow(kind):
+            _, ch = rq("GET", "/auth/challenge?kind=" + kind)
+            n = 0
+            while True:
+                d = hashlib.sha256((ch["challenge"] + str(n)).encode()).digest()
+                bits = 0
+                for b in d:
+                    if b == 0: bits += 8; continue
+                    bits += 8 - b.bit_length(); break
+                if bits >= ch["difficulty"]: return {"challenge": ch["challenge"], "nonce": n}
+                n += 1
+        c, a2 = rq("POST", "/accounts/signup", {"agent": "e9-%s-owner" % tag, "pow": _pow("signup")})
+        assert c == 201, a2
+        c, l2 = rq("POST", "/accounts/login", {"account_code": a2["account_code"], "agent": "e9-%s-owner" % tag})
+        assert c == 200, l2
+        T2 = l2["tokens"]["list"]
+        c, r2 = rq("POST", "/listings", {"vertical": "events", "title": "E9 %s" % tag,
+                   "date": "2026-12-10", "location": "X", "price": 50, "capacity": 5},
+                   {"X-Hub-Token": T2})
+        assert c == 201, r2
+        c, bt2 = rq("POST", "/access", {"agent": "agent1qe9%s" % tag, "acts": ["book"]})
+        assert c == 201, bt2
+        return r2["id"], {"X-Hub-Token": bt2["tokens"]["book"]}
+
+    print("== E9 F4: RPC chain-id pin (fail-closed on mismatch) ==")
+    _, rq4 = spawn_hub({"HUB_EVM_CHAIN_ID": "999"}, "f4")
+    PAID4, B4 = mini_flow(rq4, "f4buyer")
+    c, e4 = rq4("POST", "/book", {"listing_id": PAID4, "attendee": "F4", "human_verified": True,
+               "escrow_ref": {"type": "arbsep-escrow", "escrow": PIN,
+                              "escrow_id": eid(1)}}, B4)
+    check("F4: RPC chain-id mismatch -> honest 503 (fail-closed)", c == 503, "%s %s" % (c, e4))
+
+    print("== E9 F2b: hub-arbiter wall (sect 7.1.6 opt-in), both directions ==")
+    ARB = "0x" + "44" * 20
+    set_chain(6, 1, arbiter_word="0" * 24 + "44" * 20)
+    _, rq6 = spawn_hub({"HUB_EVM_ARBITER": ARB}, "f2b")
+    PAID6, B6 = mini_flow(rq6, "f2b")
+    c, ok6 = rq6("POST", "/book", {"listing_id": PAID6, "attendee": "F2B", "human_verified": True,
+               "escrow_ref": {"type": "arbsep-escrow", "escrow": PIN,
+                              "escrow_id": eid(6)}}, B6)
+    check("F2b: matching hub arbiter -> books 201", c == 201, "%s %s" % (c, ok6))
+    c, e6 = rq6("POST", "/book", {"listing_id": PAID6, "attendee": "F2B", "human_verified": True,
+               "escrow_ref": {"type": "arbsep-escrow", "escrow": PIN,
+                              "escrow_id": eid(1)}}, B6)
+    check("F2b: foreign/zero arbiter -> 409", c == 409, "%s %s" % (c, e6))
+
+    print("== E9 in-process: F8 gate truth + F2a party words + F4 pin pass ==")
+    os.environ["HUB_EVM_ESCROW_ADDRESS"] = PIN
+    os.environ["HUB_EVM_RPC_URL"] = EVMPIN
+    import app as _app
+    check("F8: EVM ref gates unconditionally (even pre-pin)",
+          _app._gate_wants_chain({"type": "arbsep-escrow"}) is True)
+    check("F8: Midnight ref keeps legacy CHAIN_GATE behavior",
+          _app._gate_wants_chain({"contract": "c", "escrow_id": 1, "tx": "t"}) == _app.CHAIN_GATE)
+    _cv, _err = _app._evm_chain_gate_read({"type": "arbsep-escrow", "escrow": PIN,
+                                           "escrow_id": eid(1)})
+    check("F2a: reader exposes buyer/organizer/arbiter words",
+          _cv is not None and _cv.get("buyer") == "0x" + "11" * 20
+          and _cv.get("organizer") == "0x" + "22" * 20
+          and _cv.get("arbiter") == "0x" + "0" * 40, str(_cv))
+    try:
+        _app._EVM_CHAIN_VERIFIED = False
+        _app._evm_assert_chain_id()
+        check("F4: chain-id pin passes on true Sepolia fixture", True)
+        os.environ["HUB_EVM_CHAIN_ID"] = "999"
+        _app._EVM_CHAIN_VERIFIED = False
+        try:
+            _app._evm_assert_chain_id()
+            check("F4: pin raises on mismatch", False, "no exception")
+        except RuntimeError:
+            check("F4: pin raises on mismatch", True)
+        finally:
+            os.environ.pop("HUB_EVM_CHAIN_ID", None)
+    except Exception as ex:
+        check("F4: pin proofs", False, repr(ex))
+
 finally:
     proc.terminate()
     try: proc.wait(timeout=5)
     except Exception: proc.kill()
+    for _p, _lg in EXTRA_PROCS:
+        _p.terminate()
+        try: _p.wait(timeout=5)
+        except Exception: _p.kill()
+        _lg.close()
     logf.close()
     cserver.shutdown()
 
