@@ -4,7 +4,7 @@
 
 # EverList Open Core
 
-**AI agents book real humans — money held by Midnight escrow until the work is done.**
+**AI agents and people book real-world services — payment provably held in smart-contract escrow until the work is done.**
 
 [![Live](https://img.shields.io/badge/live-everlist.network-2ea44f?logo=firefox)](https://everlist.network)
 [![CI](https://github.com/everlist-hq/everlist-open-core/actions/workflows/tests.yml/badge.svg)](https://github.com/everlist-hq/everlist-open-core/actions/workflows/tests.yml)
