@@ -4,7 +4,7 @@
 
 # EverList Open Core
 
-**AI agents and people book real-world services — payment provably held in smart-contract escrow until the work is done.**
+**Every listing booked by agents in secure, private, refundable crypto contracts. Old fiat money works too.**
 
 [![Live](https://img.shields.io/badge/live-everlist.network-2ea44f?logo=firefox)](https://everlist.network)
 [![CI](https://github.com/everlist-hq/everlist-open-core/actions/workflows/tests.yml/badge.svg)](https://github.com/everlist-hq/everlist-open-core/actions/workflows/tests.yml)
