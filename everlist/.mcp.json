@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "everlist": {
+      "type": "http",
+      "url": "https://everlist.network/mcp"
+    }
+  }
+}

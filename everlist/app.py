@@ -1038,12 +1038,83 @@ if CARDANO_ON:
 CHAIN_INDEXER = os.environ.get("HUB_INDEXER_URL", "").strip()
 CHAIN_INDEXER_2 = os.environ.get("HUB_INDEXER_URL_2", "").strip()
 CHAIN_GATE = bool(CHAIN_INDEXER)
+# E9: Arbitrum Sepolia escrow rail (EVM twin of the Midnight gate).
+# Fail-closed until the Sepolia deploy pins the contract: with the env unset,
+# every arbsep-escrow read returns 503 - the hub never guesses an address.
+EVM_RPC_URL = os.environ.get("HUB_EVM_RPC_URL", "https://sepolia-rollup.arbitrum.io/rpc").strip()
+EVM_ESCROW_ADDRESS = os.environ.get("HUB_EVM_ESCROW_ADDRESS", "").strip()
+EVM_ESCROW_PINNED = bool(EVM_ESCROW_ADDRESS) and re.fullmatch(r"0x[0-9a-fA-F]{40}", EVM_ESCROW_ADDRESS) is not None
 # W2 #1: sponsor-relay mode (owner-approved Buildathon Wave 2 scope). When on,
 # the hub covers organizer chain fees for escrow-rail bookings - gated by the
 # abuse-resistant rules in sponsorship.py (per-org window limit, pool cap,
 # stake threshold). Default OFF: real fee payment activates with the funded
 # preprod E2E (M18); until then the gate + ledger are honest no-ops.
 SPONSOR_RELAY = os.environ.get("HUB_SPONSOR_RELAY", "") == "1"
+
+
+def _evm_chain_gate_read(er, dual=False):
+    """E9 twin of _chain_gate_read for refs typed 'arbsep-escrow'.
+
+    M14 law: er['escrow'] is EVIDENCE, never truth - a ref pointing at any
+    address other than the hub's pinned contract is refused, not followed.
+    Dual-source semantics inside one RPC set (EVM analogue of the Midnight
+    two-indexer rule): the escrows(bytes32) struct AND the latest lifecycle
+    event MUST agree, else honest 503. Returns the EXACT Midnight result
+    shape {state_name, amount (major units), deadline (unix s), tx} so every
+    downstream wall (HELD-only intake, exact amount, live deadline,
+    forward-only sync) applies unchanged across rails."""
+    eid = str(er.get("escrow_id") or "").lower()
+    ref_contract = str(er.get("escrow") or "").lower()
+    if not re.fullmatch(r"0x[0-9a-f]{64}", eid):
+        return None, (400, {"error": "escrow_ref.escrow_id must be 0x + 64 hex chars (bytes32)"})
+    if ref_contract != EVM_ESCROW_ADDRESS.lower():
+        return None, (400, {"error": "escrow_ref.escrow does not match the hub's pinned escrow contract",
+                            "note": "fail-closed (M14): the hub verifies only its own pinned contract"})
+    try:
+        raw_word = _evm_rpc("eth_call", [
+            {"to": EVM_ESCROW_ADDRESS, "data": _EVM_ESCROW_SELECTOR + eid[2:]}, "latest"])
+        raw = (raw_word or "")[2:]
+        if len(raw) < 9 * 64:
+            raise RuntimeError("escrows(bytes32) returned %d hex chars" % len(raw))
+        words = [raw[i * 64:(i + 1) * 64] for i in range(9)]
+        state_num = int(words[6], 16)
+        amount_micro = int(words[3], 16)
+        refund_dl = int(words[4], 16)
+        logs = _evm_rpc("eth_getLogs", [{"address": EVM_ESCROW_ADDRESS,
+                                          "topics": [None, "0x" + eid[2:]],
+                                          "fromBlock": "0x0", "toBlock": "latest"}]) or []
+    except Exception as e:
+        return None, (503, {"error": "chain verification unavailable (%s: %s)" % (type(e).__name__, e),
+                            "note": "fail-closed: money transitions stay unchanged - retry shortly"})
+    if state_num not in _EVM_STATE_NAMES:
+        if state_num == 0 and not logs:
+            return None, (409, {"error": "escrow_ref points at an empty escrow (never held) on the pinned contract",
+                                "note": "NONE-guard: escrow ids are single-use; fresh-id squatting refused"})
+        return None, (503, {"error": "escrow state %s outside the hub's known state machine" % state_num,
+                            "note": "fail-closed: contract may be newer than the hub mirror"})
+    ev_state = ev_tx = None
+    ev_block = -1
+    for lg in logs:
+        name = _EVM_TOPICS.get(((lg.get("topics") or [None])[0] or "").lower())
+        if name is None:
+            continue
+        blk = int(lg.get("blockNumber") or "0x0", 16)
+        if blk >= ev_block:
+            ev_block, ev_state = blk, name
+            ev_tx = (lg.get("transactionHash") or "")[2:]
+    if ev_state is None:
+        return None, (503, {"error": "escrow exists on-chain but no lifecycle event found",
+                            "note": "fail-closed: struct and event sources disagree (dual-source)"})
+    if ev_state != _EVM_STATE_NAMES[state_num]:
+        return None, (503, {"error": "escrow struct (%s) and latest event (%s) disagree" % (
+                                _EVM_STATE_NAMES[state_num], ev_state),
+                            "note": "fail-closed: dual-source mismatch - operator should compare RPC evidence"})
+    if not ev_tx or len(ev_tx) != 64:
+        return None, (503, {"error": "event tx hash missing or malformed", "note": "fail-closed"})
+    return {"state_name": _EVM_STATE_NAMES[state_num],
+            "amount": amount_micro / 1e6,
+            "deadline": float(refund_dl),
+            "tx": ev_tx}, None
 
 
 def _chain_gate_read(er, dual=False):
@@ -1055,6 +1126,14 @@ def _chain_gate_read(er, dual=False):
     Never raises, never guesses - fail-closed on any doubt.
     """
     from midnight_indexer import EscrowIndexerClient, IndexerError
+    # E9 dispatch: EVM-typed refs take the ArbSepolia twin (fail-closed while
+    # the Sepolia deploy hasn't pinned the contract address); Midnight refs
+    # ride the indexer path below unchanged.
+    if isinstance(er, dict) and er.get("type") == "arbsep-escrow":
+        if not EVM_ESCROW_PINNED:
+            return None, (503, {"error": "EVM escrow contract not pinned yet (HUB_EVM_ESCROW_ADDRESS unset)",
+                                "note": "fail-closed: no Sepolia deploy verified; the hub never guesses an address"})
+        return _evm_chain_gate_read(er, dual=dual)
     sources = [CHAIN_INDEXER] if CHAIN_INDEXER else []
     if dual and CHAIN_INDEXER_2:
         sources.append(CHAIN_INDEXER_2)
@@ -1078,6 +1157,68 @@ def _chain_gate_read(er, dual=False):
 
 
 RATE_BOOKS_PER_MIN = int(os.environ.get("HUB_RATE_BOOKS_PER_MIN", "10"))
+
+
+def _evm_rpc(method, params):
+    """One JSON-RPC call against the pinned RPC; raises on RPC error objects."""
+    import urllib.request
+    req = urllib.request.Request(EVM_RPC_URL,
+        data=json.dumps({"jsonrpc": "2.0", "id": 1,
+                         "method": method, "params": params}).encode(),
+        headers={"Content-Type": "application/json",
+                 "User-Agent": "everlist-hub-evm/1.0"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        out = json.loads(r.read().decode())
+    if out.get("error"):
+        raise RuntimeError("rpc %s: %s" % (method, str(out["error"])[:160]))
+    return out.get("result")
+
+
+def _escrow_ref_key(r):
+    """Rail-agnostic escrow identity for dedupe walls. Midnight refs carry
+    {contract, escrow_id(int)}, E9 EVM refs {type, escrow, escrow_id(hex)};
+    both collapse to (contract-or-escrow address lowercased, str(escrow_id))."""
+    return (str(r.get("contract") or r.get("escrow") or "").lower(),
+            str(r.get("escrow_id") or "").lower())
+
+
+def _gate_wants_chain(er):
+    """True when THIS escrow_ref must pass chain verification at this hub.
+    Midnight refs gate on the Midnight indexer being configured; arbsep-escrow
+    refs gate on the pinned EVM contract (fail-closed while unpinned - an
+    EVM ref at an EVM-less hub is refused at validation, never skipped)."""
+    if not isinstance(er, dict):
+        return False
+    if er.get("type") == "arbsep-escrow":
+        return EVM_ESCROW_PINNED
+    return CHAIN_GATE
+
+
+def _booking_gate_wants(bid):
+    """Rail-aware terminal-flip gate by booking id: looks up the booking's
+    escrow_ref and applies _gate_wants_chain. A missing booking keeps the
+    legacy CHAIN_GATE behavior so the guarded block's own 404 still fires."""
+    with LOCK:
+        b = next((x for x in BOOKINGS if x["id"] == bid), None)
+    if b is None:
+        return CHAIN_GATE
+    r = b.get("escrow_ref")
+    if r is None:
+        return CHAIN_GATE
+    return _gate_wants_chain(r)
+
+
+_EVM_STATE_NAMES = {1: "HELD", 2: "RELEASED", 3: "REFUNDED", 4: "DISPUTED"}
+_EVM_ESCROW_SELECTOR = "0x2d83549c"  # escrows(bytes32)
+# topic0 -> state; pinned 2026-11-18 via cast keccak (exact Escrow.sol sigs).
+# Withdrawn/MutualApproved/Ruled deliberately unmapped: they never introduce
+# a new state - the Released/Refunded event in the same tx carries the change.
+_EVM_TOPICS = {
+    "0x0c90ebc3b5432d9d194c40bee33cc9c11d0d1ed317d52df44bc438860d95c90d": "HELD",
+    "0x6eec2dd2382427616d4ea7ef183b16091feac4e2e63c8b55f25215f132df8d14": "RELEASED",
+    "0x193032d8b1ed8d859745ff29f4e02d2d01d4927c8d9018ffc9f828adcccc7ce8": "REFUNDED",
+    "0x0ba174eb1c3530da63920b98261208eeb30b48447d1cfcbbdf116fd4ee8c62db": "DISPUTED",
+}
 
 # C2: x402 premium endpoint config (wire format per payments_x402.md)
 import base64
@@ -1809,6 +1950,8 @@ def _openapi_spec():
                                 note="buyer's own book token; escrow must be RELEASED, WAIVED or DIRECT (instant = settled at booking); free (amount 0; channel set by economic value, not the mutable escrow label - run #5) ratings go to a separate free-feedback channel, paid aggregates are amount-weighted, self-reviews rejected (S6); ledger untouched")},
             "/admin/sync-escrow": {"post": op("Mirror sync: pull chain escrow state into the hub (admin)", "admin",
                                               note="X-Admin-Key required; chain is source of truth; downward overwrites refused (C7)")},
+            "/admin/sync-escrow-evm": {"post": op("E9 mirror sync: pull Arbitrum Sepolia escrow state into the hub (admin, rail arbsep-escrow)", "admin",
+                                              note="X-Admin-Key required; reads ONLY the pinned contract (HUB_EVM_ESCROW_ADDRESS, dual-source struct+event); chain wins, forward-only, finals frozen; ledger entries carry no amount")},
             "/mcp": {"post": op("Model Context Protocol endpoint (JSON-RPC 2.0): initialize / tools/list / tools/call over the 21 hub tools (12 everlist_* incl. the full booking lifecycle + storefront contract family)", "discovery",
                                 note="thin adapter onto this same REST contract; auth = X-Hub-Token header only (a token in tool arguments is ignored - MCP-ARGS law)")},
             "/access": {"post": op("Bootstrap tokens for an agent identity (interim open)", "accounts",
@@ -2629,18 +2772,35 @@ class Handler(BaseHTTPRequestHandler):
         # of truth; the hub only stores and mirrors it (M7), never invents it.
         er = data.get("escrow_ref")
         if er is not None:
-            if not isinstance(er, dict) or set(er.keys()) != {"contract", "escrow_id", "tx"}:
-                return self._bk_json(400, {"error": "escrow_ref must be an object with exactly: contract, escrow_id, tx"})
-            _erc = er.get("contract")
-            if not isinstance(_erc, str) or not _erc.strip() or len(_erc) > 80:
-                return self._bk_json(400, {"error": "escrow_ref.contract must be a nonempty string (max 80 chars)"})
-            _eri = er.get("escrow_id")
-            if isinstance(_eri, bool) or not isinstance(_eri, int) or _eri < 1 or _eri >= 2 ** 64:
-                return self._bk_json(400, {"error": "escrow_ref.escrow_id must be a positive integer (< 2^64, contract Uint<64>)"})
-            _ert = er.get("tx")
-            if not isinstance(_ert, str) or not _ert.strip() or len(_ert) > 100:
-                return self._bk_json(400, {"error": "escrow_ref.tx must be a nonempty string (max 100 chars)"})
-            er = {"contract": _erc.strip(), "escrow_id": _eri, "tx": _ert.strip()}
+            if isinstance(er, dict) and er.get("type") == "arbsep-escrow":
+                # E9 rail: EVM ref shape {type, escrow, escrow_id}. Buyer tx is
+                # deliberately NOT part of the shape (M14: buyer tx evidence
+                # only; the hub derives state solely from its own RPC reads).
+                if set(er.keys()) != {"type", "escrow", "escrow_id"}:
+                    return self._bk_json(400, {"error": "escrow_ref (arbsep-escrow) must be an object with exactly: type, escrow, escrow_id"})
+                _ers = er.get("escrow")
+                if not isinstance(_ers, str) or re.fullmatch(r"0x[0-9a-fA-F]{40}", _ers.strip() or "") is None:
+                    return self._bk_json(400, {"error": "escrow_ref.escrow must be a 20-byte hex address (0x + 40 hex)"})
+                _eri2 = er.get("escrow_id")
+                if not isinstance(_eri2, str) or re.fullmatch(r"0x[0-9a-f]{64}", _eri2.strip().lower() or "") is None:
+                    return self._bk_json(400, {"error": "escrow_ref.escrow_id must be a bytes32 hex id (0x + 64 hex)"})
+                if not EVM_ESCROW_PINNED:
+                    return self._bk_json(503, {"error": "EVM escrow contract not pinned yet (HUB_EVM_ESCROW_ADDRESS unset)",
+                                               "note": "fail-closed: no verified Sepolia deploy; the hub never guesses an address"})
+                er = {"type": "arbsep-escrow", "escrow": _ers.strip().lower(), "escrow_id": _eri2.strip().lower()}
+            else:
+                if not isinstance(er, dict) or set(er.keys()) != {"contract", "escrow_id", "tx"}:
+                    return self._bk_json(400, {"error": "escrow_ref must be {contract, escrow_id, tx} (Midnight rail) or {type: 'arbsep-escrow', escrow, escrow_id} (EVM rail)"})
+                _erc = er.get("contract")
+                if not isinstance(_erc, str) or not _erc.strip() or len(_erc) > 80:
+                    return self._bk_json(400, {"error": "escrow_ref.contract must be a nonempty string (max 80 chars)"})
+                _eri = er.get("escrow_id")
+                if isinstance(_eri, bool) or not isinstance(_eri, int) or _eri < 1 or _eri >= 2 ** 64:
+                    return self._bk_json(400, {"error": "escrow_ref.escrow_id must be a positive integer (< 2^64, contract Uint<64>)"})
+                _ert = er.get("tx")
+                if not isinstance(_ert, str) or not _ert.strip() or len(_ert) > 100:
+                    return self._bk_json(400, {"error": "escrow_ref.tx must be a nonempty string (max 100 chars)"})
+                er = {"contract": _erc.strip(), "escrow_id": _eri, "tx": _ert.strip()}
         # I4: idempotency — same key + identical payload replays the same booking;
         # same key + different payload -> 409 conflict. Bound to the token principal:
         # agent B can never replay agent A's stored response (it contains secrets).
@@ -2663,7 +2823,7 @@ class Handler(BaseHTTPRequestHandler):
         # amount against the authoritative price. Network stays OUTSIDE
         # the LOCK (the settlement lesson).
         _chain_v = None
-        if CHAIN_GATE and er is not None:
+        if _gate_wants_chain(er):
             _chain_v, _cerr = _chain_gate_read(er, dual=False)
             if _chain_v is None:
                 _ccode, _cbody = _cerr
@@ -2765,7 +2925,7 @@ class Handler(BaseHTTPRequestHandler):
             # on-chain amount must cover the booking total exactly, and
             # the escrow's claim deadline must not have passed (D2
             # anchored to the CHAIN deadline, not just hub terms).
-            if CHAIN_GATE and escrow_state == "HELD":
+            if _gate_wants_chain(er) and escrow_state == "HELD":
                 if er is None:
                     return self._bk_json(400, {
                         "error": "escrow_ref required for paid escrow-rail bookings (chain gating enabled)",
@@ -2793,9 +2953,9 @@ class Handler(BaseHTTPRequestHandler):
             # bookings claim the same on-chain escrow (double-claim / squat
             # before the real buyer books) - wall lives inside the LOCK
             if er is not None:
+                _ek = _escrow_ref_key(er)
                 dup = next((x for x in BOOKINGS if x.get("escrow_ref")
-                            and x["escrow_ref"]["contract"] == er["contract"]
-                            and x["escrow_ref"]["escrow_id"] == er["escrow_id"]), None)
+                            and _escrow_ref_key(x["escrow_ref"]) == _ek), None)
                 if dup is not None:
                     return self._bk_json(409, {"error": "escrow_ref already claimed by booking %s" % dup["id"]})
             # S6-L1 + P0 human paid bookings (spec 2026-09-29): payment
@@ -5994,7 +6154,7 @@ class Handler(BaseHTTPRequestHandler):
             # LEVEL-1 chain gate - TERMINAL FLIP (verify-then-flip, dual-source
             # reads that must agree): the hub may flip HELD->RELEASED only
             # when the chain says HELD. Fail-closed on any doubt (D1).
-            if CHAIN_GATE:
+            if _booking_gate_wants(bid):
                 with LOCK:
                     _fb = next((x for x in BOOKINGS if x["id"] == bid), None)
                 if _fb is None:
@@ -6099,7 +6259,7 @@ class Handler(BaseHTTPRequestHandler):
             # while the chain escrow is HELD and inside its claim deadline. The
             # chain deadline is authoritative (D2); the hub terms window below
             # stays as the stricter, human-facing policy. Fail-closed on doubt.
-            if CHAIN_GATE:
+            if _booking_gate_wants(bid):
                 with LOCK:
                     _cb = next((x for x in BOOKINGS if x["id"] == bid), None)
                 if _cb is None:
@@ -6210,7 +6370,7 @@ class Handler(BaseHTTPRequestHandler):
                     "hint": "buyer: send your cancel_token as X-Hub-Token; organizer: send manage_code in the body"})
             # LEVEL-1 chain gate - verify-then-flip: hub may flip HELD->DISPUTED
             # only when the chain still says HELD. Fail-closed on any doubt.
-            if CHAIN_GATE:
+            if _gate_wants_chain(_b.get("escrow_ref")):
                 _cr = _b.get("escrow_ref")
                 if _cr is not None:
                     _cv, _cv_err = _chain_gate_read(_cr, dual=True)
@@ -6301,7 +6461,7 @@ class Handler(BaseHTTPRequestHandler):
                 for b in mine:
                     bid = b["id"]
                     try:
-                        if b["escrow"] == "HELD" and CHAIN_GATE:
+                        if b["escrow"] == "HELD" and _gate_wants_chain(b.get("escrow_ref")):
                             _fr = b.get("escrow_ref")
                             if _fr is None:
                                 results.append({"id": bid, "ok": False, "error": "predates chain gating (no escrow_ref)"})
@@ -6601,6 +6761,79 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"synced": sum(1 for r in results if r["action"] == "updated"),
                                     "indexer": indexer_url, "results": results,
                                     "note": "chain is source of truth; downward overwrites refused (C7)"})
+        if path == "/admin/sync-escrow-evm":
+            # E9: EVM twin of the M7 mirror (rail arbsep-escrow). Reads ONLY the
+            # pinned contract via the dual-source gate; law identical to
+            # /admin/sync-escrow: chain wins, forward-only, finals frozen,
+            # ledger entries carry NO amount.
+            if not EVM_ESCROW_PINNED:
+                return self._json(503, {"error": "EVM escrow contract not pinned yet (HUB_EVM_ESCROW_ADDRESS unset)",
+                                        "note": "fail-closed: no verified Sepolia deploy"})
+            with LOCK:
+                if not _auth_allow("admin", _source_of(self)):
+                    return self._json(429, {"error": "admin rate limit reached for your source, retry later"})
+            admin = self.headers.get("X-Admin-Key", "")
+            if not admin or not hmac.compare_digest(admin, ADMIN_KEY):
+                return self._json(403, {"error": "admin key required (X-Admin-Key)"})
+            want = data.get("booking_ids")
+            if want is not None and (not isinstance(want, list)
+                                     or not all(isinstance(x, str) for x in want)):
+                return self._json(400, {"error": "booking_ids must be a list of booking ids"})
+            with LOCK:
+                targets = [dict(b) for b in BOOKINGS
+                           if (b.get("escrow_ref") or {}).get("type") == "arbsep-escrow"
+                           and b.get("escrow") in ("HELD", "RELEASED", "REFUNDED", "DISPUTED")
+                           and (want is None or b["id"] in want)]
+                if want is not None:
+                    found = {b["id"] for b in targets}
+                    missing = [x for x in want if x not in found]
+                else:
+                    missing = []
+            results = []
+            _EVM_FWD = {"HELD": {"RELEASED", "REFUNDED", "DISPUTED"},
+                        "DISPUTED": {"RELEASED", "REFUNDED"},
+                        "RELEASED": {"REFUNDED"}}
+            for snap in targets:  # chain reads happen OUTSIDE the lock
+                chain, gerr = _chain_gate_read(snap["escrow_ref"], dual=True)
+                if chain is None:
+                    _ccode, _cbody = gerr
+                    results.append({"booking_id": snap["id"], "action": "error",
+                                    "error": _cbody.get("error"),
+                                    "hub_state": snap["escrow"]})
+                    continue
+                hub_state, chain_state = snap["escrow"], chain["state_name"]
+                if chain_state == hub_state:
+                    results.append({"booking_id": snap["id"], "action": "in-sync",
+                                    "hub_state": hub_state, "chain_state": chain_state})
+                    continue
+                # C7 forward law (EVM): finals frozen; DISPUTED resolves either
+                # way; RELEASED -> REFUNDED = M16 mutualRefund carve-out.
+                if chain_state not in _EVM_FWD.get(hub_state, set()):
+                    results.append({"booking_id": snap["id"], "action": "refused",
+                                    "hub_state": hub_state, "chain_state": chain_state,
+                                    "reason": "downward/conflicting overwrite refused - divergence needs operator investigation (C7)"})
+                    continue
+                with LOCK:  # forward transition: chain wins
+                    b = next((x for x in BOOKINGS if x["id"] == snap["id"]), None)
+                    if b is None or b["escrow"] != hub_state:
+                        results.append({"booking_id": snap["id"], "action": "error",
+                                        "error": "booking changed during sync"})
+                        continue
+                    b["escrow"] = chain_state
+                    LEDGER.append({"ts": time.time(), "kind": "escrow_sync",
+                                   "booking": b["id"], "from": hub_state,
+                                   "to": chain_state, "chain_tx": chain["tx"],
+                                   "rail": "arbsep-escrow"})
+                    _persist_locked()
+                results.append({"booking_id": snap["id"], "action": "updated",
+                                "hub_state": hub_state, "chain_state": chain_state,
+                                "chain_tx": chain["tx"]})
+            for x in missing:
+                results.append({"booking_id": x, "action": "not-found"})
+            return self._json(200, {"synced": sum(1 for r in results if r["action"] == "updated"),
+                                    "escrow": EVM_ESCROW_ADDRESS, "rpc": EVM_RPC_URL,
+                                    "results": results,
+                                    "note": "chain is source of truth; downward overwrites refused (C7); rail arbsep-escrow"})
         return self._json(404, {"error": "not found"})
 
     def do_DELETE(self):
