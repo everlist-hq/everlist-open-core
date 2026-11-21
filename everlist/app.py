@@ -756,6 +756,8 @@ if not (0 <= FEE_PCT <= 50):
     sys.exit(78)
 # demo-kit: operator-brandable display metadata (protocol fields untouched)
 HUB_NAME = os.environ.get("HUB_NAME", "agent-hub-v2")
+# independence law 2026-11-21: hub identity is operator-brandable; EverList is only the default
+HUB_BRAND = os.environ.get("HUB_BRAND", "EverList")
 HUB_DESCRIPTION = os.environ.get(
     "HUB_DESCRIPTION",
     "Agent commerce hub - universal booking core, per-vertical schemas. Open core; EverList network membership is curated.")
@@ -1875,7 +1877,7 @@ def _openapi_spec():
     spec = {
         "openapi": "3.1.0",
         "info": {
-            "title": "EverList Hub API",
+            "title": HUB_BRAND + " Hub API",
             "version": "agent-hub/0.2",
             "description": "Open, community-driven commerce hub for AI agents. "
                            "Credentials travel ONLY in the X-Hub-Token header; writes carry "
@@ -2068,7 +2070,7 @@ class Handler(BaseHTTPRequestHandler):
     # "BaseHTTP/0.6 Python/3.x" Server header - version disclosure is a free
     # recon win for attackers. Prod Caddy already masks it; this makes the hub
     # itself clean regardless of the fronting proxy (Caddy-independence law).
-    server_version = "EverList"
+    server_version = HUB_BRAND
     sys_version = ""
     def _json(self, code, data, extra_headers=None):
         # CATALOGS hardening (RFC 9110): 204/304 MUST NOT carry a body - a
@@ -2991,6 +2993,27 @@ class Handler(BaseHTTPRequestHandler):
                             "error": "escrow arbiter does not match this hub's arbiter of record",
                             "chain_arbiter": _chain_arb,
                             "note": "the hub can only honor disputes it rules itself (sect 7.1.6)"})
+                # F2c (adversarial review 2026-11-18, HIGH): the escrow's payout
+                # party must be THE LISTING'S declared EVM payout address — an
+                # escrow with any other organizer can back no booking here, so a
+                # self-escrow (organizer = buyer's second address) can never be
+                # released against a real booking. Fail-closed BOTH ways: a
+                # listing without a declared EVM payout address cannot accept
+                # an EVM-escrow-backed booking at all (the hub would otherwise
+                # be vouching for an unbound payout destination).
+                if isinstance(er, dict) and er.get("type") == "arbsep-escrow":
+                    _payout = str(listing.get("receive_addr") or "").strip().lower()
+                    if not _payout:
+                        return self._bk_json(409, {
+                            "error": "this listing has no EVM payout address declared (receive_addr)",
+                            "note": "the organizer must declare an EVM payout address before EVM-escrow-backed bookings are accepted (F2c: no unbound payout destinations)"})
+                    _chain_org = str(_chain_v.get("organizer") or "").lower()
+                    if _chain_org != _payout:
+                        return self._bk_json(409, {
+                            "error": "escrow organizer does not match this listing's payout address",
+                            "chain_organizer": _chain_org,
+                            "note": "an escrow whose payout party is not the listing's organizer can never pay the real organizer (F2c)"})
+
             # S1 red-team 3: duplicate (contract, escrow_id) would let two
             # bookings claim the same on-chain escrow (double-claim / squat
             # before the real buyer books) - wall lives inside the LOCK
@@ -3000,6 +3023,17 @@ class Handler(BaseHTTPRequestHandler):
                             and _escrow_ref_key(x["escrow_ref"]) == _ek), None)
                 if dup is not None:
                     return self._bk_json(409, {"error": "escrow_ref already claimed by booking %s" % dup["id"]})
+            # F2e (found 2026-11-21 during F2 work): an escrow-rail booking that
+            # ALSO carries an x402 payment would move money TWICE (the EIP-3009
+            # transfer into the escrow AND the facilitator transfer). The rails
+            # are mutually exclusive — rejected BEFORE any payment verification
+            # or settlement can run (fail-closed, no partial money movement).
+            if er is not None:  # F2e covers EVERY rail: Midnight-shape refs double-pay too
+                _ph_any = payment if payment is not None else self.headers.get("X-PAYMENT", "")
+                if _ph_any:
+                    return self._bk_json(409, {
+                        "error": "an escrow_ref and a direct payment cannot both be present (double-pay wall)",
+                        "note": "choose one rail: either a chain escrow the hub verifies (any rail), or a direct x402 payment - never both (F2e)"})
             # S6-L1 + P0 human paid bookings (spec 2026-09-29): payment
             # evidence (testnet). A valid X-PAYMENT header binds the
             # buyer's wallet to this booking (self-pay review walls,
@@ -3064,6 +3098,13 @@ class Handler(BaseHTTPRequestHandler):
                 booking["payment_nonce"] = _pnonce6
             if er is not None:
                 booking["escrow_ref"] = er  # M5: chain pointer, verbatim after validation
+                if isinstance(er, dict) and er.get("type") == "arbsep-escrow":
+                    # F2d groundwork: server-derived escrow-party evidence, stored
+                    # verbatim from the chain read (never client-claimed). The
+                    # two-phase checkout wiring compares these against the S6
+                    # verified payer and the sect 7.1.3 derived escrow id.
+                    booking["escrow_buyer"] = _chain_v.get("buyer") if _chain_v else None
+                    booking["escrow_organizer"] = _chain_v.get("organizer") if _chain_v else None
             # real identity stored ONLY here, retrievable only with the secret
             SECRETS[bid] = {"secret": secret, "private": priv_fields}
             BOOKINGS.append(booking)
@@ -3261,7 +3302,7 @@ class Handler(BaseHTTPRequestHandler):
                     "spec_draft": True,
                     "business": {
                         "name": HUB_NAME,
-                        "url": "https://everlist.network",
+                        "url": PUBLIC_URL_DIGEST,
                         "description": "Listing-first marketplace: a listing = something with a date where a human is needed or wanted. Discover, book, pay in escrow."
                     },
                     "honesty": {
@@ -3271,7 +3312,7 @@ class Handler(BaseHTTPRequestHandler):
                     },
                     "capabilities": [
                         {"name": name, "version": "0.1.0",
-                         "schema": "https://everlist.network/ucp/events-capabilities.json#capabilities/" + name}
+                         "schema": PUBLIC_URL_DIGEST + "/ucp/events-capabilities.json#capabilities/" + name}
                         for name in sorted(_caps_doc["capabilities"].keys())
                     ],
                     "payment_handlers": [{
@@ -5629,7 +5670,7 @@ class Handler(BaseHTTPRequestHandler):
                     _ping_urls = [_pub + "/l/" + lid] + [_pub + "/l/" + _cid for _cid in _series_child_ids]
                     def _in_ping(urls=_ping_urls, key=_inkey, pub=_pub):
                         try:
-                            _pd = json.dumps({"host": "everlist.network", "key": key,
+                            _pd = json.dumps({"host": _pub.replace("https://", "").replace("http://", "").split("/")[0], "key": key,
                                               "keyLocation": pub + "/.well-known/" + key + ".txt",
                                               "urlList": urls}).encode("utf-8")
                             _preq = urllib.request.Request(

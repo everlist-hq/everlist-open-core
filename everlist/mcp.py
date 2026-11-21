@@ -1,5 +1,6 @@
 import json
 import os
+HUB_BRAND = os.environ.get("HUB_BRAND", "EverList")
 import time
 import urllib.request
 import urllib.error
@@ -21,7 +22,7 @@ SERVER_INFO = {'name': 'everlist-hub', 'version': 'agent-hub/0.2-mcp'}
 TOOLS = [
     {
         'name': 'everlist_contract',
-        'description': ('Discovery: the EverList hub manifest - payment mode, fee policy, '
+        'description': ('Discovery: the ' + HUB_BRAND + ' hub manifest - payment mode, fee policy, '
                         'identity requirements, verticals, and endpoint map. Call this first.'),
         'inputSchema': {'type': 'object', 'properties': {}},
     },
@@ -32,7 +33,7 @@ TOOLS = [
     },
     {
         'name': 'everlist_search',
-        'description': ('Search the public EverList catalog of bookable listings (events, classes, '
+        'description': ('Search the public ' + HUB_BRAND + ' catalog of bookable listings (events, classes, '
                         'food, services, jobs, p2p). Free-text q plus optional filters: vertical, '
                         'category, tags (comma-separated), date window from/to (YYYY-MM-DD), '
                         'min_price/max_price, sort (date|price|newest). Returns matches with id, '
@@ -200,7 +201,7 @@ TOOLS = [
 
 STOREFRONT_TOOLS = [
     {'name': 'search_products',
-     'description': ('Search EverList listings (events, classes, food, services, jobs, p2p). '
+     'description': ('Search ' + HUB_BRAND + ' listings (events, classes, food, services, jobs, p2p). '
                      'Returns best matches with price, date, location, and spots left. '
                      'Storefront-contract alias of everlist_search (same handler) - use '
                      'whichever family your manifest enabled.'),
@@ -221,20 +222,20 @@ STOREFRONT_TOOLS = [
      'inputSchema': {'type': 'object', 'properties': {}}},
     {'name': 'add_to_cart',
      'description': ('Stage one listing in the session draft (replaces any previous draft: '
-                     'EverList books one listing per booking). Does NOT book. Follow with '
+                     '' + HUB_BRAND + ' books one listing per booking). Does NOT book. Follow with '
                      'checkout when the customer is ready.'),
      'inputSchema': {'type': 'object', 'required': ['product_id'],
                      'properties': {'product_id': {'type': 'string', 'description': 'listing id from search_products, e.g. even-1'},
                                     'quantity': {'type': 'integer', 'minimum': 1, 'maximum': 12, 'description': 'seats/units (capped at 12)'}}}},
     {'name': 'update_cart_item',
-     'description': ('Change the quantity (1-12) of the staged draft item. EverList carts hold '
+     'description': ('Change the quantity (1-12) of the staged draft item. ' + HUB_BRAND + ' carts hold '
                      'exactly ONE listing, so quantity is the only editable field; get_cart '
                      'shows the draft. Session-local (TTL 1h) - nothing is booked and no money '
                      'moves until checkout completes.'),
      'inputSchema': {'type': 'object', 'required': ['quantity'],
                      'properties': {'quantity': {'type': 'integer', 'minimum': 1, 'maximum': 12, 'description': 'new seats/units for the staged listing'}}}},
     {'name': 'remove_from_cart',
-     'description': ('Empty the session draft cart (EverList drafts hold at most one listing). '
+     'description': ('Empty the session draft cart (' + HUB_BRAND + ' drafts hold at most one listing). '
                      'Nothing is booked and no money has moved; add_to_cart can stage a '
                      'different listing afterward.'),
      'inputSchema': {'type': 'object', 'properties': {}}},
@@ -311,7 +312,7 @@ def _handle_one(handler, data, hub_port):
             'capabilities': {'tools': {}},
             'serverInfo': SERVER_INFO,
             'instructions': (
-                'EverList: a listing = something with a date where a human is needed or wanted. '
+                '' + HUB_BRAND + ': a listing = something with a date where a human is needed or wanted. '
                 'Call everlist_contract first (payment mode + fees are declared, never hidden). '
                 'Search, inspect, then book with everlist_book; escrow holds the funds until '
                 'the organizer confirms or the refund window lapses. The full booking lifecycle lives on this face: everlist_bookings lists yours; everlist_cancel (buyer, cancel_token as header) refunds; everlist_confirm (organizer) releases; everlist_dispute freezes; everlist_rate rates after settlement; everlist_escrow_proof verifies the chain without trusting this hub.'),

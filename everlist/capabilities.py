@@ -12,6 +12,9 @@ Every entry must stay true to the actual command surface in chatlib.py;
 new capability added later = one entry here (brain, chat, docs all read it).
 """
 
+import os
+HUB_BRAND = os.environ.get("HUB_BRAND", "EverList")  # independence law 2026-11-21
+
 # ---------------------------------------------------------------- CAN ----
 # (id, trigger-keywords, standard answer)
 CAN = [
@@ -126,7 +129,7 @@ CANNOT = [
 ]
 
 UNKNOWN_LINE = (
-    "That's not something EverList does (yet) - here's what I can do: "
+    f"That's not something {HUB_BRAND} does (yet) - here's what I can do: "
     "search and book listings, post and manage your own, accounts, escrow "
     "payments, notifications and more ('help' for the full list)."
 )

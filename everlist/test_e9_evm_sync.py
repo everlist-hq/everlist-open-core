@@ -57,10 +57,12 @@ def eid(n):
 NOW = int(time.time())
 CHAIN = {}
 
-def set_chain(n, state, amount_micro=50000000, deadline=None, arbiter_word="0" * 64):
+def set_chain(n, state, amount_micro=50000000, deadline=None, arbiter_word="0" * 64,
+              organizer_word=None):
     CHAIN[eid(n)[2:]] = {"state": state, "amount": amount_micro,
                          "deadline": NOW + 86400 if deadline is None else deadline,
-                         "block": len(CHAIN) + 1, "arbiter_word": arbiter_word}
+                         "block": len(CHAIN) + 1, "arbiter_word": arbiter_word,
+                         "organizer_word": organizer_word or ("0" * 24 + "22" * 20)}
 
 def struct_hex(st):
     w = []
@@ -68,7 +70,7 @@ def struct_hex(st):
     # fixed 2026-11-18 when F2a exposed the words — the left-aligned encoding
     # was never readable by a correct ABI decoder (reader output proved it).
     w.append("0" * 24 + "11" * 20)          # buyer
-    w.append("0" * 24 + "22" * 20)          # organizer
+    w.append(st.get("organizer_word", "0" * 24 + "22" * 20))  # organizer (F2c: per-escrow)
     w.append(st.get("arbiter_word", "0" * 64))  # arbiter (F2b: nonzero for wall tests)
     w.append("%064x" % st["amount"])
     w.append("%064x" % st["deadline"])
@@ -170,7 +172,8 @@ try:
     assert c == 200, l
     OTOK = l["tokens"]["list"]
     c, r = req("POST", "/listings", {"vertical": "events", "title": "E9 Paid",
-               "date": "2026-12-10", "location": "X", "price": 50, "capacity": 10},
+               "date": "2026-12-10", "location": "X", "price": 50, "capacity": 10,
+               "receive_addr": "0x" + "22" * 20},
                {"X-Hub-Token": OTOK})
     assert c == 201, r
     PAID = r["id"]
@@ -349,7 +352,8 @@ try:
         assert c == 200, l2
         T2 = l2["tokens"]["list"]
         c, r2 = rq("POST", "/listings", {"vertical": "events", "title": "E9 %s" % tag,
-                   "date": "2026-12-10", "location": "X", "price": 50, "capacity": 5},
+                   "date": "2026-12-10", "location": "X", "price": 50, "capacity": 5,
+                   "receive_addr": "0x" + "22" * 20},
                    {"X-Hub-Token": T2})
         assert c == 201, r2
         c, bt2 = rq("POST", "/access", {"agent": "agent1qe9%s" % tag, "acts": ["book"]})
@@ -378,6 +382,36 @@ try:
                               "escrow_id": eid(1)}}, B6)
     check("F2b: foreign/zero arbiter -> 409", c == 409, "%s %s" % (c, e6))
 
+    print("== E9 F2c: payout-destination binding walls ==")
+    # hub WITHOUT a payout address on the listing: fail-closed refusal
+    _, rq7 = spawn_hub({"HUB_EVM_ESCROW_ADDRESS": PIN, "HUB_EVM_RPC_URL": EVMPIN}, "f2c")
+    PAID7, B7 = mini_flow(rq7, "f2c")  # listing has receive_addr (fixture default)
+    # a hub whose listing DECLARES the payout but chain organizer differs:
+    set_chain(7, 1, organizer_word="0" * 24 + "99" * 20)  # attacker organizer
+    c, e7 = rq7("POST", "/book", {"listing_id": PAID7, "attendee": "F2C", "human_verified": True,
+               "escrow_ref": {"type": "arbsep-escrow", "escrow": PIN,
+                              "escrow_id": eid(7)}}, B7)
+    check("F2c: organizer != listing payout -> 409", c == 409, "%s %s" % (c, e7))
+    # the matching-organizer escrow books normally (positive control on the same hub)
+    set_chain(8, 1)  # fresh HELD escrow with the default organizer word (0x22..)
+    c, ok7 = rq7("POST", "/book", {"listing_id": PAID7, "attendee": "F2C ok", "human_verified": True,
+               "escrow_ref": {"type": "arbsep-escrow", "escrow": PIN,
+                              "escrow_id": eid(8)}}, B7)
+    check("F2c: organizer == listing payout -> books 201", c == 201, "%s %s" % (c, ok7))
+
+    print("== E9 F2e: double-pay wall (escrow + x402 payment = 409) ==")
+    c, e8 = rq7("POST", "/book", {"listing_id": PAID7, "attendee": "F2E", "human_verified": True,
+               "escrow_ref": {"type": "arbsep-escrow", "escrow": PIN,
+                              "escrow_id": eid(1)}}, {**B7, "X-PAYMENT": "ZmFrZQ=="})
+    check("F2e: escrow_ref + X-PAYMENT together -> 409 (no double pay)", c == 409, "%s %s" % (c, e8))
+    # F2e gap fix (strong-model review 2026-11-21): the Midnight-shape legacy
+    # ref must ALSO hit the wall - an indexer-verified Midnight escrow holds
+    # the money; a concurrent x402 payment would move it twice.
+    c, e9 = rq7("POST", "/book", {"listing_id": PAID7, "attendee": "F2E-M", "human_verified": True,
+               "escrow_ref": {"contract": "c", "escrow_id": 1, "tx": "t"}},
+               {**B7, "X-PAYMENT": "ZmFrZQ=="})
+    check("F2e: Midnight-shape escrow_ref + X-PAYMENT -> 409 (all rails)", c == 409, "%s %s" % (c, e9))
+
     print("== E9 in-process: F8 gate truth + F2a party words + F4 pin pass ==")
     os.environ["HUB_EVM_ESCROW_ADDRESS"] = PIN
     os.environ["HUB_EVM_RPC_URL"] = EVMPIN
@@ -392,6 +426,42 @@ try:
           _cv is not None and _cv.get("buyer") == "0x" + "11" * 20
           and _cv.get("organizer") == "0x" + "22" * 20
           and _cv.get("arbiter") == "0x" + "0" * 40, str(_cv))
+    # Owner decision 2026-11-21: escrow ids are INDEPENDENT random bytes32 -
+    # never derived from hub objects (M7/M14: chain is truth, hub mirrors).
+    # The derivation API must be GONE and the binding machinery id-agnostic.
+    import evm_relay as _er
+    import secrets as _esec
+    check("independent ids: derivation API removed from the module",
+          not hasattr(_er, "booking_escrow_id"), "booking_escrow_id still present")
+    _d1 = _er.new_escrow_id()
+    _d3 = _er.new_escrow_id()
+    check("independent ids: fresh ids are bytes32 + distinct (256-bit random)",
+          len(_d1) == 66 and _d1 != _d3 and _d1.startswith("0x"), "%s %s" % (_d1, _d3))
+    try:
+        _er.normalize_escrow_id("0x1234")
+        check("independent ids: normalize rejects malformed ids", False, "accepted 0x1234")
+    except ValueError:
+        check("independent ids: normalize rejects malformed ids", True)
+    # F1 binding signature round-trip: sign -> verify TRUE; tamper -> FALSE.
+    # The signer address is DERIVED from the key (eth_account needs 32 bytes):
+    # verify against the recovered address, then prove tampering breaks it.
+    _msg = _er.binding_message(_d1, "0x" + "22" * 20, "0x" + "44" * 20,
+                               50_000_000, NOW + 86400, NOW + 9 * 86400)
+    _pk = ("0x" + "3c" * 31 + "a1")
+    from eth_account import Account as _Acct
+    _buyer_addr = _Acct.from_key(_pk).address.lower()
+    _sig = _er.sign_binding(_pk, 421614, PIN, _msg)
+    check("F1 wiring: binding sig verifies for the buyer",
+          _er.verify_binding(_buyer_addr, 421614, PIN, _msg, _sig) is True)
+    check("F1 wiring: binding sig REJECTED for tampered terms",
+          _er.verify_binding(_buyer_addr, 421614, PIN,
+                             dict(_msg, amount=1), _sig) is False)
+    _cd = _er.build_hold_calldata(_d1, "0x" + "11" * 20, "0x" + "22" * 20, "0x" + "44" * 20,
+                                  50_000_000, NOW + 86400, NOW + 9 * 86400,
+                                  NOW - 60, NOW + 600, "0x" + "aa" * 32,
+                                  27, "0x" + "bb" * 32, "0x" + "cc" * 32, _sig)
+    check("F1 wiring: hold() calldata selector matches the deployed ABI",
+          _cd[:10] == "0x" + _er.HOLD_SELECTOR.hex(), _cd[:10])
     try:
         _app._EVM_CHAIN_VERIFIED = False
         _app._evm_assert_chain_id()
